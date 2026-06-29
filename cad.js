@@ -1028,15 +1028,11 @@ function handleClick(w, rawW, ev) {
       const tol = 8 / state.view.scale;
       const hit = pick(w, rawW);
       if (hit) {
-        // 그립 클릭? → 그 점 이동 시작
+        // 그립(끝점 등) 클릭 → 그 점만 늘리기. 본체 클릭은 선택만(통째 이동 안 함)
         const grip = nearGrip(hit, rawW, tol) || nearGrip(hit, w, tol);
         if (!ev.shiftKey && !state.selection.has(hit.id)) { state.selection.clear(); }
         state.selection.add(hit.id);
         if (grip) { pushUndo(); moveOp = { gripEntity: hit, gripIndex: grip.index, base: w, dx: 0, dy: 0, grip: true }; }
-        else if (state.selection.size) {
-          pushUndo();
-          moveOp = { entities: [...state.selection], base: w, dx: 0, dy: 0 };
-        }
         renderProps(); draw();
       } else {
         if (!ev.shiftKey) state.selection.clear();
