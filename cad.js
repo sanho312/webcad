@@ -1955,6 +1955,30 @@ document.getElementById('btnGrid').classList.toggle('active', state.grid.show);
 document.getElementById('btnOrtho').classList.toggle('active', state.ortho);
 document.getElementById('btnOsnap').classList.toggle('active', osnapEnabled);
 
+// iOS 등 요소 전체화면 미지원 시: "홈 화면에 추가" 안내 모달
+function showHomeScreenHelp() {
+  if (document.getElementById('homeHelp')) return;
+  const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ''));
+  const o = document.createElement('div');
+  o.id = 'homeHelp';
+  o.style.cssText = 'position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:20px;';
+  o.innerHTML =
+    '<div style="background:#2a2a30;border:1px solid #3d3d46;border-radius:12px;max-width:360px;padding:20px 22px;color:#e6e6ea;box-shadow:0 12px 40px #000a;">' +
+    '<h2 style="margin:0 0 10px;font-size:17px;">전체화면으로 쓰는 법</h2>' +
+    '<p style="margin:0 0 12px;font-size:13px;color:#9a9aa5;line-height:1.6;">이 브라우저 탭은 전체화면 API를 지원하지 않습니다. 아래처럼 <b style="color:#e6e6ea;">홈 화면에 앱으로 추가</b>하면 주소창·툴바 없이 전체화면으로 실행됩니다.</p>' +
+    '<ol style="margin:0 0 4px;padding-left:20px;font-size:13px;line-height:1.9;">' +
+    (isiOS
+      ? '<li>Safari 하단(또는 상단)의 <b>공유 버튼 <span style="display:inline-block;border:1px solid #6a6a75;border-radius:4px;padding:0 5px;">⬆️</span></b> 탭</li><li>목록에서 <b>"홈 화면에 추가"</b> 선택</li><li>오른쪽 위 <b>"추가"</b> 탭</li><li>홈 화면의 <b>WebCAD 아이콘</b>으로 실행 → 전체화면</li>'
+      : '<li>브라우저 메뉴(⋮) 열기</li><li><b>"홈 화면에 추가"</b> 또는 <b>"앱 설치"</b> 선택</li><li>추가된 아이콘으로 실행 → 전체화면</li>') +
+    '</ol>' +
+    '<div style="text-align:right;margin-top:16px;"><button id="homeHelpClose" style="background:#2b6fc0;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer;">확인</button></div>' +
+    '</div>';
+  document.body.appendChild(o);
+  const close = () => o.remove();
+  o.addEventListener('click', (e) => { if (e.target === o) close(); });
+  o.querySelector('#homeHelpClose').addEventListener('click', close);
+}
+
 // 전체화면 토글 — 모바일/태블릿에서 주소창·브라우저 UI 숨김 (Fullscreen API + 벤더 프리픽스)
 (function () {
   const btn = document.getElementById('btnFull');
@@ -1963,8 +1987,10 @@ document.getElementById('btnOsnap').classList.toggle('active', osnapEnabled);
   const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
   function enter() {
     const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitRequestFullScreen || el.mozRequestFullScreen || el.msRequestFullscreen;
-    if (fn) { const p = fn.call(el); if (p && p.catch) p.catch(() => {}); }
-    else hint('이 브라우저는 전체화면을 지원하지 않습니다. 메뉴 → "홈 화면에 추가"로 설치하면 전체화면으로 실행됩니다.');
+    if (fn) {
+      try { const p = fn.call(el); if (p && p.catch) p.catch(() => showHomeScreenHelp()); }
+      catch (e) { showHomeScreenHelp(); }
+    } else showHomeScreenHelp();
   }
   function exit() {
     const fn = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
@@ -2062,12 +2088,16 @@ async function saveDXF() {
   const out = buildDXFText();
   const fname = 'drawing.dxf';
   const blob = new Blob([out], { type: 'application/dxf' });
-  const isTouch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  // 모바일(특히 iOS/iPadOS)은 마우스 연결 시 pointer:coarse가 아닐 수 있으므로 OS도 함께 감지
+  const ua = navigator.userAgent || '';
+  const isiOS = /iPad|iPhone|iPod/.test(ua) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ''));
+  const isCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  const preferShare = isiOS || isCoarse;
   // 1) 모바일: Web Share API로 파일 공유 → "파일에 저장"
-  if (isTouch && navigator.canShare) {
+  if (preferShare && navigator.share) {
     try {
       const file = new File([blob], fname, { type: 'application/dxf' });
-      if (navigator.canShare({ files: [file] })) {
+      if (!navigator.canShare || navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: fname });
         logLine('  ✔ DXF 공유/저장 완료', 'ok');
         return;
