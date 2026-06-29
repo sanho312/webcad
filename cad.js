@@ -1047,7 +1047,11 @@ function handleClick(w, rawW, ev) {
     }
     case 'line':
       if (!draft) { pushUndo(); draft = { type: 'LINE', x1: w.x, y1: w.y, x2: w.x, y2: w.y }; }
-      else { draft.x2 = w.x; draft.y2 = w.y; commitDraft(); }
+      else if (Math.hypot(w.x - draft.x1, w.y - draft.y1) > 1e-9) {
+        draft.x2 = w.x; draft.y2 = w.y;
+        commitDraft();                                   // 구간 확정
+        pushUndo(); draft = { type: 'LINE', x1: w.x, y1: w.y, x2: w.x, y2: w.y }; // 끝점에서 이어 그리기
+      }
       break;
     case 'pline':
       pts.push({ x: w.x, y: w.y });
@@ -1541,7 +1545,10 @@ function feedLine(p) {
   if (p.kind === 'abs') { ex = p.x; ey = p.y; }
   else if (p.kind === 'rel') { ex = draft.x1 + p.dx; ey = draft.y1 + p.dy; }
   else { const dx = mouseWorld.x - draft.x1, dy = mouseWorld.y - draft.y1, L = Math.hypot(dx, dy) || 1; ex = draft.x1 + dx / L * p.n; ey = draft.y1 + dy / L * p.n; }
-  draft.x2 = ex; draft.y2 = ey; commitDraft(); logLine('  ✔ 선', 'ok'); draw(); return true;
+  draft.x2 = ex; draft.y2 = ey; commitDraft(); logLine('  ✔ 선', 'ok');
+  pushUndo(); draft = { type: 'LINE', x1: ex, y1: ey, x2: ex, y2: ey }; // 끝점에서 이어 그리기
+  setPrompt('선: 다음 끝점 입력/클릭 (Enter·우클릭으로 종료)');
+  draw(); return true;
 }
 function feedCircle(p) {
   if (!draft) {
@@ -1665,7 +1672,7 @@ function setTool(t) {
   cv.style.cursor = (t === 'select') ? 'default' : 'crosshair';
   const hints = {
     select: '선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요. 그립을 끌어 편집할 수 있습니다.',
-    line: '선: 시작점→끝점 클릭. 또는 명령행에 x,y / @dx,dy / 길이 입력.',
+    line: '선: 점을 연속 클릭하면 이어서 그려집니다. 우클릭·Enter·Esc로 종료. (x,y / @dx,dy / 길이 입력 가능)',
     pline: '폴리라인: 점 연속 클릭(또는 x,y 입력), 빈 Enter로 완료.',
     rect: '사각형: 첫 모서리 클릭/입력 후 크기 w,h(또는 한 변 길이) 입력 가능.',
     circle: '원: 중심 클릭/입력(x,y) 후 반지름 숫자를 명령행에 입력하세요.',
