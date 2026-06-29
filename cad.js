@@ -1644,10 +1644,11 @@ function updateStat() { statEl.textContent = `도형 ${state.entities.length}개
 // ============================================================
 //  뷰 조작
 // ============================================================
-function zoomFit() {
+// robust=true이면 극단 이상치(드물게 도면에서 멀리 떨어진 잔여 도형)를 제외하고 맞춤 — 불러오기 직후 사용
+function zoomFit(robust) {
   if (!state.entities.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const ext = (x, y) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
+  const xs = [], ys = [];
+  const ext = (x, y) => { if (isFinite(x) && isFinite(y)) { xs.push(x); ys.push(y); } };
   for (const e of state.entities) {
     switch (e.type) {
       case 'LINE': ext(e.x1, e.y1); ext(e.x2, e.y2); break;
@@ -1656,7 +1657,14 @@ function zoomFit() {
       case 'TEXT': ext(e.x, e.y); ext(e.x + e.text.length * e.height * .6, e.y + e.height); break;
     }
   }
-  if (!isFinite(minX)) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
+  if (!xs.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
+  xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
+  let minX = xs[0], maxX = xs[xs.length - 1], minY = ys[0], maxY = ys[ys.length - 1];
+  if (robust && xs.length >= 50) {
+    const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * p)))];
+    const rx0 = q(xs, 0.01), rx1 = q(xs, 0.99), ry0 = q(ys, 0.01), ry1 = q(ys, 0.99);
+    if (rx1 > rx0 && ry1 > ry0) { minX = rx0; maxX = rx1; minY = ry0; maxY = ry1; }
+  }
   const w = maxX - minX || 1, h = maxY - minY || 1;
   const pad = 1.2;
   state.view.scale = Math.min(cv._w / (w * pad), cv._h / (h * pad));
@@ -1836,7 +1844,7 @@ function loadDXF(text) {
     state.currentLayer = '0';
     state.nextId = state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1;
     state.selection.clear();
-    renderLayers(); updateStat(); zoomFit();
+    renderLayers(); updateStat(); zoomFit(true);
     hint(`DXF 불러오기 완료: 도형 ${state.entities.length}개`);
   } catch (err) {
     alert('DXF 파일을 읽는 중 오류가 발생했습니다:\n' + err.message);
@@ -1859,17 +1867,121 @@ function aci2hex(n) {
 }
 function parseDXFEntities(pairs) {
   const entities = [], layers = [];
-  let id = 1;
-  let i = 0;
-  // 섹션 단위로 진행
-  while (i < pairs.length) {
-    const [code, val] = pairs[i];
-    if (code === 0 && val.trim() === 'SECTION') {
-      const sec = pairs[i + 1] && pairs[i + 1][0] === 2 ? pairs[i + 1][1].trim() : '';
-      if (sec === 'TABLES') { i = parseLayers(pairs, i + 2, layers); continue; }
-      if (sec === 'ENTITIES') { i = parseEnts(pairs, i + 2); continue; }
+  const blocks = {}; // 블록 정의: name -> { bx, by, entities: [] }
+
+  function num(d, code, def = 0) { const v = d[code]; return v === undefined ? def : parseFloat(Array.isArray(v) ? v[0] : v); }
+  function baseOf(d) {
+    const layer = (d[8] !== undefined ? (Array.isArray(d[8]) ? d[8][0] : d[8]) : '0').trim();
+    const base = { layer };
+    if (d[62] !== undefined) {
+      const n = parseInt(Array.isArray(d[62]) ? d[62][0] : d[62], 10);
+      if (n !== 256 && n !== 0) base.color = aci2hex(n); // 256=ByLayer, 0=ByBlock → 기본색
     }
-    i++;
+    return base;
+  }
+  function buildEntity(t, d, verts) {
+    const base = baseOf(d);
+    switch (t) {
+      case 'LINE': return { ...base, type: 'LINE', x1: num(d, 10), y1: num(d, 20), x2: num(d, 11), y2: num(d, 21) };
+      case 'LWPOLYLINE': {
+        const pts = verts.filter(p => p[1] !== undefined);
+        if (pts.length < 2) return null;
+        return { ...base, type: 'LWPOLYLINE', closed: (num(d, 70) & 1) === 1, points: pts };
+      }
+      case 'CIRCLE': {
+        let cx = num(d, 10), cy = num(d, 20);
+        if (num(d, 230, 1) < 0) cx = -cx; // 음수 Z 돌출 → OCS가 X축 반전 저장됨
+        return { ...base, type: 'CIRCLE', cx, cy, r: num(d, 40) };
+      }
+      case 'ARC': {
+        let cx = num(d, 10), cy = num(d, 20), sa = num(d, 50), ea = num(d, 51);
+        if (num(d, 230, 1) < 0) { cx = -cx; const ns = 180 - ea, ne = 180 - sa; sa = ns; ea = ne; } // OCS X축 반전: 좌표·각도 미러 + 진행방향 반전
+        return { ...base, type: 'ARC', cx, cy, r: num(d, 40), startAngle: sa, endAngle: ea };
+      }
+      case 'TEXT': case 'MTEXT': {
+        let parts = [];
+        if (d[3] !== undefined) parts.push(...(Array.isArray(d[3]) ? d[3] : [d[3]])); // MTEXT 연속 텍스트
+        if (d[1] !== undefined) parts.push(...(Array.isArray(d[1]) ? d[1] : [d[1]]));
+        let txt = parts.join('').replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '');
+        return { ...base, type: 'TEXT', x: num(d, 10), y: num(d, 20), height: num(d, 40, 10), text: txt, rotation: num(d, 50) };
+      }
+    }
+    return null;
+  }
+  function buildPoly(d, pts) {
+    if (pts.length < 2) return null;
+    return { ...baseOf(d), type: 'LWPOLYLINE', closed: (num(d, 70) & 1) === 1, points: pts };
+  }
+  // 블록 엔티티를 INSERT 위치/스케일/회전에 맞게 변환한 사본 생성.
+  // sx/sy 부호로 미러링도 처리(호는 반사 시 방향이 뒤집히므로 각도 재계산 + start/end 교환).
+  function xformEntity(src, tp, sx, sy, rot) {
+    const e = JSON.parse(JSON.stringify(src));
+    const a = rot * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const sc = Math.sqrt(Math.abs(sx * sy)); // 반지름/문자 크기 배율(미러여도 양수)
+    // 블록 좌표계 방향각(도)을 스케일+회전 적용 후 방향각(도)으로 변환
+    const dirAngle = (deg) => {
+      const t = deg * Math.PI / 180, vx = Math.cos(t) * sx, vy = Math.sin(t) * sy;
+      return Math.atan2(vx * sa + vy * ca, vx * ca - vy * sa) * 180 / Math.PI;
+    };
+    switch (e.type) {
+      case 'LINE': [e.x1, e.y1] = tp(e.x1, e.y1); [e.x2, e.y2] = tp(e.x2, e.y2); break;
+      case 'LWPOLYLINE': e.points = e.points.map(p => tp(p[0], p[1])); break;
+      case 'CIRCLE': [e.cx, e.cy] = tp(e.cx, e.cy); e.r *= sc; break;
+      case 'ARC': {
+        [e.cx, e.cy] = tp(e.cx, e.cy); e.r *= sc;
+        let s = dirAngle(e.startAngle), en = dirAngle(e.endAngle);
+        if (sx * sy < 0) { const t = s; s = en; en = t; } // 반사 → 호 진행방향 반전
+        e.startAngle = s; e.endAngle = en;
+        break;
+      }
+      case 'TEXT': [e.x, e.y] = tp(e.x, e.y); e.height *= sc; e.rotation = (e.rotation || 0) + rot; break;
+    }
+    return e;
+  }
+  function expandInsert(d, out) {
+    const name = (d[2] !== undefined ? String(Array.isArray(d[2]) ? d[2][0] : d[2]) : '').trim();
+    const blk = blocks[name];
+    if (!blk) return;
+    const ix = num(d, 10), iy = num(d, 20), sx = num(d, 41, 1), sy = num(d, 42, 1), rot = num(d, 50, 0);
+    const a = rot * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const tp = (x, y) => { const px = (x - blk.bx) * sx, py = (y - blk.by) * sy; return [px * ca - py * sa + ix, px * sa + py * ca + iy]; };
+    for (const src of blk.entities) out.push(xformEntity(src, tp, sx, sy, rot));
+  }
+  // 엔티티 스트림 파서 — ENTITIES/블록 정의 양쪽에서 공용. ENDSEC 또는 ENDBLK에서 멈춤.
+  function parseEntityStream(p, start, out) {
+    let j = start;
+    const stop = v => v === 'ENDSEC' || v === 'ENDBLK';
+    while (j < p.length && !(p[j][0] === 0 && stop(p[j][1].trim()))) {
+      if (p[j][0] !== 0) { j++; continue; }
+      const t = p[j][1].trim();
+      j++;
+      const data = {}, verts = [];
+      while (j < p.length && p[j][0] !== 0) {
+        const [c, v] = p[j];
+        if (t === 'LWPOLYLINE' && c === 10) verts.push([parseFloat(v), undefined]);
+        else if (t === 'LWPOLYLINE' && c === 20) { if (verts.length) verts[verts.length - 1][1] = parseFloat(v); }
+        else (data[c] === undefined) ? data[c] = v : (Array.isArray(data[c]) ? data[c].push(v) : data[c] = [data[c], v]);
+        j++;
+      }
+      if (t === 'POLYLINE') {
+        // 구형 POLYLINE: 뒤따르는 VERTEX들을 모아 LWPOLYLINE으로 변환
+        const pts = [];
+        while (j < p.length && p[j][0] === 0 && p[j][1].trim() === 'VERTEX') {
+          j++;
+          const vd = {};
+          while (j < p.length && p[j][0] !== 0) { const [c, v] = p[j]; vd[c] = v; j++; }
+          pts.push([num(vd, 10), num(vd, 20)]);
+        }
+        if (j < p.length && p[j][0] === 0 && p[j][1].trim() === 'SEQEND') { j++; while (j < p.length && p[j][0] !== 0) j++; }
+        const e = buildPoly(data, pts);
+        if (e) out.push(e);
+        continue;
+      }
+      if (t === 'INSERT') { expandInsert(data, out); continue; }
+      const e = buildEntity(t, data, verts);
+      if (e) out.push(e);
+    }
+    return j;
   }
   function parseLayers(p, start, out) {
     let j = start;
@@ -1888,49 +2000,37 @@ function parseDXFEntities(pairs) {
     }
     return j;
   }
-  function parseEnts(p, start) {
+  function parseBlocks(p, start) {
     let j = start;
     while (j < p.length && !(p[j][0] === 0 && p[j][1].trim() === 'ENDSEC')) {
-      if (p[j][0] === 0) {
-        const t = p[j][1].trim();
-        const data = {};
-        const multi = {}; // 반복 코드 수집 (폴리라인 정점)
+      if (p[j][0] === 0 && p[j][1].trim() === 'BLOCK') {
         j++;
-        const verts = [];
-        let curV = {};
-        while (j < p.length && p[j][0] !== 0) {
-          const [c, v] = p[j];
-          if (t === 'LWPOLYLINE' && c === 10) { curV = { x: parseFloat(v) }; }
-          else if (t === 'LWPOLYLINE' && c === 20) { curV.y = parseFloat(v); verts.push([curV.x, curV.y]); }
-          else (data[c] === undefined) ? data[c] = v : (Array.isArray(data[c]) ? data[c].push(v) : data[c] = [data[c], v]);
-          j++;
-        }
-        const e = buildEntity(t, data, verts, id);
-        if (e) { e.id = id++; entities.push(e); }
+        const bd = {};
+        while (j < p.length && p[j][0] !== 0) { const [c, v] = p[j]; bd[c] = v; j++; }
+        const name = (bd[2] !== undefined ? String(bd[2]) : '').trim();
+        const ents = [];
+        j = parseEntityStream(p, j, ents); // ENDBLK에서 멈춤
+        blocks[name] = { bx: num(bd, 10), by: num(bd, 20), entities: ents };
+        if (j < p.length && p[j][0] === 0 && p[j][1].trim() === 'ENDBLK') { j++; while (j < p.length && p[j][0] !== 0) j++; }
       } else j++;
     }
     return j;
   }
-  function num(d, code, def = 0) { const v = d[code]; return v === undefined ? def : parseFloat(Array.isArray(v) ? v[0] : v); }
-  function buildEntity(t, d, verts, idv) {
-    const layer = (d[8] !== undefined ? (Array.isArray(d[8]) ? d[8][0] : d[8]) : '0').trim();
-    const color = (d[62] !== undefined) ? aci2hex(parseInt(Array.isArray(d[62]) ? d[62][0] : d[62], 10)) : undefined;
-    const base = { layer };
-    if (d[62] !== undefined && parseInt(d[62], 10) !== 256) base.color = color;
-    switch (t) {
-      case 'LINE': return { ...base, type: 'LINE', x1: num(d, 10), y1: num(d, 20), x2: num(d, 11), y2: num(d, 21) };
-      case 'LWPOLYLINE': return { ...base, type: 'LWPOLYLINE', closed: (num(d, 70) & 1) === 1, points: verts };
-      case 'POLYLINE': return null; // 구형 POLYLINE은 VERTEX 분리형 → 생략(단순화)
-      case 'CIRCLE': return { ...base, type: 'CIRCLE', cx: num(d, 10), cy: num(d, 20), r: num(d, 40) };
-      case 'ARC': return { ...base, type: 'ARC', cx: num(d, 10), cy: num(d, 20), r: num(d, 40), startAngle: num(d, 50), endAngle: num(d, 51) };
-      case 'TEXT': case 'MTEXT': {
-        let txt = d[1] !== undefined ? (Array.isArray(d[1]) ? d[1].join('') : d[1]) : '';
-        txt = txt.replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '');
-        return { ...base, type: 'TEXT', x: num(d, 10), y: num(d, 20), height: num(d, 40, 10), text: txt, rotation: num(d, 50) };
-      }
+
+  // 섹션 단위로 진행 (BLOCKS는 ENTITIES보다 먼저 나오므로 INSERT 전개 시 참조 가능)
+  let i = 0;
+  while (i < pairs.length) {
+    const [code, val] = pairs[i];
+    if (code === 0 && val.trim() === 'SECTION') {
+      const sec = pairs[i + 1] && pairs[i + 1][0] === 2 ? pairs[i + 1][1].trim() : '';
+      if (sec === 'TABLES') { i = parseLayers(pairs, i + 2, layers); continue; }
+      if (sec === 'BLOCKS') { i = parseBlocks(pairs, i + 2); continue; }
+      if (sec === 'ENTITIES') { i = parseEntityStream(pairs, i + 2, entities); continue; }
     }
-    return null;
+    i++;
   }
+  let id = 1;
+  for (const e of entities) e.id = id++;
   return { entities, layers };
 }
 
