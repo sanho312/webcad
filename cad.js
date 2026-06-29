@@ -187,8 +187,10 @@ function draw() {
   // 영역 선택 박스
   if (dragSelect) {
     ctx.save();
-    ctx.strokeStyle = '#4ea1ff'; ctx.fillStyle = 'rgba(78,161,255,.12)';
-    ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    const crossing = dragSelect.x2 < dragSelect.x1; // 오→왼 = 크로싱(초록 점선), 왼→오 = 윈도우(파랑 실선)
+    if (crossing) { ctx.strokeStyle = '#2ee6a6'; ctx.fillStyle = 'rgba(46,230,166,.12)'; ctx.setLineDash([5, 4]); }
+    else { ctx.strokeStyle = '#4ea1ff'; ctx.fillStyle = 'rgba(78,161,255,.12)'; ctx.setLineDash([]); }
+    ctx.lineWidth = 1;
     const a = worldToScreen(dragSelect.x1, dragSelect.y1);
     const b = worldToScreen(dragSelect.x2, dragSelect.y2);
     ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
@@ -411,6 +413,58 @@ function entityInBox(e, x1, y1, x2, y2) {
   const inside = (x, y) => x >= xmin && x <= xmax && y >= ymin && y <= ymax;
   for (const g of entityGrips(e)) if (!inside(g.x, g.y)) return false;
   return entityGrips(e).length > 0;
+}
+
+// ---------- 윈도우/크로싱 선택용 경계 계산 ----------
+function entityBBox(e) {
+  switch (e.type) {
+    case 'LINE': return { xmin: Math.min(e.x1, e.x2), xmax: Math.max(e.x1, e.x2), ymin: Math.min(e.y1, e.y2), ymax: Math.max(e.y1, e.y2) };
+    case 'LWPOLYLINE': {
+      const xs = e.points.map(p => p[0]), ys = e.points.map(p => p[1]);
+      return { xmin: Math.min(...xs), xmax: Math.max(...xs), ymin: Math.min(...ys), ymax: Math.max(...ys) };
+    }
+    case 'CIRCLE': return { xmin: e.cx - e.r, xmax: e.cx + e.r, ymin: e.cy - e.r, ymax: e.cy + e.r };
+    case 'ARC': {
+      const pts = [ptOnArc(e, e.startAngle), ptOnArc(e, e.endAngle)];
+      for (const a of [0, 90, 180, 270]) if (angleInArc(a, e.startAngle, e.endAngle)) pts.push(ptOnArc(e, a));
+      const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+      return { xmin: Math.min(...xs), xmax: Math.max(...xs), ymin: Math.min(...ys), ymax: Math.max(...ys) };
+    }
+    case 'TEXT': { const w = (e.text ? e.text.length : 0) * e.height * 0.6; return { xmin: e.x, xmax: e.x + w, ymin: e.y, ymax: e.y + e.height }; }
+  }
+  return null;
+}
+// 윈도우 선택: 객체 전체가 박스 안에
+function entityFullyInBox(e, b) {
+  const bb = entityBBox(e);
+  return bb && bb.xmin >= b.xmin && bb.xmax <= b.xmax && bb.ymin >= b.ymin && bb.ymax <= b.ymax;
+}
+// 크로싱 선택: 객체가 박스에 걸치거나 들어옴
+function entityCrossesBox(e, b) {
+  const inB = (x, y) => x >= b.xmin && x <= b.xmax && y >= b.ymin && y <= b.ymax;
+  const edges = [[b.xmin, b.ymin, b.xmax, b.ymin], [b.xmax, b.ymin, b.xmax, b.ymax], [b.xmax, b.ymax, b.xmin, b.ymax], [b.xmin, b.ymax, b.xmin, b.ymin]];
+  const segHitsBox = (x1, y1, x2, y2) => {
+    if (inB(x1, y1) || inB(x2, y2)) return true;
+    for (const ed of edges) { const r = segSeg([x1, y1], [x2, y2], [ed[0], ed[1]], [ed[2], ed[3]]); if (r && r.t >= 0 && r.t <= 1 && r.u >= 0 && r.u <= 1) return true; }
+    return false;
+  };
+  if (e.type === 'LINE' || e.type === 'LWPOLYLINE') {
+    for (const sg of entitySegments(e)) if (segHitsBox(sg[0], sg[1], sg[2], sg[3])) return true;
+    return false;
+  }
+  if (e.type === 'CIRCLE' || e.type === 'ARC') {
+    for (const pt of entityEndpoints(e)) if (inB(pt.x, pt.y)) return true; // 호 끝점이 안에
+    for (const ed of edges) {
+      for (const h of segCircle([ed[0], ed[1]], [ed[2], ed[3]], e.cx, e.cy, e.r)) {
+        if (h.t < 0 || h.t > 1) continue;
+        if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, h.x, h.y), e.startAngle, e.endAngle)) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+  if (e.type === 'TEXT') { const bb = entityBBox(e); return !(bb.xmax < b.xmin || bb.xmin > b.xmax || bb.ymax < b.ymin || bb.ymin > b.ymax); }
+  return false;
 }
 
 // ============================================================
@@ -1411,11 +1465,13 @@ function finishGripMoveMaybe() {
 
 function finishDragSelect(ev) {
   const { x1, y1, x2, y2 } = dragSelect;
-  if (Math.hypot(x2 - x1, y2 - y1) > 0.5 / state.view.scale) {
+  if (Math.hypot(x2 - x1, y2 - y1) * state.view.scale > 3) {  // 실제 드래그(3px 이상)일 때만
     if (!ev.shiftKey) state.selection.clear();
+    const box = { xmin: Math.min(x1, x2), xmax: Math.max(x1, x2), ymin: Math.min(y1, y2), ymax: Math.max(y1, y2) };
+    const crossing = x2 < x1; // 오른쪽→왼쪽 드래그 = 크로싱(걸치면 선택), 왼→오 = 윈도우(전체 포함)
     for (const e of state.entities) {
       const l = getLayer(e.layer); if (l && !l.visible) continue;
-      if (entityInBox(e, x1, y1, x2, y2)) state.selection.add(e.id);
+      if (crossing ? entityCrossesBox(e, box) : entityFullyInBox(e, box)) state.selection.add(e.id);
     }
   }
   dragSelect = null; renderProps(); draw();
