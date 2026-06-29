@@ -23,7 +23,7 @@ const state = {
   currentColor: null,    // null = 레이어색(ByLayer), 아니면 '#rrggbb'
   tool: 'select',
   view: { x: 0, y: 0, scale: 1 },   // x,y = 화면 중앙이 가리키는 월드좌표
-  grid: { show: true, size: 10, snap: false },
+  grid: { show: true, size: 10 },
   ortho: false,          // 직교 모드(F8): 기준점 대비 수평/수직 고정
   selection: new Set(),
   textHeight: 10,
@@ -89,11 +89,6 @@ function screenToWorld(sx, sy) {
 }
 
 // ---------- 스냅 ----------
-function snapPoint(w) {
-  if (!state.grid.snap) return { x: w.x, y: w.y };
-  const g = state.grid.size;
-  return { x: Math.round(w.x / g) * g, y: Math.round(w.y / g) * g };
-}
 // 직교(Ortho) 모드 — 현재 작업의 기준점 대비 수평/수직으로 고정
 function orthoBase() {
   if (pts.length) return pts[pts.length - 1];                       // 폴리라인: 직전 점
@@ -110,7 +105,7 @@ function applyOrtho(p, b) {
 function cursorPoint(raw) {
   activeSnap = findObjectSnap(raw);
   if (activeSnap) return { x: activeSnap.x, y: activeSnap.y };
-  let p = snapPoint(raw);
+  let p = { x: raw.x, y: raw.y };
   if (state.ortho) { const b = orthoBase(); if (b) p = applyOrtho(p, b); }
   return p;
 }
@@ -247,10 +242,6 @@ function drawCursor() {
   ctx.moveTo(s.x, 0); ctx.lineTo(s.x, cv._h);
   ctx.moveTo(0, s.y); ctx.lineTo(cv._w, s.y);
   ctx.stroke();
-  if (state.grid.snap && !activeSnap) {
-    ctx.setLineDash([]); ctx.strokeStyle = '#4ea1ff';
-    ctx.strokeRect(s.x - 4, s.y - 4, 8, 8);
-  }
   ctx.restore();
   if (activeSnap) drawSnapMarker(s, activeSnap.type);
 }
@@ -266,6 +257,11 @@ function drawSnapMarker(s, type) {
     ctx.beginPath(); ctx.moveTo(s.x, s.y - r); ctx.lineTo(s.x - r, s.y + r); ctx.lineTo(s.x + r, s.y + r); ctx.closePath(); ctx.stroke();
   } else if (type === 'center') {
     ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2); ctx.stroke();
+  } else if (type === 'perp') { // 수직: 직각 기호 ⊐
+    ctx.beginPath();
+    ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x - r, s.y + r); ctx.lineTo(s.x + r, s.y + r); // ㄴ
+    ctx.moveTo(s.x - r, s.y); ctx.lineTo(s.x, s.y); ctx.lineTo(s.x, s.y + r);                 // 안쪽 직각 표시
+    ctx.stroke();
   } else { // nearest
     ctx.beginPath();
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y + r);
@@ -468,6 +464,21 @@ function nearestOnEntity(e, w) {
   return null;
 }
 // 커서(mouseScreen) 근처의 최적 스냅점을 찾음. 우선순위: 끝점>중점>중심>근처
+function entitySegments(e) {
+  if (e.type === 'LINE') return [[e.x1, e.y1, e.x2, e.y2]];
+  if (e.type === 'LWPOLYLINE') {
+    const out = [], p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+    for (let i = 0; i < segN; i++) out.push([p[i][0], p[i][1], p[(i + 1) % n][0], p[(i + 1) % n][1]]);
+    return out;
+  }
+  return [];
+}
+function perpFoot(bx, by, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy;
+  if (len2 < 1e-12) return null;
+  const t = ((bx - x1) * dx + (by - y1) * dy) / len2;
+  return { x: x1 + t * dx, y: y1 + t * dy, t };
+}
 function findObjectSnap(raw) {
   if (!osnapEnabled) return null;
   const tol = 12;
@@ -478,17 +489,33 @@ function findObjectSnap(raw) {
     const d = Math.hypot(s.x - mouseScreen.x, s.y - mouseScreen.y);
     if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { x, y, type, prio, d };
   };
+  const base = orthoBase(); // 수직점 계산 기준점(작도 시작점 등)
+  let perp = null, perpD = Infinity;
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     if (skipSel && state.selection.has(e.id)) continue;
     for (const g of entityEndpoints(e)) consider(g.x, g.y, 'endpoint', 1);
     for (const m of entityMidpoints(e)) consider(m.x, m.y, 'midpoint', 2);
     if (e.type === 'CIRCLE' || e.type === 'ARC') consider(e.cx, e.cy, 'center', 3);
+    // 수직점(perpendicular): 기준점에서 도형으로 내린 수선의 발. 커서가 그 도형 위에 있을 때 제공
+    if (base) {
+      for (const sg of entitySegments(e)) {
+        const np = closestOnSeg(raw.x, raw.y, sg[0], sg[1], sg[2], sg[3]);
+        const sn = worldToScreen(np.x, np.y);
+        const dCur = Math.hypot(sn.x - mouseScreen.x, sn.y - mouseScreen.y);
+        if (dCur > tol) continue;
+        const f = perpFoot(base.x, base.y, sg[0], sg[1], sg[2], sg[3]);
+        if (f && f.t >= -1e-9 && f.t <= 1 + 1e-9 && dCur < perpD) { perpD = dCur; perp = { x: f.x, y: f.y }; }
+      }
+    }
     const np = nearestOnEntity(e, raw); if (np) consider(np.x, np.y, 'nearest', 5);
   }
+  // 우선순위: 끝점·중점·중심 > 수직점 > 근처점
+  if (best && best.prio <= 3) return best;
+  if (perp) return { x: perp.x, y: perp.y, type: 'perp' };
   return best;
 }
-const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', nearest: '근처' };
+const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', perp: '수직', nearest: '근처' };
 
 // ============================================================
 //  이동
@@ -1851,12 +1878,10 @@ document.getElementById('btnSave').addEventListener('click', saveDXF);
 document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
 document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
-document.getElementById('btnSnap').addEventListener('click', (e) => { state.grid.snap = !state.grid.snap; e.currentTarget.classList.toggle('active', state.grid.snap); draw(); });
 document.getElementById('btnOrtho').addEventListener('click', toggleOrtho);
 document.getElementById('btnOsnap').addEventListener('click', toggleOsnap);
-// 토글 버튼 초기 상태 반영 (그리드 표시 ON, 스냅 OFF, 직교 OFF, 객체스냅 ON)
+// 토글 버튼 초기 상태 반영 (그리드 표시 ON, 직교 OFF, 객체스냅 ON)
 document.getElementById('btnGrid').classList.toggle('active', state.grid.show);
-document.getElementById('btnSnap').classList.toggle('active', state.grid.snap);
 document.getElementById('btnOrtho').classList.toggle('active', state.ortho);
 document.getElementById('btnOsnap').classList.toggle('active', osnapEnabled);
 
