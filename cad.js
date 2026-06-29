@@ -24,6 +24,7 @@ const state = {
   tool: 'select',
   view: { x: 0, y: 0, scale: 1 },   // x,y = 화면 중앙이 가리키는 월드좌표
   grid: { show: true, size: 10, snap: false },
+  ortho: false,          // 직교 모드(F8): 기준점 대비 수평/수직 고정
   selection: new Set(),
   textHeight: 10,
   nextId: 1,
@@ -43,6 +44,8 @@ let offsetDist = 10;    // 마지막 사용 오프셋 거리
 let filletRadius = 0;   // 모깎기 반지름
 let lastCommand = '';   // 직전에 실행한 명령(스페이스/Enter로 반복)
 let lastInputWasTouch = false; // 터치 입력 중에는 명령행 자동 포커스(키보드 팝업) 억제
+let osnapEnabled = true;   // 객체 스냅(OSNAP) 사용 여부
+let activeSnap = null;     // 현재 스냅된 점 {x,y,type}
 
 // ---------- 실행취소 스택 ----------
 const undoStack = [], redoStack = [];
@@ -90,6 +93,41 @@ function snapPoint(w) {
   if (!state.grid.snap) return { x: w.x, y: w.y };
   const g = state.grid.size;
   return { x: Math.round(w.x / g) * g, y: Math.round(w.y / g) * g };
+}
+// 직교(Ortho) 모드 — 현재 작업의 기준점 대비 수평/수직으로 고정
+function orthoBase() {
+  if (pts.length) return pts[pts.length - 1];                       // 폴리라인: 직전 점
+  if (draft && state.tool === 'line') return { x: draft.x1, y: draft.y1 }; // 선: 시작점
+  if (moveOp) return moveOp.base;                                   // 이동/복사
+  if (cmdOp && cmdOp.base) return cmdOp.base;                       // 수정 명령(복사 등)
+  return null;
+}
+function applyOrtho(p, b) {
+  const dx = p.x - b.x, dy = p.y - b.y;
+  return Math.abs(dx) >= Math.abs(dy) ? { x: p.x, y: b.y } : { x: b.x, y: p.y };
+}
+// 커서 월드좌표 = 객체 스냅(OSNAP) 우선 → 없으면 그리드 스냅 + 직교 보정
+function cursorPoint(raw) {
+  activeSnap = findObjectSnap(raw);
+  if (activeSnap) return { x: activeSnap.x, y: activeSnap.y };
+  let p = snapPoint(raw);
+  if (state.ortho) { const b = orthoBase(); if (b) p = applyOrtho(p, b); }
+  return p;
+}
+function toggleOrtho() {
+  state.ortho = !state.ortho;
+  const b = document.getElementById('btnOrtho');
+  if (b) b.classList.toggle('active', state.ortho);
+  if (typeof hint === 'function') hint(state.ortho ? '직교 모드 ON — 수평·수직 고정 (F8)' : '직교 모드 OFF (F8)');
+  draw();
+}
+function toggleOsnap() {
+  osnapEnabled = !osnapEnabled;
+  if (!osnapEnabled) activeSnap = null;
+  const b = document.getElementById('btnOsnap');
+  if (b) b.classList.toggle('active', osnapEnabled);
+  if (typeof hint === 'function') hint(osnapEnabled ? '객체 스냅 ON — 끝점·중점·중심·근처 (F3)' : '객체 스냅 OFF (F3)');
+  draw();
 }
 
 // ---------- 레이어 ----------
@@ -209,10 +247,33 @@ function drawCursor() {
   ctx.moveTo(s.x, 0); ctx.lineTo(s.x, cv._h);
   ctx.moveTo(0, s.y); ctx.lineTo(cv._w, s.y);
   ctx.stroke();
-  if (state.grid.snap) {
+  if (state.grid.snap && !activeSnap) {
     ctx.setLineDash([]); ctx.strokeStyle = '#4ea1ff';
     ctx.strokeRect(s.x - 4, s.y - 4, 8, 8);
   }
+  ctx.restore();
+  if (activeSnap) drawSnapMarker(s, activeSnap.type);
+}
+
+// OSNAP 표식: 끝점=□, 중점=△, 중심=○, 근처=✕
+function drawSnapMarker(s, type) {
+  ctx.save();
+  ctx.strokeStyle = '#2ee6a6'; ctx.lineWidth = 1.8; ctx.setLineDash([]);
+  const r = 7;
+  if (type === 'endpoint') {
+    ctx.strokeRect(s.x - r, s.y - r, 2 * r, 2 * r);
+  } else if (type === 'midpoint') {
+    ctx.beginPath(); ctx.moveTo(s.x, s.y - r); ctx.lineTo(s.x - r, s.y + r); ctx.lineTo(s.x + r, s.y + r); ctx.closePath(); ctx.stroke();
+  } else if (type === 'center') {
+    ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2); ctx.stroke();
+  } else { // nearest
+    ctx.beginPath();
+    ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y + r);
+    ctx.moveTo(s.x + r, s.y - r); ctx.lineTo(s.x - r, s.y + r);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#2ee6a6'; ctx.font = '11px "Segoe UI",sans-serif'; ctx.textBaseline = 'bottom';
+  ctx.fillText(SNAP_KO[type], s.x + r + 3, s.y - r);
   ctx.restore();
 }
 
@@ -355,6 +416,79 @@ function entityInBox(e, x1, y1, x2, y2) {
   for (const g of entityGrips(e)) if (!inside(g.x, g.y)) return false;
   return entityGrips(e).length > 0;
 }
+
+// ============================================================
+//  객체 스냅 (OSNAP) — 끝점 / 중점 / 중심 / 근처점
+// ============================================================
+function closestOnSeg(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - x1) * dx + (py - y1) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return { x: x1 + t * dx, y: y1 + t * dy };
+}
+function entityEndpoints(e) {
+  switch (e.type) {
+    case 'LINE': return [{ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }];
+    case 'LWPOLYLINE': return e.points.map(p => ({ x: p[0], y: p[1] }));
+    case 'ARC': { const a = ptOnArc(e, e.startAngle), b = ptOnArc(e, e.endAngle); return [a, b]; }
+    case 'TEXT': return [{ x: e.x, y: e.y }];
+  }
+  return [];
+}
+function entityMidpoints(e) {
+  switch (e.type) {
+    case 'LINE': return [{ x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2 }];
+    case 'LWPOLYLINE': {
+      const out = [], p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+      for (let i = 0; i < segN; i++) { const a = p[i], b = p[(i + 1) % n]; out.push({ x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2 }); }
+      return out;
+    }
+    case 'ARC': { let s = e.startAngle, en = e.endAngle; if (en < s) en += 360; return [ptOnArc(e, (s + en) / 2)]; }
+  }
+  return [];
+}
+function nearestOnEntity(e, w) {
+  switch (e.type) {
+    case 'LINE': return closestOnSeg(w.x, w.y, e.x1, e.y1, e.x2, e.y2);
+    case 'LWPOLYLINE': {
+      let best = null, bd = Infinity, p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+      for (let i = 0; i < segN; i++) { const c = closestOnSeg(w.x, w.y, p[i][0], p[i][1], p[(i + 1) % n][0], p[(i + 1) % n][1]); const d = Math.hypot(c.x - w.x, c.y - w.y); if (d < bd) { bd = d; best = c; } }
+      return best;
+    }
+    case 'CIRCLE': { const a = Math.atan2(w.y - e.cy, w.x - e.cx); return { x: e.cx + e.r * Math.cos(a), y: e.cy + e.r * Math.sin(a) }; }
+    case 'ARC': {
+      let deg = ang(e.cx, e.cy, w.x, w.y);
+      if (!angleInArc(deg, e.startAngle, e.endAngle)) { // 호 범위 밖이면 가까운 끝점
+        const a = ptOnArc(e, e.startAngle), b = ptOnArc(e, e.endAngle);
+        return Math.hypot(a.x - w.x, a.y - w.y) < Math.hypot(b.x - w.x, b.y - w.y) ? a : b;
+      }
+      return ptOnArc(e, deg);
+    }
+  }
+  return null;
+}
+// 커서(mouseScreen) 근처의 최적 스냅점을 찾음. 우선순위: 끝점>중점>중심>근처
+function findObjectSnap(raw) {
+  if (!osnapEnabled) return null;
+  const tol = 12;
+  const skipSel = !!moveOp; // 이동 중에는 자기 자신에 스냅 방지
+  let best = null;
+  const consider = (x, y, type, prio) => {
+    const s = worldToScreen(x, y);
+    const d = Math.hypot(s.x - mouseScreen.x, s.y - mouseScreen.y);
+    if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { x, y, type, prio, d };
+  };
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    if (skipSel && state.selection.has(e.id)) continue;
+    for (const g of entityEndpoints(e)) consider(g.x, g.y, 'endpoint', 1);
+    for (const m of entityMidpoints(e)) consider(m.x, m.y, 'midpoint', 2);
+    if (e.type === 'CIRCLE' || e.type === 'ARC') consider(e.cx, e.cy, 'center', 3);
+    const np = nearestOnEntity(e, raw); if (np) consider(np.x, np.y, 'nearest', 5);
+  }
+  return best;
+}
+const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', nearest: '근처' };
 
 // ============================================================
 //  이동
@@ -713,8 +847,8 @@ cv.addEventListener('mousemove', (ev) => {
   const r = cv.getBoundingClientRect();
   mouseScreen = { x: ev.clientX - r.left, y: ev.clientY - r.top };
   const raw = screenToWorld(mouseScreen.x, mouseScreen.y);
-  mouseWorld = snapPoint(raw);
-  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)}`;
+  mouseWorld = cursorPoint(raw);
+  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
 
   if (isPanning && panStart) {
     const dx = (ev.clientX - panStart.sx) / state.view.scale;
@@ -778,8 +912,8 @@ cv.addEventListener('wheel', (ev) => {
 function setPointer(sx, sy) {
   mouseScreen = { x: sx, y: sy };
   const raw = screenToWorld(sx, sy);
-  mouseWorld = snapPoint(raw);
-  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)}`;
+  mouseWorld = cursorPoint(raw);
+  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
   if (moveOp) { moveOp.dx = mouseWorld.x - moveOp.base.x; moveOp.dy = mouseWorld.y - moveOp.base.y; if (moveOp.grip) updateGripMove(); }
   if (draft) updateDraft();
   if (cmdOp) updateCmdPreview();
@@ -1677,6 +1811,8 @@ function zoomFit(robust) {
 //  키보드
 // ============================================================
 window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'F8') { ev.preventDefault(); toggleOrtho(); return; }  // 직교 모드(입력창 포커스 중에도 동작)
+  if (ev.key === 'F3') { ev.preventDefault(); toggleOsnap(); return; }  // 객체 스냅
   if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
   if (ev.ctrlKey && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); return; }
@@ -1716,9 +1852,13 @@ document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
 document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
 document.getElementById('btnSnap').addEventListener('click', (e) => { state.grid.snap = !state.grid.snap; e.currentTarget.classList.toggle('active', state.grid.snap); draw(); });
-// 토글 버튼 초기 상태 반영 (그리드 표시 ON, 스냅 OFF)
+document.getElementById('btnOrtho').addEventListener('click', toggleOrtho);
+document.getElementById('btnOsnap').addEventListener('click', toggleOsnap);
+// 토글 버튼 초기 상태 반영 (그리드 표시 ON, 스냅 OFF, 직교 OFF, 객체스냅 ON)
 document.getElementById('btnGrid').classList.toggle('active', state.grid.show);
 document.getElementById('btnSnap').classList.toggle('active', state.grid.snap);
+document.getElementById('btnOrtho').classList.toggle('active', state.ortho);
+document.getElementById('btnOsnap').classList.toggle('active', osnapEnabled);
 
 // 전체화면 토글 — 모바일/태블릿에서 주소창·브라우저 UI 숨김 (Fullscreen API + 벤더 프리픽스)
 (function () {
