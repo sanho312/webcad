@@ -23,7 +23,7 @@ const state = {
   currentColor: null,    // null = 레이어색(ByLayer), 아니면 '#rrggbb'
   tool: 'select',
   view: { x: 0, y: 0, scale: 1 },   // x,y = 화면 중앙이 가리키는 월드좌표
-  grid: { show: true, size: 10, snap: true },
+  grid: { show: true, size: 10, snap: false },
   selection: new Set(),
   textHeight: 10,
   nextId: 1,
@@ -1714,9 +1714,11 @@ document.getElementById('fileInput').addEventListener('change', (ev) => {
 document.getElementById('btnSave').addEventListener('click', saveDXF);
 document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
-document.getElementById('btnZoomFit').addEventListener('click', zoomFit);
-document.getElementById('btnGrid').addEventListener('click', () => { state.grid.show = !state.grid.show; draw(); });
-document.getElementById('btnSnap').addEventListener('click', () => { state.grid.snap = !state.grid.snap; draw(); });
+document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
+document.getElementById('btnSnap').addEventListener('click', (e) => { state.grid.snap = !state.grid.snap; e.currentTarget.classList.toggle('active', state.grid.snap); draw(); });
+// 토글 버튼 초기 상태 반영 (그리드 표시 ON, 스냅 OFF)
+document.getElementById('btnGrid').classList.toggle('active', state.grid.show);
+document.getElementById('btnSnap').classList.toggle('active', state.grid.snap);
 
 // 전체화면 토글 — 모바일/태블릿에서 주소창·브라우저 UI 숨김 (Fullscreen API + 벤더 프리픽스)
 (function () {
