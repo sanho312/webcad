@@ -2,7 +2,13 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<!-- 모바일 "홈 화면에 추가" 시 브라우저 UI 없이 전체화면으로 실행 (특히 iPhone Safari는 요소 전체화면 미지원) -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="WebCAD">
+<meta name="theme-color" content="#1e1e22">
 <title>WebCAD — DXF 편집기</title>
 <style>
   :root{
@@ -24,6 +30,7 @@
     border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;}
   button.tbtn:hover{background:#41414b;}
   button.tbtn:active{background:var(--accent2);}
+  button.tbtn.active{background:var(--accent2);border-color:var(--accent);color:#fff;}
 
   /* Main layout */
   #main{display:flex;flex:1 1 auto;min-height:0;}
@@ -126,6 +133,7 @@
     <button class="tbtn" id="btnZoomFit" title="전체 보기 (F)">전체보기</button>
     <button class="tbtn" id="btnGrid">그리드</button>
     <button class="tbtn" id="btnSnap">스냅</button>
+    <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
     <input type="file" id="fileInput" accept=".dxf" style="display:none">
   </div>
 

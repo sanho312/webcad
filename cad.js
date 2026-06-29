@@ -1718,6 +1718,31 @@ document.getElementById('btnZoomFit').addEventListener('click', zoomFit);
 document.getElementById('btnGrid').addEventListener('click', () => { state.grid.show = !state.grid.show; draw(); });
 document.getElementById('btnSnap').addEventListener('click', () => { state.grid.snap = !state.grid.snap; draw(); });
 
+// 전체화면 토글 — 모바일/태블릿에서 주소창·브라우저 UI 숨김 (Fullscreen API + 벤더 프리픽스)
+(function () {
+  const btn = document.getElementById('btnFull');
+  if (!btn) return;
+  const el = document.documentElement;
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+  function enter() {
+    const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitRequestFullScreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+    if (fn) { const p = fn.call(el); if (p && p.catch) p.catch(() => {}); }
+    else hint('이 브라우저는 전체화면을 지원하지 않습니다. 메뉴 → "홈 화면에 추가"로 설치하면 전체화면으로 실행됩니다.');
+  }
+  function exit() {
+    const fn = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+    if (fn) fn.call(document);
+  }
+  btn.addEventListener('click', () => { fsEl() ? exit() : enter(); });
+  function sync() {
+    const on = !!fsEl();
+    btn.textContent = on ? '⛶ 창모드' : '⛶ 전체화면';
+    btn.classList.toggle('active', on);
+    setTimeout(resize, 120); // 전환 후 캔버스 크기 재계산
+  }
+  ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'].forEach(e => document.addEventListener(e, sync));
+})();
+
 document.getElementById('curColor').addEventListener('input', (e) => {
   state.currentColor = e.target.value;
   document.getElementById('curColorTxt').textContent = '고정색';
