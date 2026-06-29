@@ -950,7 +950,7 @@ cv.addEventListener('mousemove', (ev) => {
 
 cv.addEventListener('mousedown', (ev) => {
   lastInputWasTouch = false;
-  if (ev.button === 1 || (ev.button === 0 && ev.altKey)) {  // 중간버튼/Alt = 팬
+  if (ev.button === 1 || (ev.button === 0 && ev.altKey) || (ev.button === 0 && state.tool === 'pan')) {  // 중간버튼/Alt/손 도구 = 팬
     isPanning = true;
     panStart = { sx: ev.clientX, sy: ev.clientY, vx: state.view.x, vy: state.view.y };
     ev.preventDefault(); return;
@@ -1026,19 +1026,13 @@ cv.addEventListener('touchmove', (ev) => {
   if (ev.touches.length === 1 && touch.mode !== 'pinch') {
     const p = touchXY(ev.touches[0]);
     touch.moved = Math.max(touch.moved, Math.hypot(p.x - touch.sx, p.y - touch.sy));
-    if (touch.mode === 'tap' && touch.moved > 12) {
-      // 선택 도구: 한 손가락 드래그 = 박스 선택 / 그 외 도구: 화면 이동(팬)
-      if (state.tool === 'select') { touch.mode = 'boxsel'; dragSelect = { x1: touch.sworld.x, y1: touch.sworld.y, x2: touch.sworld.x, y2: touch.sworld.y }; }
-      else touch.mode = 'pan';
-    }
+    // 한 손가락 드래그 = 화면 이동(팬). 선택은 탭으로, 박스 선택은 마우스/손도구로.
+    if (touch.mode === 'tap' && touch.moved > 12) touch.mode = 'pan';
     if (touch.mode === 'pan') {
       const dx = (p.x - touch.sx) / state.view.scale;
       const dy = (p.y - touch.sy) / state.view.scale;
       state.view.x = touch.vx - dx;
       state.view.y = touch.vy + dy;
-    } else if (touch.mode === 'boxsel') {
-      const raw = screenToWorld(p.x, p.y);
-      dragSelect.x2 = raw.x; dragSelect.y2 = raw.y;
     }
     setPointer(p.x, p.y);
     draw();
@@ -1070,8 +1064,6 @@ cv.addEventListener('touchend', (ev) => {
     handleClick(mouseWorld, screenToWorld(mouseScreen.x, mouseScreen.y), { shiftKey: false });
     if (dragSelect) finishDragSelect({ shiftKey: false });
     if (moveOp && state.tool === 'select') finishGripMoveMaybe();
-  } else if (touch.mode === 'boxsel') {
-    if (dragSelect) finishDragSelect({ shiftKey: false }); // 박스 선택 확정
   } else if (touch.mode === 'pinch' && touch.moved < 10 && ev.touches.length === 0) {
     // 두 손가락 가벼운 탭 = 우클릭(완료/취소)
     contextAction();
@@ -1517,7 +1509,7 @@ function logLine(text, cls) {
   while (cmdLogEl.children.length > 400) cmdLogEl.removeChild(cmdLogEl.firstChild);
 }
 const TOOL_KO = {
-  select: '선택(SELECT)', line: '선(LINE)', pline: '폴리라인(PLINE)', rect: '사각형(RECT)',
+  select: '선택(SELECT)', pan: '화면 이동(PAN)', line: '선(LINE)', pline: '폴리라인(PLINE)', rect: '사각형(RECT)',
   circle: '원(CIRCLE)', arc: '호(ARC)', text: '문자(TEXT)', move: '이동(MOVE)', erase: '지우기(ERASE)',
   offset: '오프셋(OFFSET)', copy: '복사(COPY)', mirror: '대칭(MIRROR)', rotate: '회전(ROTATE)',
   array: '배열(ARRAY)', trim: '자르기(TRIM)', extend: '연장(EXTEND)', fillet: '모깎기(FILLET)',
@@ -1731,9 +1723,10 @@ function setTool(t) {
   draft = null; pts = []; arcState = null; moveOp = null; dragSelect = null;
   cmdOp = null; previewEnts = null;
   document.querySelectorAll('.tool').forEach(el => el.classList.toggle('active', el.dataset.tool === t));
-  cv.style.cursor = (t === 'select') ? 'default' : 'crosshair';
+  cv.style.cursor = (t === 'select') ? 'default' : (t === 'pan') ? 'grab' : 'crosshair';
   const hints = {
-    select: '선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요. 그립을 끌어 편집할 수 있습니다.',
+    select: '선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그(왼→오 윈도우 / 오→왼 크로싱)하세요.',
+    pan: '화면 이동(손 도구): 빈 화면을 드래그하면 화면이 이동합니다. 선택하려면 "선택" 도구로 바꾸세요.',
     line: '선: 점을 연속 클릭하면 이어서 그려집니다. 우클릭·Enter·Esc로 종료. (x,y / @dx,dy / 길이 입력 가능)',
     pline: '폴리라인: 점 연속 클릭(또는 x,y 입력), 빈 Enter로 완료.',
     rect: '사각형: 첫 모서리 클릭/입력 후 크기 w,h(또는 한 변 길이) 입력 가능.',
@@ -2053,18 +2046,22 @@ function dxfColorIndex(hex) {
 function buildDXFText() {
   const L = [];
   const g = (code, val) => { L.push(code); L.push(val); };
+  let handle = 0x100;                                  // 엔티티/테이블 핸들
+  const H = () => (handle++).toString(16).toUpperCase();
 
-  // HEADER
+  // HEADER — AC1021(R2007)부터 DXF는 UTF-8 → 한글 레이어명 깨짐 방지
   g(0, 'SECTION'); g(2, 'HEADER');
-  g(9, '$ACADVER'); g(1, 'AC1009');
+  g(9, '$ACADVER'); g(1, 'AC1021');
   g(9, '$INSUNITS'); g(70, 4); // mm
+  g(9, '$HANDSEED'); g(5, 'FFFF');
   g(0, 'ENDSEC');
 
   // TABLES (레이어)
   g(0, 'SECTION'); g(2, 'TABLES');
-  g(0, 'TABLE'); g(2, 'LAYER'); g(70, state.layers.length);
+  g(0, 'TABLE'); g(2, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, state.layers.length);
   for (const l of state.layers) {
-    g(0, 'LAYER'); g(2, l.name); g(70, l.visible ? 0 : 1);
+    g(0, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLayerTableRecord');
+    g(2, l.name); g(70, l.visible ? 0 : 1);
     g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color)); g(6, 'CONTINUOUS');
   }
   g(0, 'ENDTAB');
@@ -2072,7 +2069,7 @@ function buildDXFText() {
 
   // ENTITIES
   g(0, 'SECTION'); g(2, 'ENTITIES');
-  for (const e of state.entities) writeEntity(g, e);
+  for (const e of state.entities) writeEntity(g, e, H);
   g(0, 'ENDSEC');
   g(0, 'EOF');
 
@@ -2115,30 +2112,31 @@ async function saveDXF() {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
   logLine('  ✔ DXF 저장(다운로드)', 'ok');
 }
-function writeEntity(g, e) {
-  const common = () => { g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color)); };
+function writeEntity(g, e, H) {
+  // AC1021(R2007) 구조: 핸들(5) + AcDbEntity + 서브클래스 마커
+  const head = (type, sub) => { g(0, type); g(5, H()); g(100, 'AcDbEntity'); g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color)); g(100, sub); };
   switch (e.type) {
     case 'LINE':
-      g(0, 'LINE'); common();
+      head('LINE', 'AcDbLine');
       g(10, e.x1); g(20, e.y1); g(30, 0);
       g(11, e.x2); g(21, e.y2); g(31, 0);
       break;
     case 'LWPOLYLINE':
-      g(0, 'LWPOLYLINE'); common();
+      head('LWPOLYLINE', 'AcDbPolyline');
       g(90, e.points.length); g(70, e.closed ? 1 : 0);
       for (const p of e.points) { g(10, p[0]); g(20, p[1]); }
       break;
     case 'CIRCLE':
-      g(0, 'CIRCLE'); common();
+      head('CIRCLE', 'AcDbCircle');
       g(10, e.cx); g(20, e.cy); g(30, 0); g(40, e.r);
       break;
     case 'ARC':
-      g(0, 'ARC'); common();
+      head('ARC', 'AcDbCircle');
       g(10, e.cx); g(20, e.cy); g(30, 0); g(40, e.r);
-      g(50, e.startAngle); g(51, e.endAngle);
+      g(100, 'AcDbArc'); g(50, e.startAngle); g(51, e.endAngle);
       break;
     case 'TEXT':
-      g(0, 'TEXT'); common();
+      head('TEXT', 'AcDbText');
       g(10, e.x); g(20, e.y); g(30, 0); g(40, e.height);
       g(1, e.text); g(50, e.rotation || 0);
       break;

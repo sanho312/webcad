@@ -24,9 +24,10 @@
     background:var(--bg);color:var(--text);overflow:hidden;user-select:none;}
   #app{display:flex;flex-direction:column;height:100%;}
 
-  /* Top bar */
-  #topbar{display:flex;align-items:center;gap:8px;padding:6px 10px;
-    background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;}
+  /* Top bar — 모바일 standalone(홈화면 추가) 상태바/노치에 가리지 않도록 safe-area 반영 */
+  #topbar{display:flex;align-items:center;gap:8px;flex:0 0 auto;
+    padding:calc(6px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
+    background:var(--panel);border-bottom:1px solid var(--line);}
   #topbar .title{font-weight:600;font-size:15px;margin-right:8px;color:var(--accent);}
   #topbar .spacer{flex:1;}
   button.tbtn{background:var(--panel2);color:var(--text);border:1px solid var(--line);
@@ -69,12 +70,13 @@
   #cmdLog .l-ok{color:#6ad28a;}
   #cmdLog .l-warn{color:#ffb454;}
   #cmdLog .l-info{color:#9a9aa5;}
-  #cmdInputRow{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  #cmdInputRow{display:flex;align-items:center;gap:8px;
+    padding:6px calc(10px + env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) calc(10px + env(safe-area-inset-left,0px));
     background:var(--panel);border-top:1px solid var(--line);}
   #cmdLabel{color:var(--accent);font-weight:600;flex:0 0 auto;}
-  #cmdPrompt{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
-  #cmdInput{flex:0 0 340px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
-    border-radius:5px;padding:6px 8px;font-size:13px;font-family:Consolas,monospace;}
+  #cmdPrompt{color:var(--muted);flex:0 1 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
+  #cmdInput{flex:1 1 260px;min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:9px 12px;font-size:14px;font-family:Consolas,monospace;}
   #cmdInput:focus{outline:none;border-color:var(--accent);}
 
   /* Array dialog */
@@ -145,6 +147,8 @@
     <div id="toolbar">
       <div class="tool active" data-tool="select" title="선택 (Esc)">
         <svg viewBox="0 0 24 24"><path d="M5 3l7 17 2.5-6.5L21 11z"/></svg>선택</div>
+      <div class="tool" data-tool="pan" title="화면 이동 (손 도구) — 드래그로 이동">
+        <svg viewBox="0 0 24 24"><path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11m0-1V4.5a1.5 1.5 0 0 1 3 0V11m0-.5a1.5 1.5 0 0 1 3 0V14c0 3.3-2.7 6-6 6h-1.2a4 4 0 0 1-3-1.4L4 14.5a1.5 1.5 0 0 1 2.2-2L9 15"/></svg>이동손</div>
       <div class="tool" data-tool="line" title="선 (L)">
         <svg viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="4"/></svg>선</div>
       <div class="tool" data-tool="pline" title="폴리라인 (P)">
