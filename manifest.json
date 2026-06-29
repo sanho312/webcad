@@ -1,0 +1,15 @@
+{
+  "name": "WebCAD — DXF 편집기",
+  "short_name": "WebCAD",
+  "description": "브라우저에서 실행되는 2D CAD / DXF 편집기",
+  "lang": "ko",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1e1e22",
+  "theme_color": "#1e1e22",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

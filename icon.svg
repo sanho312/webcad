@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1e1e22"/>
+  <g stroke="#2c2c36" stroke-width="6">
+    <path d="M96 160h320M96 256h320M96 352h320M160 96v320M256 96v320M352 96v320"/>
+  </g>
+  <g fill="none" stroke="#4ea1ff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 392 280 168"/>
+    <circle cx="344" cy="320" r="64"/>
+  </g>
+  <circle cx="120" cy="392" r="16" fill="#2ee6a6"/>
+  <circle cx="280" cy="168" r="16" fill="#2ee6a6"/>
+  <text x="256" y="470" font-family="Segoe UI, sans-serif" font-size="56" font-weight="700" fill="#e6e6ea" text-anchor="middle">CAD</text>
+</svg>

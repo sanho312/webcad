@@ -55,13 +55,14 @@ function snapshot() {
     currentLayer: state.currentLayer, nextId: state.nextId,
   });
 }
-function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; }
+function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; if (typeof autosave === 'function') autosave(); }
 function restore(snap) {
   const d = JSON.parse(snap);
   state.entities = d.entities; state.layers = d.layers;
   state.currentLayer = d.currentLayer; state.nextId = d.nextId;
   state.selection.clear();
   renderLayers(); draw(); updateStat();
+  if (typeof autosave === 'function') autosave();
 }
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
 function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); }
@@ -1010,7 +1011,7 @@ cv.addEventListener('touchstart', (ev) => {
   if (ev.touches.length === 1) {
     const p = touchXY(ev.touches[0]);
     setPointer(p.x, p.y);
-    touch = { mode: 'tap', sx: p.x, sy: p.y, moved: 0, vx: state.view.x, vy: state.view.y };
+    touch = { mode: 'tap', sx: p.x, sy: p.y, sworld: screenToWorld(p.x, p.y), moved: 0, vx: state.view.x, vy: state.view.y };
     draw();
   } else if (ev.touches.length === 2) {
     const a = touchXY(ev.touches[0]), b = touchXY(ev.touches[1]);
@@ -1025,12 +1026,19 @@ cv.addEventListener('touchmove', (ev) => {
   if (ev.touches.length === 1 && touch.mode !== 'pinch') {
     const p = touchXY(ev.touches[0]);
     touch.moved = Math.max(touch.moved, Math.hypot(p.x - touch.sx, p.y - touch.sy));
-    if (touch.mode === 'tap' && touch.moved > 12) { touch.mode = 'pan'; }
+    if (touch.mode === 'tap' && touch.moved > 12) {
+      // 선택 도구: 한 손가락 드래그 = 박스 선택 / 그 외 도구: 화면 이동(팬)
+      if (state.tool === 'select') { touch.mode = 'boxsel'; dragSelect = { x1: touch.sworld.x, y1: touch.sworld.y, x2: touch.sworld.x, y2: touch.sworld.y }; }
+      else touch.mode = 'pan';
+    }
     if (touch.mode === 'pan') {
       const dx = (p.x - touch.sx) / state.view.scale;
       const dy = (p.y - touch.sy) / state.view.scale;
       state.view.x = touch.vx - dx;
       state.view.y = touch.vy + dy;
+    } else if (touch.mode === 'boxsel') {
+      const raw = screenToWorld(p.x, p.y);
+      dragSelect.x2 = raw.x; dragSelect.y2 = raw.y;
     }
     setPointer(p.x, p.y);
     draw();
@@ -1062,6 +1070,8 @@ cv.addEventListener('touchend', (ev) => {
     handleClick(mouseWorld, screenToWorld(mouseScreen.x, mouseScreen.y), { shiftKey: false });
     if (dragSelect) finishDragSelect({ shiftKey: false });
     if (moveOp && state.tool === 'select') finishGripMoveMaybe();
+  } else if (touch.mode === 'boxsel') {
+    if (dragSelect) finishDragSelect({ shiftKey: false }); // 박스 선택 확정
   } else if (touch.mode === 'pinch' && touch.moved < 10 && ev.touches.length === 0) {
     // 두 손가락 가벼운 탭 = 우클릭(완료/취소)
     contextAction();
@@ -1924,6 +1934,7 @@ window.addEventListener('keydown', (ev) => {
 // ============================================================
 document.getElementById('btnNew').addEventListener('click', () => {
   if (state.entities.length && !confirm('현재 도면을 지우고 새로 시작할까요?')) return;
+  if (typeof clearLocal === 'function') clearLocal();
   newDrawing();
 });
 document.getElementById('btnOpen').addEventListener('click', () => document.getElementById('fileInput').click());
@@ -2013,7 +2024,7 @@ function dxfColorIndex(hex) {
   if (map[hex]) return map[hex];
   return 7; // 기본 흰/검
 }
-function saveDXF() {
+function buildDXFText() {
   const L = [];
   const g = (code, val) => { L.push(code); L.push(val); };
 
@@ -2044,12 +2055,35 @@ function saveDXF() {
   for (let i = 0; i < L.length; i += 2) {
     out += String(L[i]).padStart(3, ' ') + '\n' + L[i + 1] + '\n';
   }
+  return out;
+}
+// DXF 저장 — 모바일은 공유시트(파일 앱 저장), 데스크톱은 다운로드
+async function saveDXF() {
+  const out = buildDXFText();
+  const fname = 'drawing.dxf';
   const blob = new Blob([out], { type: 'application/dxf' });
+  const isTouch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  // 1) 모바일: Web Share API로 파일 공유 → "파일에 저장"
+  if (isTouch && navigator.canShare) {
+    try {
+      const file = new File([blob], fname, { type: 'application/dxf' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: fname });
+        logLine('  ✔ DXF 공유/저장 완료', 'ok');
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // 사용자가 취소
+      // 그 외 실패 → 아래 폴백
+    }
+  }
+  // 2) 데스크톱(또는 공유 불가): 다운로드
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'drawing.dxf';
-  a.click();
-  URL.revokeObjectURL(a.href);
+  a.href = url; a.download = fname;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  logLine('  ✔ DXF 저장(다운로드)', 'ok');
 }
 function writeEntity(g, e) {
   const common = () => { g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color)); };
@@ -2335,8 +2369,48 @@ function newDrawing() {
   logLine('새 도면을 시작했습니다. 명령행에 명령을 입력하거나 도구를 선택하세요.', 'info');
 }
 
+// ============================================================
+//  자동 저장 (브라우저 localStorage) — 새로고침·앱 종료에도 작업 보존
+// ============================================================
+const AUTOSAVE_KEY = 'webcad_autosave_v1';
+function saveLocal() {
+  try {
+    const data = { entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, nextId: state.nextId, view: state.view, t: Date.now() };
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
+  } catch (e) { /* 용량 초과 등 무시 */ }
+}
+function loadLocal() {
+  try { const s = localStorage.getItem(AUTOSAVE_KEY); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+}
+function clearLocal() { try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) {} }
+function restoreLocal(d) {
+  state.entities = d.entities || [];
+  state.layers = (d.layers && d.layers.length) ? d.layers : [{ name: '0', color: '#ffffff', visible: true }];
+  if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
+  state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
+  state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
+  if (d.view) state.view = d.view;
+  state.selection.clear();
+  undoStack.length = 0; redoStack.length = 0;
+  renderLayers(); renderProps(); updateStat(); setTool('select'); draw();
+}
+// 변경 시 자동 저장(디바운스) + 백그라운드 전환/종료 시 즉시 저장
+let _autosaveTimer = null;
+function autosave() { clearTimeout(_autosaveTimer); _autosaveTimer = setTimeout(saveLocal, 800); }
+window.addEventListener('beforeunload', saveLocal);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveLocal(); });
+setInterval(saveLocal, 10000);
+
 new ResizeObserver(resize).observe(wrap);
 newDrawing();
 resize();
+// 시작 시 자동 저장된 작업이 있으면 복원
+(function () {
+  const d = loadLocal();
+  if (d && d.entities && d.entities.length) {
+    restoreLocal(d);
+    logLine(`이전 작업을 복원했습니다 (도형 ${d.entities.length}개). 새로 시작하려면 "새로 만들기".`, 'info');
+  }
+})();
 
 })();
