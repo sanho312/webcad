@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebCAD — DXF 편집기</title>
+<style>
+  :root{
+    --bg:#1e1e22; --panel:#2a2a30; --panel2:#33333b; --line:#3d3d46;
+    --text:#e6e6ea; --muted:#9a9aa5; --accent:#4ea1ff; --accent2:#2b6fc0;
+    --danger:#ff5d5d; --canvas-bg:#101015; --grid:#23232b; --grid2:#2c2c36;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;font-family:"Segoe UI",system-ui,sans-serif;
+    background:var(--bg);color:var(--text);overflow:hidden;user-select:none;}
+  #app{display:flex;flex-direction:column;height:100%;}
+
+  /* Top bar */
+  #topbar{display:flex;align-items:center;gap:8px;padding:6px 10px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;}
+  #topbar .title{font-weight:600;font-size:15px;margin-right:8px;color:var(--accent);}
+  #topbar .spacer{flex:1;}
+  button.tbtn{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;}
+  button.tbtn:hover{background:#41414b;}
+  button.tbtn:active{background:var(--accent2);}
+
+  /* Main layout */
+  #main{display:flex;flex:1 1 auto;min-height:0;}
+
+  /* Toolbar — 2열 그리드(모든 도구가 보이도록) */
+  #toolbar{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;padding:6px 5px;
+    background:var(--panel);border-right:1px solid var(--line);width:108px;flex:0 0 auto;
+    overflow-y:auto;overflow-x:hidden;align-content:start;}
+  .tdiv{grid-column:1 / -1;height:1px;background:var(--line);margin:2px 2px;}
+  .tool{display:flex;flex-direction:column;align-items:center;gap:1px;
+    background:transparent;border:1px solid transparent;border-radius:7px;
+    padding:3px 2px;cursor:pointer;color:var(--muted);font-size:9.5px;}
+  .tool svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.6;}
+  .tool:hover{background:var(--panel2);color:var(--text);}
+  .tool.active{background:var(--accent2);color:#fff;border-color:var(--accent);}
+
+  /* Canvas */
+  #canvasWrap{position:relative;flex:1 1 auto;min-width:0;background:var(--canvas-bg);}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+  #coords{position:absolute;left:10px;bottom:10px;font-size:12px;color:var(--muted);
+    background:rgba(0,0,0,.5);padding:3px 8px;border-radius:5px;pointer-events:none;}
+  #hint{position:absolute;left:50%;top:10px;transform:translateX(-50%);
+    font-size:12px;color:var(--text);background:rgba(0,0,0,.55);padding:4px 12px;
+    border-radius:6px;pointer-events:none;max-width:80%;text-align:center;}
+
+  /* Bottom command console */
+  #console{flex:0 0 auto;background:#15151a;border-top:1px solid var(--line);
+    display:flex;flex-direction:column;height:124px;}
+  #cmdLog{flex:1;overflow-y:auto;padding:6px 10px;font-family:Consolas,"D2Coding",monospace;
+    font-size:12px;line-height:1.5;color:#c8c8d0;}
+  #cmdLog .logline{white-space:pre-wrap;word-break:break-all;}
+  #cmdLog .l-cmd{color:var(--accent);font-weight:600;}
+  #cmdLog .l-ok{color:#6ad28a;}
+  #cmdLog .l-warn{color:#ffb454;}
+  #cmdLog .l-info{color:#9a9aa5;}
+  #cmdInputRow{display:flex;align-items:center;gap:8px;padding:6px 10px;
+    background:var(--panel);border-top:1px solid var(--line);}
+  #cmdLabel{color:var(--accent);font-weight:600;flex:0 0 auto;}
+  #cmdPrompt{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
+  #cmdInput{flex:0 0 340px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:5px;padding:6px 8px;font-size:13px;font-family:Consolas,monospace;}
+  #cmdInput:focus{outline:none;border-color:var(--accent);}
+
+  /* Array dialog */
+  #arrayDlg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.45);z-index:20;}
+  #arrayDlg .dlgBox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:18px 20px;width:300px;box-shadow:0 10px 40px #000a;}
+  #arrayDlg h2{margin:0 0 12px;font-size:16px;}
+  .dlgRow{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:13px;}
+  .dlgRow label{flex:0 0 auto;color:var(--text);}
+  .dlgRow input[type=number]{flex:1;}
+  #arrRect .dlgRow label,#arrPolar .dlgRow label{flex:0 0 80px;color:var(--muted);}
+  .dlgHint{font-size:12px;color:var(--accent);margin:4px 0 2px;}
+  .dlgBtns{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
+
+  /* Right panel */
+  #side{width:240px;flex:0 0 auto;background:var(--panel);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:hidden;}
+  .section{border-bottom:1px solid var(--line);}
+  .section h3{margin:0;padding:8px 12px;font-size:12px;text-transform:uppercase;
+    letter-spacing:.5px;color:var(--muted);background:var(--panel2);}
+  .section .body{padding:8px 12px;}
+  .row{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:13px;}
+  .row label{flex:0 0 64px;color:var(--muted);}
+  input[type=text],input[type=number],select{background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);border-radius:5px;padding:4px 6px;font-size:13px;width:100%;}
+  input[type=color]{width:28px;height:24px;border:1px solid var(--line);border-radius:4px;
+    background:none;padding:0;cursor:pointer;}
+
+  /* Layers */
+  #layerList{display:flex;flex-direction:column;gap:3px;}
+  .layer{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:5px;
+    font-size:13px;cursor:pointer;}
+  .layer.active{background:var(--accent2);}
+  .layer .sw{width:14px;height:14px;border-radius:3px;border:1px solid #0006;flex:0 0 auto;}
+  .layer .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .layer .eye{opacity:.7;font-size:12px;}
+  .miniBtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:5px;padding:3px 8px;font-size:12px;cursor:pointer;}
+  .miniBtn:hover{background:#41414b;}
+
+  #propsBody .empty{color:var(--muted);font-size:12px;font-style:italic;}
+  .statline{font-size:11px;color:var(--muted);padding:6px 12px;}
+  kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font-size:11px;}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Top bar -->
+  <div id="topbar">
+    <span class="title">▦ WebCAD</span>
+    <button class="tbtn" id="btnNew">새로 만들기</button>
+    <button class="tbtn" id="btnOpen">DXF 열기</button>
+    <button class="tbtn" id="btnSave">DXF 저장</button>
+    <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)">↶ 취소</button>
+    <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)">↷ 복구</button>
+    <span class="spacer"></span>
+    <button class="tbtn" id="btnZoomFit" title="전체 보기 (F)">전체보기</button>
+    <button class="tbtn" id="btnGrid">그리드</button>
+    <button class="tbtn" id="btnSnap">스냅</button>
+    <input type="file" id="fileInput" accept=".dxf" style="display:none">
+  </div>
+
+  <div id="main">
+    <!-- Toolbar -->
+    <div id="toolbar">
+      <div class="tool active" data-tool="select" title="선택 (Esc)">
+        <svg viewBox="0 0 24 24"><path d="M5 3l7 17 2.5-6.5L21 11z"/></svg>선택</div>
+      <div class="tool" data-tool="line" title="선 (L)">
+        <svg viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="4"/></svg>선</div>
+      <div class="tool" data-tool="pline" title="폴리라인 (P)">
+        <svg viewBox="0 0 24 24"><polyline points="3,18 9,8 14,14 21,5"/></svg>폴리</div>
+      <div class="tool" data-tool="rect" title="사각형 (R)">
+        <svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12"/></svg>사각</div>
+      <div class="tool" data-tool="circle" title="원 (C)">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>원</div>
+      <div class="tool" data-tool="arc" title="호 (A) — 중심·시작·끝">
+        <svg viewBox="0 0 24 24"><path d="M4 18 A 9 9 0 0 1 20 12"/></svg>호</div>
+      <div class="tool" data-tool="text" title="문자 (T)">
+        <svg viewBox="0 0 24 24"><path d="M5 6h14M12 6v13"/></svg>문자</div>
+      <div class="tool" data-tool="move" title="이동 (M)">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>이동</div>
+      <div class="tool" data-tool="erase" title="지우기 (Del)">
+        <svg viewBox="0 0 24 24"><path d="M5 19h14M7 16L17 6l-3-3L4 13z"/></svg>지우기</div>
+      <div class="tdiv"></div>
+      <div class="tool" data-tool="offset" title="오프셋/간격복사 (offset)">
+        <svg viewBox="0 0 24 24"><rect x="6" y="6" width="9" height="9"/><rect x="10" y="10" width="9" height="9"/></svg>오프셋</div>
+      <div class="tool" data-tool="copy" title="복사 (copy)">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="11" height="11"/><rect x="9" y="9" width="11" height="11"/></svg>복사</div>
+      <div class="tool" data-tool="mirror" title="대칭복사 (mirror)">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5z"/></svg>대칭</div>
+      <div class="tool" data-tool="rotate" title="회전 (rotate)">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>회전</div>
+      <div class="tool" data-tool="array" title="배열 (array)">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="5" height="5"/><rect x="15" y="4" width="5" height="5"/><rect x="4" y="15" width="5" height="5"/><rect x="15" y="15" width="5" height="5"/></svg>배열</div>
+      <div class="tdiv"></div>
+      <div class="tool" data-tool="trim" title="자르기 (trim)">
+        <svg viewBox="0 0 24 24"><path d="M4 20l7-7M20 4l-7 7"/><circle cx="6.5" cy="17.5" r="2.2"/><circle cx="17.5" cy="6.5" r="2.2"/></svg>자르기</div>
+      <div class="tool" data-tool="extend" title="연장 (extend)">
+        <svg viewBox="0 0 24 24"><path d="M3 12h12"/><path d="M11 8l4 4-4 4"/><path d="M19 5v14"/></svg>연장</div>
+      <div class="tool" data-tool="fillet" title="모깎기 (fillet)">
+        <svg viewBox="0 0 24 24"><path d="M5 19V11a6 6 0 0 1 6-6h8"/></svg>모깎기</div>
+      <div class="tool" data-tool="scale" title="배율 (scale)">
+        <svg viewBox="0 0 24 24"><rect x="4" y="12" width="6" height="6"/><rect x="12" y="4" width="9" height="9"/><path d="M10 12L21 4" stroke-dasharray="2 2"/></svg>배율</div>
+      <div class="tool" data-tool="stretch" title="신축 (stretch)">
+        <svg viewBox="0 0 24 24"><path d="M3 12h18"/><path d="M6 9l-3 3 3 3"/><path d="M18 9l3 3-3 3"/><path d="M12 5v14" stroke-dasharray="2 2"/></svg>신축</div>
+    </div>
+
+    <!-- Canvas -->
+    <div id="canvasWrap">
+      <canvas id="cv"></canvas>
+      <div id="hint">선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요.</div>
+      <div id="coords">X: 0.00  Y: 0.00</div>
+
+      <!-- 배열 대화상자 -->
+      <div id="arrayDlg">
+        <div class="dlgBox">
+          <h2>배열 (Array)</h2>
+          <div class="dlgRow">
+            <label><input type="radio" name="arrMode" value="rect" checked> 직사각형</label>
+            <label><input type="radio" name="arrMode" value="polar"> 원형</label>
+          </div>
+          <div id="arrRect">
+            <div class="dlgRow"><label>행(세로)</label><input type="number" id="arrRows" value="3" min="1"></div>
+            <div class="dlgRow"><label>열(가로)</label><input type="number" id="arrCols" value="3" min="1"></div>
+            <div class="dlgRow"><label>행 간격</label><input type="number" id="arrRowSp" value="50" step="any"></div>
+            <div class="dlgRow"><label>열 간격</label><input type="number" id="arrColSp" value="50" step="any"></div>
+          </div>
+          <div id="arrPolar" style="display:none">
+            <div class="dlgRow"><label>개수</label><input type="number" id="arrCount" value="6" min="2"></div>
+            <div class="dlgRow"><label>전체 각도(°)</label><input type="number" id="arrAngle" value="360" step="any"></div>
+            <div class="dlgRow"><label><input type="checkbox" id="arrFill"> 끝각 제외(균등분할)</label></div>
+            <div class="dlgHint">확인 후 회전 중심점을 클릭하세요.</div>
+          </div>
+          <div class="dlgBtns">
+            <button class="miniBtn" id="arrCancel">취소</button>
+            <button class="tbtn" id="arrOk">확인</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right side -->
+    <div id="side">
+      <div class="section">
+        <h3>레이어</h3>
+        <div class="body">
+          <div id="layerList"></div>
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            <button class="miniBtn" id="btnAddLayer">+ 추가</button>
+            <button class="miniBtn" id="btnDelLayer">삭제</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>그리기 설정</h3>
+        <div class="body">
+          <div class="row"><label>현재 색</label>
+            <input type="color" id="curColor" value="#ffffff">
+            <span id="curColorTxt" style="font-size:12px;color:var(--muted);">레이어색 사용</span>
+          </div>
+          <div class="row"><label>문자 높이</label>
+            <input type="number" id="textHeight" value="10" min="0.1" step="1"></div>
+          <div class="row"><label>그리드</label>
+            <input type="number" id="gridSize" value="10" min="0.1" step="1"></div>
+        </div>
+      </div>
+
+      <div class="section" style="flex:1;overflow:auto;">
+        <h3>속성 / 선택</h3>
+        <div class="body" id="propsBody">
+          <div class="empty">선택된 도형이 없습니다.</div>
+        </div>
+      </div>
+
+      <div class="statline" id="stat">도형 0개</div>
+    </div>
+  </div>
+
+  <!-- 하단 명령 콘솔: 기록(로그) + 입력 -->
+  <div id="console">
+    <div id="cmdLog" aria-label="명령 기록"></div>
+    <div id="cmdInputRow">
+      <span id="cmdLabel">명령:</span>
+      <span id="cmdPrompt">도형을 그리거나 명령을 입력하세요 (line, trim, extend, fillet, scale, stretch …)</span>
+      <input type="text" id="cmdInput" placeholder="명령어 입력 후 Enter/스페이스  ·  빈 칸 스페이스=직전 명령 반복" autocomplete="off" spellcheck="false">
+    </div>
+  </div>
+</div>
+
+<script src="cad.js"></script>
+</body>
+</html>
