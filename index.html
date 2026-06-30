@@ -36,6 +36,17 @@
   button.tbtn:active{background:var(--accent2);}
   button.tbtn.active{background:var(--accent2);border-color:var(--accent);color:#fff;}
 
+  /* File dropdown menu */
+  .menuWrap{position:relative;display:inline-block;}
+  .dropdown{position:absolute;top:calc(100% + 4px);left:0;z-index:40;display:none;
+    min-width:200px;background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:5px;box-shadow:0 10px 32px #000a;}
+  .dropdown.open{display:block;}
+  .menuItem{display:block;width:100%;text-align:left;background:transparent;color:var(--text);
+    border:none;border-radius:6px;padding:9px 12px;font-size:14px;cursor:pointer;}
+  .menuItem:hover{background:var(--panel2);}
+  .menuSep{height:1px;background:var(--line);margin:5px 6px;}
+
   /* Main layout */
   #main{display:flex;flex:1 1 auto;min-height:0;}
 
@@ -80,11 +91,11 @@
   #cmdInput:focus{outline:none;border-color:var(--accent);}
 
   /* Array dialog */
-  #arrayDlg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  #arrayDlg,#saveAsDlg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
     background:rgba(0,0,0,.45);z-index:20;}
-  #arrayDlg .dlgBox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  #arrayDlg .dlgBox,#saveAsDlg .dlgBox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
     padding:18px 20px;width:300px;box-shadow:0 10px 40px #000a;}
-  #arrayDlg h2{margin:0 0 12px;font-size:16px;}
+  #arrayDlg h2,#saveAsDlg h2{margin:0 0 12px;font-size:16px;}
   .dlgRow{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:13px;}
   .dlgRow label{flex:0 0 auto;color:var(--text);}
   .dlgRow input[type=number]{flex:1;}
@@ -129,9 +140,16 @@
   <!-- Top bar -->
   <div id="topbar">
     <span class="title">▦ WebCAD</span>
-    <button class="tbtn" id="btnNew">새로 만들기</button>
-    <button class="tbtn" id="btnOpen">DXF 열기</button>
-    <button class="tbtn" id="btnSave">DXF 저장</button>
+    <div class="menuWrap">
+      <button class="tbtn" id="btnFile">📁 파일 ▾</button>
+      <div id="fileMenu" class="dropdown">
+        <button class="menuItem" id="miNew">🆕 새로 만들기</button>
+        <button class="menuItem" id="miOpen">📂 열기 (DXF)</button>
+        <div class="menuSep"></div>
+        <button class="menuItem" id="miSave">💾 저장 (DXF)</button>
+        <button class="menuItem" id="miSaveAs">📤 다른 이름으로 저장…</button>
+      </div>
+    </div>
     <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)">↶ 취소</button>
     <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)">↷ 복구</button>
     <span class="spacer"></span>
@@ -218,6 +236,27 @@
           <div class="dlgBtns">
             <button class="miniBtn" id="arrCancel">취소</button>
             <button class="tbtn" id="arrOk">확인</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 다른 이름으로 저장 -->
+      <div id="saveAsDlg">
+        <div class="dlgBox">
+          <h2>다른 이름으로 저장</h2>
+          <div class="dlgRow"><label style="flex:0 0 70px;color:var(--muted)">파일 이름</label>
+            <input type="text" id="saveName" value="drawing" style="flex:1"></div>
+          <div class="dlgRow" style="display:block;margin-top:6px;">
+            <div style="color:var(--muted);margin-bottom:6px;">형식 선택</div>
+            <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="dxf" checked> <b>DXF</b> — CAD 교환 (AutoCAD·라이노 호환)</label>
+            <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="pdf"> <b>PDF</b> — 인쇄·공유용 벡터 문서</label>
+            <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="svg"> <b>SVG</b> — 벡터 이미지 (웹·일러스트)</label>
+            <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="png"> <b>PNG</b> — 비트맵 이미지</label>
+            <label style="display:block;margin:4px 0;opacity:.45;cursor:not-allowed;"><input type="radio" disabled> DWG — 미지원 (Autodesk 독점 포맷)</label>
+          </div>
+          <div class="dlgBtns">
+            <button class="miniBtn" id="saveAsCancel">취소</button>
+            <button class="tbtn" id="saveAsOk">저장</button>
           </div>
         </div>
       </div>

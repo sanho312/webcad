@@ -1925,19 +1925,48 @@ window.addEventListener('keydown', (ev) => {
 // ============================================================
 //  버튼 바인딩
 // ============================================================
-document.getElementById('btnNew').addEventListener('click', () => {
+// 파일 드롭다운 메뉴
+(function () {
+  const btn = document.getElementById('btnFile');
+  const menu = document.getElementById('fileMenu');
+  const toggle = (open) => menu.classList.toggle('open', open === undefined ? !menu.classList.contains('open') : open);
+  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  document.addEventListener('click', () => toggle(false));
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  const close = () => toggle(false);
+  document.getElementById('miNew').addEventListener('click', () => { close(); doNew(); });
+  document.getElementById('miOpen').addEventListener('click', () => { close(); document.getElementById('fileInput').click(); });
+  document.getElementById('miSave').addEventListener('click', () => { close(); saveDXF(); });
+  document.getElementById('miSaveAs').addEventListener('click', () => { close(); openSaveAs(); });
+})();
+function doNew() {
   if (state.entities.length && !confirm('현재 도면을 지우고 새로 시작할까요?')) return;
   if (typeof clearLocal === 'function') clearLocal();
   newDrawing();
-});
-document.getElementById('btnOpen').addEventListener('click', () => document.getElementById('fileInput').click());
+}
 document.getElementById('fileInput').addEventListener('change', (ev) => {
   const f = ev.target.files[0]; if (!f) return;
   const reader = new FileReader();
   reader.onload = () => { loadDXF(reader.result); ev.target.value = ''; };
   reader.readAsText(f);
 });
-document.getElementById('btnSave').addEventListener('click', saveDXF);
+// 다른 이름으로 저장 대화상자
+function openSaveAs() { document.getElementById('saveAsDlg').style.display = 'flex'; }
+function closeSaveAs() { document.getElementById('saveAsDlg').style.display = 'none'; }
+(function () {
+  const dlg = document.getElementById('saveAsDlg');
+  document.getElementById('saveAsCancel').addEventListener('click', closeSaveAs);
+  document.getElementById('saveAsOk').addEventListener('click', () => {
+    const fmt = dlg.querySelector('input[name=saveFmt]:checked').value;
+    const name = (document.getElementById('saveName').value || 'drawing').replace(/\.[^.]+$/, '');
+    closeSaveAs();
+    if (fmt === 'dxf') saveBlob(new Blob([buildDXFText()], { type: 'application/dxf' }), name + '.dxf');
+    else if (fmt === 'svg') saveBlob(new Blob([buildSVG()], { type: 'image/svg+xml' }), name + '.svg');
+    else if (fmt === 'pdf') saveBlob(new Blob([buildPDF()], { type: 'application/pdf' }), name + '.pdf');
+    else if (fmt === 'png') savePNG(name + '.png');
+  });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) closeSaveAs(); });
+})();
 document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
 document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
@@ -2081,36 +2110,174 @@ function buildDXFText() {
   return out;
 }
 // DXF 저장 — 모바일은 공유시트(파일 앱 저장), 데스크톱은 다운로드
-async function saveDXF() {
-  const out = buildDXFText();
-  const fname = 'drawing.dxf';
-  const blob = new Blob([out], { type: 'application/dxf' });
-  // 모바일(특히 iOS/iPadOS)은 마우스 연결 시 pointer:coarse가 아닐 수 있으므로 OS도 함께 감지
+// 공통 저장: 모바일은 공유시트(파일 앱), 데스크톱은 다운로드
+async function saveBlob(blob, fname) {
   const ua = navigator.userAgent || '';
   const isiOS = /iPad|iPhone|iPod/.test(ua) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ''));
   const isCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
-  const preferShare = isiOS || isCoarse;
-  // 1) 모바일: Web Share API로 파일 공유 → "파일에 저장"
-  if (preferShare && navigator.share) {
+  if ((isiOS || isCoarse) && navigator.share) {
     try {
-      const file = new File([blob], fname, { type: 'application/dxf' });
+      const file = new File([blob], fname, { type: blob.type });
       if (!navigator.canShare || navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: fname });
-        logLine('  ✔ DXF 공유/저장 완료', 'ok');
+        logLine('  ✔ ' + fname + ' 공유/저장 완료', 'ok');
         return;
       }
     } catch (err) {
       if (err && err.name === 'AbortError') return; // 사용자가 취소
-      // 그 외 실패 → 아래 폴백
     }
   }
-  // 2) 데스크톱(또는 공유 불가): 다운로드
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = fname;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
-  logLine('  ✔ DXF 저장(다운로드)', 'ok');
+  logLine('  ✔ ' + fname + ' 저장', 'ok');
+}
+async function saveDXF() { await saveBlob(new Blob([buildDXFText()], { type: 'application/dxf' }), 'drawing.dxf'); }
+
+// ---------- 도면 경계(내보내기 공통) ----------
+function drawingBBox() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const ext = (x, y) => { if (x < minX) minX = x; if (y < minY) minY = y; if (x > maxX) maxX = x; if (y > maxY) maxY = y; };
+  for (const e of state.entities) { const bb = entityBBox(e); if (bb) { ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); } }
+  if (!isFinite(minX)) { minX = 0; minY = 0; maxX = 100; maxY = 100; }
+  return { minX, minY, maxX, maxY, w: Math.max(1e-6, maxX - minX), h: Math.max(1e-6, maxY - minY) };
+}
+
+// ============================================================
+//  SVG 내보내기 (벡터, 한글 문자 안전)
+// ============================================================
+function buildSVG() {
+  const b = drawingBBox(), m = Math.max(b.w, b.h) * 0.05 + 5; // 여백
+  const W = b.w + 2 * m, H = b.h + 2 * m;
+  const X = x => (x - b.minX + m).toFixed(3);
+  const Y = y => (b.maxY - y + m).toFixed(3); // SVG는 Y가 아래로 → 뒤집기
+  const sw = (Math.max(b.w, b.h) / 600).toFixed(3); // 선 두께
+  const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W.toFixed(3)} ${H.toFixed(3)}" width="${W.toFixed(1)}" height="${H.toFixed(1)}">`];
+  out.push(`<rect width="100%" height="100%" fill="white"/>`);
+  out.push(`<g fill="none" stroke-width="${sw}">`);
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    const c = entityColor(e) === '#ffffff' ? '#000000' : entityColor(e); // 흰색은 흰배경에서 검정으로
+    switch (e.type) {
+      case 'LINE': out.push(`<line x1="${X(e.x1)}" y1="${Y(e.y1)}" x2="${X(e.x2)}" y2="${Y(e.y2)}" stroke="${c}"/>`); break;
+      case 'LWPOLYLINE': {
+        const pts = e.points.map(p => `${X(p[0])},${Y(p[1])}`).join(' ');
+        out.push(`<${e.closed ? 'polygon' : 'polyline'} points="${pts}" stroke="${c}"/>`); break;
+      }
+      case 'CIRCLE': out.push(`<circle cx="${X(e.cx)}" cy="${Y(e.cy)}" r="${e.r.toFixed(3)}" stroke="${c}"/>`); break;
+      case 'ARC': {
+        const a0 = e.startAngle * Math.PI / 180, a1 = e.endAngle * Math.PI / 180;
+        const sx = e.cx + e.r * Math.cos(a0), sy = e.cy + e.r * Math.sin(a0);
+        const ex = e.cx + e.r * Math.cos(a1), ey = e.cy + e.r * Math.sin(a1);
+        let sweepDeg = e.endAngle - e.startAngle; sweepDeg = ((sweepDeg % 360) + 360) % 360;
+        const large = sweepDeg > 180 ? 1 : 0;
+        // 화면 Y뒤집힘 → sweep 플래그 0(반시계가 화면상 시계가 됨)
+        out.push(`<path d="M ${X(sx)} ${Y(sy)} A ${e.r.toFixed(3)} ${e.r.toFixed(3)} 0 ${large} 0 ${X(ex)} ${Y(ey)}" stroke="${c}"/>`); break;
+      }
+      case 'TEXT': {
+        const t = escapeHtml(e.text);
+        out.push(`<text x="${X(e.x)}" y="${Y(e.y)}" font-size="${e.height.toFixed(3)}" fill="${c}" stroke="none" font-family="sans-serif">${t}</text>`); break;
+      }
+    }
+  }
+  out.push('</g></svg>');
+  return out.join('\n');
+}
+
+// ============================================================
+//  PNG 내보내기 (오프스크린 렌더, 한글 안전)
+// ============================================================
+function savePNG(fname) {
+  const b = drawingBBox();
+  const margin = Math.max(b.w, b.h) * 0.05 + 5;
+  const scale = Math.min(2000 / (b.w + 2 * margin), 2000 / (b.h + 2 * margin)); // 최대 2000px
+  const W = Math.ceil((b.w + 2 * margin) * scale), Hh = Math.ceil((b.h + 2 * margin) * scale);
+  const oc = document.createElement('canvas'); oc.width = W; oc.height = Hh;
+  const o = oc.getContext('2d');
+  o.fillStyle = '#ffffff'; o.fillRect(0, 0, W, Hh);
+  const X = x => (x - b.minX + margin) * scale;
+  const Y = y => (b.maxY - y + margin) * scale;
+  o.lineWidth = Math.max(1, (Math.max(b.w, b.h) / 600) * scale);
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    let c = entityColor(e); if (c === '#ffffff') c = '#000000';
+    o.strokeStyle = c; o.fillStyle = c;
+    o.beginPath();
+    switch (e.type) {
+      case 'LINE': o.moveTo(X(e.x1), Y(e.y1)); o.lineTo(X(e.x2), Y(e.y2)); o.stroke(); break;
+      case 'LWPOLYLINE': e.points.forEach((p, i) => i ? o.lineTo(X(p[0]), Y(p[1])) : o.moveTo(X(p[0]), Y(p[1]))); if (e.closed) o.closePath(); o.stroke(); break;
+      case 'CIRCLE': o.arc(X(e.cx), Y(e.cy), e.r * scale, 0, Math.PI * 2); o.stroke(); break;
+      case 'ARC': o.arc(X(e.cx), Y(e.cy), e.r * scale, -e.endAngle * Math.PI / 180, -e.startAngle * Math.PI / 180); o.stroke(); break;
+      case 'TEXT': o.font = `${e.height * scale}px sans-serif`; o.textBaseline = 'alphabetic'; o.fillText(e.text, X(e.x), Y(e.y)); break;
+    }
+  }
+  oc.toBlob(blob => { if (blob) saveBlob(blob, fname); }, 'image/png');
+}
+
+// ============================================================
+//  PDF 내보내기 (벡터 단일 페이지)
+// ============================================================
+function buildPDF() {
+  const b = drawingBBox();
+  const margin = 28; // pt
+  const maxDim = 760; // A 영역 한 변 최대 pt
+  const sc = Math.min(maxDim / b.w, maxDim / b.h);
+  const PW = (b.w * sc + 2 * margin), PH = (b.h * sc + 2 * margin);
+  const X = x => (margin + (x - b.minX) * sc);
+  const Y = y => (margin + (y - b.minY) * sc); // PDF는 Y가 위로 → 그대로
+  const num = n => (Math.round(n * 1000) / 1000).toFixed(3);
+  const K = 0.5522847498; // 원 베지어 상수
+  const ops = [];
+  ops.push((Math.max(b.w, b.h) * sc / 600).toFixed(2) + ' w');
+  const setColor = (hex) => { hex = rgbHex(hex === '#ffffff' ? '#000000' : hex); const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, bl = parseInt(hex.slice(5, 7), 16) / 255; ops.push(`${num(r)} ${num(g)} ${num(bl)} RG`); ops.push(`${num(r)} ${num(g)} ${num(bl)} rg`); };
+  const circlePath = (cx, cy, r) => {
+    const x = X(cx), y = Y(cy), rr = r * sc;
+    ops.push(`${num(x + rr)} ${num(y)} m`);
+    ops.push(`${num(x + rr)} ${num(y + rr * K)} ${num(x + rr * K)} ${num(y + rr)} ${num(x)} ${num(y + rr)} c`);
+    ops.push(`${num(x - rr * K)} ${num(y + rr)} ${num(x - rr)} ${num(y + rr * K)} ${num(x - rr)} ${num(y)} c`);
+    ops.push(`${num(x - rr)} ${num(y - rr * K)} ${num(x - rr * K)} ${num(y - rr)} ${num(x)} ${num(y - rr)} c`);
+    ops.push(`${num(x + rr * K)} ${num(y - rr)} ${num(x + rr)} ${num(y - rr * K)} ${num(x + rr)} ${num(y)} c`);
+    ops.push('S');
+  };
+  const arcPath = (e) => {
+    let s = e.startAngle, en = e.endAngle; if (en < s) en += 360;
+    const steps = Math.max(2, Math.ceil((en - s) / 30));
+    for (let i = 0; i <= steps; i++) {
+      const a = (s + (en - s) * i / steps) * Math.PI / 180;
+      const px = X(e.cx + e.r * Math.cos(a)), py = Y(e.cy + e.r * Math.sin(a));
+      ops.push(`${num(px)} ${num(py)} ${i ? 'l' : 'm'}`);
+    }
+    ops.push('S');
+  };
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    setColor(entityColor(e));
+    switch (e.type) {
+      case 'LINE': ops.push(`${num(X(e.x1))} ${num(Y(e.y1))} m ${num(X(e.x2))} ${num(Y(e.y2))} l S`); break;
+      case 'LWPOLYLINE': e.points.forEach((p, i) => ops.push(`${num(X(p[0]))} ${num(Y(p[1]))} ${i ? 'l' : 'm'}`)); if (e.closed) ops.push('h'); ops.push('S'); break;
+      case 'CIRCLE': circlePath(e.cx, e.cy, e.r); break;
+      case 'ARC': arcPath(e); break;
+      case 'TEXT': { const txt = String(e.text).replace(/[^\x20-\x7e]/g, '?').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)'); ops.push(`BT /F1 ${num(e.height * sc)} Tf ${num(X(e.x))} ${num(Y(e.y))} Td (${txt}) Tj ET`); break; }
+    }
+  }
+  const content = ops.join('\n');
+  // PDF 객체 조립 (오프셋 정확히 계산)
+  const objs = [];
+  objs.push('<< /Type /Catalog /Pages 2 0 R >>');
+  objs.push('<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${num(PW)} ${num(PH)}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`);
+  objs.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+  objs.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  for (let i = 0; i < objs.length; i++) { offsets.push(pdf.length); pdf += `${i + 1} 0 obj\n${objs[i]}\nendobj\n`; }
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += String(off).padStart(10, '0') + ' 00000 n \n';
+  pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return pdf;
 }
 function writeEntity(g, e, H) {
   // AC1021(R2007) 구조: 핸들(5) + AcDbEntity + 서브클래스 마커
