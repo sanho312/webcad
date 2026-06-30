@@ -2039,16 +2039,80 @@ document.getElementById('curColorTxt').addEventListener('click', () => {
 document.getElementById('textHeight').addEventListener('change', (e) => state.textHeight = parseFloat(e.target.value) || 10);
 document.getElementById('gridSize').addEventListener('change', (e) => { state.grid.size = parseFloat(e.target.value) || 10; draw(); });
 
-// 명령행 입력 — Enter/스페이스 = 입력 확정, 빈 칸이면 직전 명령 반복(CAD 관습)
+// ============================================================
+//  명령어 자동완성 (라이노식 미리보기 + 클릭 선택)
+// ============================================================
+const COMMAND_LIST = [
+  { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
+  { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
+  { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
+  { name: 'pan', ko: '화면 이동' }, { name: 'offset', ko: '오프셋' }, { name: 'copy', ko: '복사' },
+  { name: 'mirror', ko: '대칭' }, { name: 'rotate', ko: '회전' }, { name: 'array', ko: '배열' },
+  { name: 'trim', ko: '자르기' }, { name: 'extend', ko: '연장' }, { name: 'fillet', ko: '모깎기' },
+  { name: 'scale', ko: '배율' }, { name: 'stretch', ko: '신축' },
+];
+const sugEl = document.getElementById('cmdSuggest');
+let sugMatches = [], sugIndex = -1;
+function computeMatches(text) {
+  const t = text.trim().toLowerCase();
+  if (!t || /^[-@\d.]/.test(t)) return []; // 빈칸/좌표·숫자 입력이면 제안 안 함
+  const starts = [], contains = [];
+  for (const c of COMMAND_LIST) {
+    const n = c.name;
+    if (n.startsWith(t)) starts.push(c);
+    else if (n.includes(t)) contains.push(c);
+  }
+  return starts.concat(contains).slice(0, 10);
+}
+function renderSuggest(text) {
+  if (!sugEl) return;
+  sugMatches = computeMatches(text);
+  if (!sugMatches.length) { hideSuggest(); return; }
+  const t = text.trim().toLowerCase();
+  sugIndex = 0;
+  sugEl.innerHTML = sugMatches.map((c, i) => {
+    const n = c.name, idx = n.toLowerCase().indexOf(t);
+    const disp = idx < 0 ? escapeHtml(n)
+      : escapeHtml(n.slice(0, idx)) + '<span class="match">' + escapeHtml(n.slice(idx, idx + t.length)) + '</span>' + escapeHtml(n.slice(idx + t.length));
+    return `<div class="sugItem${i === 0 ? ' sel' : ''}" data-name="${n}"><span class="sname">${disp}</span><span class="sko">${escapeHtml(c.ko)}</span></div>`;
+  }).join('');
+  sugEl.classList.add('open');
+  sugEl.querySelectorAll('.sugItem').forEach(el =>
+    el.addEventListener('mousedown', (e) => { e.preventDefault(); selectSuggestion(el.dataset.name); }));
+}
+function hideSuggest() { if (sugEl) { sugEl.classList.remove('open'); sugEl.innerHTML = ''; } sugMatches = []; sugIndex = -1; }
+function moveSuggest(d) {
+  if (!sugMatches.length) return;
+  sugIndex = (sugIndex + d + sugMatches.length) % sugMatches.length;
+  const items = sugEl.querySelectorAll('.sugItem');
+  items.forEach((el, i) => el.classList.toggle('sel', i === sugIndex));
+  if (items[sugIndex]) items[sugIndex].scrollIntoView({ block: 'nearest' });
+}
+function selectSuggestion(name) { cmdInputEl.value = ''; hideSuggest(); runCommandInput(name); }
+
+// 명령행 입력 — Enter/스페이스 = 확정(자동완성 선택), 빈 칸이면 직전 명령 반복
 if (cmdInputEl) {
+  cmdInputEl.addEventListener('input', () => renderSuggest(cmdInputEl.value));
+  cmdInputEl.addEventListener('blur', () => setTimeout(hideSuggest, 150));
   cmdInputEl.addEventListener('keydown', (ev) => {
+    if (sugMatches.length && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+      ev.preventDefault(); ev.stopPropagation(); moveSuggest(ev.key === 'ArrowDown' ? 1 : -1); return;
+    }
+    if (sugMatches.length && ev.key === 'Tab') {
+      ev.preventDefault(); ev.stopPropagation();
+      cmdInputEl.value = sugMatches[sugIndex < 0 ? 0 : sugIndex].name; renderSuggest(cmdInputEl.value); return;
+    }
     if (ev.key === 'Enter' || ev.key === ' ') {
-      ev.preventDefault();
-      const v = cmdInputEl.value;
-      cmdInputEl.value = '';
-      if (v.trim() === '') emptyEnterAction();
-      else runCommandInput(v);
-    } else if (ev.key === 'Escape') { cmdInputEl.value = ''; cmdInputEl.blur(); setTool('select'); state.selection.clear(); renderProps(); draw(); }
+      ev.preventDefault(); ev.stopPropagation();
+      if (sugMatches.length && sugIndex >= 0) { selectSuggestion(sugMatches[sugIndex].name); return; }
+      const v = cmdInputEl.value; cmdInputEl.value = ''; hideSuggest();
+      if (v.trim() === '') emptyEnterAction(); else runCommandInput(v);
+      return;
+    }
+    if (ev.key === 'Escape') {
+      if (sugMatches.length) { hideSuggest(); }
+      else { cmdInputEl.value = ''; cmdInputEl.blur(); setTool('select'); state.selection.clear(); renderProps(); draw(); }
+    }
     ev.stopPropagation();
   });
 }

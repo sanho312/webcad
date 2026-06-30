@@ -86,9 +86,23 @@
     background:var(--panel);border-top:1px solid var(--line);}
   #cmdLabel{color:var(--accent);font-weight:600;flex:0 0 auto;}
   #cmdPrompt{color:var(--muted);flex:0 1 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
-  #cmdInput{flex:1 1 260px;min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+  .cmdInputWrap{flex:1 1 260px;min-width:0;position:relative;}
+  #cmdInput{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);
     border-radius:6px;padding:9px 12px;font-size:14px;font-family:Consolas,monospace;}
   #cmdInput:focus{outline:none;border-color:var(--accent);}
+  /* 명령어 자동완성 드롭다운 (입력창 위로) */
+  #cmdSuggest{position:absolute;bottom:calc(100% + 4px);left:0;min-width:220px;max-width:340px;
+    max-height:260px;overflow-y:auto;display:none;z-index:45;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;
+    box-shadow:0 -8px 28px #000a;font-family:Consolas,monospace;}
+  #cmdSuggest.open{display:block;}
+  .sugItem{display:flex;align-items:baseline;gap:8px;padding:7px 10px;border-radius:5px;cursor:pointer;font-size:13px;}
+  .sugItem .sname{color:var(--text);}
+  .sugItem .sko{color:var(--muted);font-size:11px;font-family:"Segoe UI",sans-serif;margin-left:auto;}
+  .sugItem:hover,.sugItem.sel{background:var(--accent2);}
+  .sugItem:hover .sname,.sugItem.sel .sname{color:#fff;}
+  .sugItem .match{color:var(--accent);font-weight:700;}
+  .sugItem:hover .match,.sugItem.sel .match{color:#cfe6ff;}
 
   /* Array dialog */
   #arrayDlg,#saveAsDlg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
@@ -306,7 +320,10 @@
     <div id="cmdInputRow">
       <span id="cmdLabel">명령:</span>
       <span id="cmdPrompt">도형을 그리거나 명령을 입력하세요 (line, trim, extend, fillet, scale, stretch …)</span>
-      <input type="text" id="cmdInput" placeholder="명령어 입력 후 Enter/스페이스  ·  빈 칸 스페이스=직전 명령 반복" autocomplete="off" spellcheck="false">
+      <div class="cmdInputWrap">
+        <div id="cmdSuggest"></div>
+        <input type="text" id="cmdInput" placeholder="명령어 입력 후 Enter/스페이스  ·  빈 칸 스페이스=직전 명령 반복" autocomplete="off" spellcheck="false">
+      </div>
     </div>
   </div>
 </div>
