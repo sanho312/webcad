@@ -1127,11 +1127,12 @@ function handleClick(w, rawW, ev) {
     }
     case 'move': {
       if (!moveOp) {
-        const hit = pick(w, rawW);
-        if (hit) {
-          if (!state.selection.has(hit.id)) { state.selection.clear(); state.selection.add(hit.id); }
+        // 이미 선택된 도형이 있으면 첫 클릭 = 기준점(빈 곳도 OK). 없으면 도형을 집어서 시작.
+        if (!state.selection.size) { const hit = pick(w, rawW); if (hit) state.selection.add(hit.id); }
+        if (state.selection.size) {
           pushUndo();
           moveOp = { entities: [...state.selection], base: w, dx: 0, dy: 0, twoClick: true };
+          setPrompt('이동: 이동점을 클릭하거나 거리·좌표(@dx,dy / x,y / 거리)를 입력하세요.');
         }
       } else { // 두번째 클릭 = 이동 확정
         commitMove();
@@ -1587,8 +1588,40 @@ function feedDrawInput(v) {
     case 'rect': return feedRect(p);
     case 'pline': return feedPline(p);
     case 'arc': return feedArc(p);
+    case 'move': return feedMove(p);
+    case 'copy': return feedCopy(p);
   }
   return false;
+}
+// 기준점(base) 대비 입력값 → 변위(dx,dy). 절대점/상대점/거리(커서 방향) 지원
+function displacementFrom(base, p) {
+  if (p.kind === 'rel') return { dx: p.dx, dy: p.dy };
+  if (p.kind === 'abs') return { dx: p.x - base.x, dy: p.y - base.y };
+  const c = screenToWorld(mouseScreen.x, mouseScreen.y);
+  const vx = c.x - base.x, vy = c.y - base.y, l = Math.hypot(vx, vy) || 1;
+  return { dx: vx / l * p.n, dy: vy / l * p.n };
+}
+function feedMove(p) {
+  if (!moveOp || !moveOp.base) { logLine('  먼저 옮길 도형과 기준점을 지정하세요.', 'warn'); return true; }
+  const d = displacementFrom(moveOp.base, p);
+  moveOp.dx = d.dx; moveOp.dy = d.dy; commitMove();
+  logLine(`  ✔ 이동 (${d.dx.toFixed(2)}, ${d.dy.toFixed(2)})`, 'ok'); draw(); return true;
+}
+function feedCopy(p) {
+  if (!cmdOp || cmdOp.name !== 'copy') { logLine('  먼저 도형을 선택하고 복사 기준점을 지정하세요.', 'warn'); return true; }
+  if (cmdOp.step === 'base') { // 기준점을 좌표로 지정
+    if (p.kind === 'abs') { cmdOp.base = { x: p.x, y: p.y }; cmdOp.step = 'dest'; setPrompt('복사: 붙일 위치 입력/클릭 (반복 가능)'); return true; }
+    logLine('  복사 기준점을 클릭하거나 x,y로 입력하세요.', 'warn'); return true;
+  }
+  if (cmdOp.step === 'dest') {
+    const d = displacementFrom(cmdOp.base, p);
+    pushUndo();
+    const T = T_translate(d.dx, d.dy); const ents = selectedEntities();
+    for (const e of ents) addEntity(transformedClone(e, T));
+    logLine(`  ✔ 복사 ${ents.length}개 (${d.dx.toFixed(2)}, ${d.dy.toFixed(2)})`, 'ok');
+    updateStat(); draw(); return true; // step 유지 → 반복 붙여넣기
+  }
+  return true;
 }
 function feedLine(p) {
   if (!draft) {
@@ -1733,12 +1766,12 @@ function setTool(t) {
     circle: '원: 중심 클릭/입력(x,y) 후 반지름 숫자를 명령행에 입력하세요.',
     arc: '호: 중심→시작→끝 클릭(또는 각 점을 x,y로 입력).',
     text: '문자: 위치를 클릭하면 입력창이 열립니다.',
-    move: '이동: 도형을 클릭(기준점) 후 목적지를 클릭하세요.',
+    move: '이동: (도형 선택)→기준점→이동점 클릭. 또는 @dx,dy · x,y · 거리 입력.',
     erase: '지우기: 지울 도형을 클릭하세요.',
     offset: `오프셋: 도형을 선택하세요. (거리 ${offsetDist}, 숫자 입력으로 변경)`,
-    copy: '복사: 도형을 선택(또는 미리 선택)하고 기준점→붙일 위치를 클릭하세요.',
+    copy: '복사: (도형 선택)→기준점 후, 붙일 위치 클릭 또는 @dx,dy · x,y · 거리 입력(반복).',
     mirror: '대칭: 도형을 선택하고 대칭축 두 점을 클릭하세요.',
-    rotate: '회전: 도형을 선택하고 중심→각도를 지정하세요.',
+    rotate: '회전: 도형을 선택하고 중심 지정 후, 각도(°) 입력 또는 클릭.',
     array: '배열: 도형을 선택하면 배열 설정 창이 열립니다.',
     trim: '자르기: 자를 선/원/호의 잘라낼 부분을 클릭하세요. (다른 도형이 경계, 반복)',
     extend: '연장: 늘릴 선의 끝쪽을 클릭하면 가장 가까운 경계까지 연장됩니다.',
