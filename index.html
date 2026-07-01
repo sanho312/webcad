@@ -90,16 +90,11 @@
   #cmdInput{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);
     border-radius:6px;padding:9px 12px;font-size:14px;font-family:Consolas,monospace;}
   #cmdInput:focus{outline:none;border-color:var(--accent);}
-  /* 치수 입력 가능 안내 (명령창 왼쪽) + 입력창 깜빡임 */
+  /* 치수 입력 가능 안내 (명령창 왼쪽). 입력창은 자동 포커스로 활성화됨 */
   #dimHint{display:none;flex:0 0 auto;color:#ffd65d;font-size:13px;font-weight:700;white-space:nowrap;
-    padding:5px 9px;border:1px solid #ffd65d55;border-radius:6px;background:rgba(255,214,93,.10);}
-  #dimHint.on{display:inline-block;animation:dimTextBlink 1s ease-in-out infinite;}
-  @keyframes dimTextBlink{0%,100%{opacity:1;}50%{opacity:.45;}}
-  #cmdInput.dim{border-color:#ffd65d;animation:dimBoxBlink 1s ease-in-out infinite;}
-  @keyframes dimBoxBlink{
-    0%,100%{border-color:#ffd65d;box-shadow:0 0 0 0 rgba(255,214,93,0);}
-    50%{border-color:#ffe9a8;box-shadow:0 0 0 3px rgba(255,214,93,.30);}
-  }
+    padding:5px 9px;border:1px solid #ffd65d55;border-radius:6px;background:rgba(255,214,93,.12);}
+  #dimHint.on{display:inline-block;}
+  #cmdInput.dim{border-color:#ffd65d;box-shadow:0 0 0 2px rgba(255,214,93,.22);}
   /* 명령어 자동완성 드롭다운 (입력창 위로) */
   #cmdSuggest{position:absolute;bottom:calc(100% + 4px);left:0;min-width:220px;max-width:340px;
     max-height:260px;overflow-y:auto;display:none;z-index:45;

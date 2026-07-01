@@ -1064,6 +1064,8 @@ cv.addEventListener('touchend', (ev) => {
     handleClick(mouseWorld, screenToWorld(mouseScreen.x, mouseScreen.y), { shiftKey: false });
     if (dragSelect) finishDragSelect({ shiftKey: false });
     if (moveOp && state.tool === 'select') finishGripMoveMaybe();
+    // 치수 입력 가능 상태가 되면 이 탭(사용자 제스처) 안에서 즉시 포커스 → iOS 키보드 표시
+    if (currentDimPrompt() && cmdInputEl) cmdInputEl.focus({ preventScroll: true });
   } else if (touch.mode === 'pinch' && touch.moved < 10 && ev.touches.length === 0) {
     // 두 손가락 가벼운 탭 = 우클릭(완료/취소)
     contextAction();
@@ -2665,12 +2667,15 @@ function currentDimPrompt() {
 let _lastDimLabel = '__init__';
 function updateDimHint() {
   const label = currentDimPrompt();
-  if (label === _lastDimLabel) return; // 변화 없으면 스킵(깜빡임 리셋 방지)
+  if (label === _lastDimLabel) return; // 변화 없으면 스킵
   _lastDimLabel = label;
   const el = document.getElementById('dimHint');
   if (!el || !cmdInputEl) return;
-  if (label) { el.textContent = '⌨ ' + label; el.classList.add('on'); cmdInputEl.classList.add('dim'); }
-  else { el.classList.remove('on'); el.textContent = ''; cmdInputEl.classList.remove('dim'); }
+  if (label) {
+    el.textContent = '⌨ ' + label; el.classList.add('on'); cmdInputEl.classList.add('dim');
+    // 치수 입력 가능 → 명령창을 자동 활성화(포커스). setTimeout으로 클릭 기본동작 뒤에 확정.
+    setTimeout(() => { if (currentDimPrompt() && document.activeElement !== cmdInputEl) cmdInputEl.focus({ preventScroll: true }); }, 0);
+  } else { el.classList.remove('on'); el.textContent = ''; cmdInputEl.classList.remove('dim'); }
 }
 
 function newDrawing() {
@@ -2722,6 +2727,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 setInterval(saveLocal, 10000);
 
 new ResizeObserver(resize).observe(wrap);
+// 모바일 키보드가 올라오면 화면 높이를 가시영역에 맞춰 → 명령창이 키보드에 가리지 않게
+if (window.visualViewport) {
+  const app = document.getElementById('app');
+  const onVV = () => { app.style.height = window.visualViewport.height + 'px'; resize(); };
+  window.visualViewport.addEventListener('resize', onVV);
+  window.visualViewport.addEventListener('scroll', onVV);
+}
 newDrawing();
 resize();
 // 시작 시 자동 저장된 작업이 있으면 복원
