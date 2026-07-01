@@ -2643,7 +2643,35 @@ draw = function () {
   }
   baseDraw();
   if (undoMove) for (const e of undoMove) translateEntity(e, -moveOp.dx, -moveOp.dy);
+  updateDimHint();
 };
+
+// 현재 상태에서 치수/수치 입력이 가능하면 그 라벨을, 아니면 null
+function currentDimPrompt() {
+  const t = state.tool;
+  if (t === 'offset') return '간격 거리 입력';
+  if (t === 'fillet') return '반지름 입력';
+  if (t === 'circle' && draft) return '반지름 입력';
+  if (t === 'line' && draft) return '길이·좌표 입력';
+  if (t === 'rect' && draft) return '크기(w,h) 입력';
+  if (t === 'pline' && pts.length) return '다음 점·길이 입력';
+  if (t === 'arc' && arcState) return '다음 점 입력';
+  if (t === 'rotate' && cmdOp && cmdOp.step === 'angle') return '각도(°) 입력';
+  if (t === 'scale' && cmdOp && (cmdOp.step === 'ref' || cmdOp.step === 'new')) return '배율 입력';
+  if (t === 'move' && moveOp && moveOp.base) return '이동 거리 입력';
+  if (t === 'copy' && cmdOp && cmdOp.step === 'dest') return '이동 거리 입력';
+  return null;
+}
+let _lastDimLabel = '__init__';
+function updateDimHint() {
+  const label = currentDimPrompt();
+  if (label === _lastDimLabel) return; // 변화 없으면 스킵(깜빡임 리셋 방지)
+  _lastDimLabel = label;
+  const el = document.getElementById('dimHint');
+  if (!el || !cmdInputEl) return;
+  if (label) { el.textContent = '⌨ ' + label; el.classList.add('on'); cmdInputEl.classList.add('dim'); }
+  else { el.classList.remove('on'); el.textContent = ''; cmdInputEl.classList.remove('dim'); }
+}
 
 function newDrawing() {
   state.entities = [];
