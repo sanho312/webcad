@@ -46,6 +46,21 @@ let chamferDist = 10;   // 모따기 거리
 let polygonSides = 6;   // 다각형 변 개수
 let lengthenDelta = 10; // 길이조정 증감량(±)
 let hatchSpacing = 5;   // 해치 간격
+// ---------- 사용자 설정 (단위·객체스냅·단축키) — localStorage 유지 ----------
+const SETTINGS_KEY = 'webcad_settings_v1';
+let settings = {
+  units: 'mm',
+  osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true },
+  aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
+};
+(function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.aliases = s.aliases || {}; }
+  } catch (e) {}
+})();
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
+
 let currentFileName = null; // 현재 작업 파일명 (null = 새 파일)
 let currentFileLoc = null;  // 'pc'(실제 파일 핸들) | 'download' | null
 let fileHandle = null;      // File System Access API 핸들 (크롬/엣지 — 같은 파일에 덮어쓰기 저장)
@@ -590,11 +605,11 @@ function findObjectSnap(raw) {
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     if (skipSel && state.selection.has(e.id)) continue;
-    for (const g of entityEndpoints(e)) consider(g.x, g.y, 'endpoint', 1);
-    for (const m of entityMidpoints(e)) consider(m.x, m.y, 'midpoint', 2);
-    if (e.type === 'CIRCLE' || e.type === 'ARC') consider(e.cx, e.cy, 'center', 3);
+    if (settings.osnapModes.endpoint) for (const g of entityEndpoints(e)) consider(g.x, g.y, 'endpoint', 1);
+    if (settings.osnapModes.midpoint) for (const m of entityMidpoints(e)) consider(m.x, m.y, 'midpoint', 2);
+    if (settings.osnapModes.center && (e.type === 'CIRCLE' || e.type === 'ARC')) consider(e.cx, e.cy, 'center', 3);
     // 수직점(perpendicular): 기준점에서 도형으로 내린 수선의 발. 커서가 그 도형 위에 있을 때 제공
-    if (base) {
+    if (base && settings.osnapModes.perp) {
       for (const sg of entitySegments(e)) {
         const np = closestOnSeg(raw.x, raw.y, sg[0], sg[1], sg[2], sg[3]);
         const sn = worldToScreen(np.x, np.y);
@@ -604,7 +619,8 @@ function findObjectSnap(raw) {
         if (f && f.t >= -1e-9 && f.t <= 1 + 1e-9 && dCur < perpD) { perpD = dCur; perp = { x: f.x, y: f.y }; }
       }
     }
-    const np = nearestOnEntity(e, raw); if (np) consider(np.x, np.y, 'nearest', 5);
+    const np = settings.osnapModes.nearest ? nearestOnEntity(e, raw) : null;
+    if (np) consider(np.x, np.y, 'nearest', 5);
   }
   // 우선순위: 끝점·중점·중심 > 수직점 > 근처점
   if (best && best.prio <= 3) return best;
@@ -1018,7 +1034,7 @@ cv.addEventListener('mousemove', (ev) => {
   mouseScreen = { x: ev.clientX - r.left, y: ev.clientY - r.top };
   const raw = screenToWorld(mouseScreen.x, mouseScreen.y);
   mouseWorld = cursorPoint(raw);
-  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
+  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)} ${settings.units}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
 
   if (isPanning && panStart) {
     const dx = (ev.clientX - panStart.sx) / state.view.scale;
@@ -1084,7 +1100,7 @@ function setPointer(sx, sy) {
   mouseScreen = { x: sx, y: sy };
   const raw = screenToWorld(sx, sy);
   mouseWorld = cursorPoint(raw);
-  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
+  coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)} ${settings.units}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
   if (moveOp) { moveOp.dx = mouseWorld.x - moveOp.base.x; moveOp.dy = mouseWorld.y - moveOp.base.y; if (moveOp.grip) updateGripMove(); }
   if (draft) updateDraft();
   if (cmdOp) updateCmdPreview();
@@ -1660,7 +1676,7 @@ function clickDist(w) {
   if (!cmdOp || cmdOp.name !== 'dist') cmdOp = { name: 'dist', step: 'p1' };
   if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('거리: 두 번째 점을 클릭하세요.'); return; }
   const dx = w.x - cmdOp.p1.x, dy = w.y - cmdOp.p1.y;
-  logLine(`  거리 = ${fmtNum(Math.hypot(dx, dy))}   ΔX = ${fmtNum(dx)}   ΔY = ${fmtNum(dy)}   각도 = ${fmtNum(ang(cmdOp.p1.x, cmdOp.p1.y, w.x, w.y))}°`, 'ok');
+  logLine(`  거리 = ${fmtNum(Math.hypot(dx, dy))} ${settings.units}   ΔX = ${fmtNum(dx)}   ΔY = ${fmtNum(dy)}   각도 = ${fmtNum(ang(cmdOp.p1.x, cmdOp.p1.y, w.x, w.y))}°`, 'ok');
   cmdOp = { name: 'dist', step: 'p1' }; previewEnts = null;
   setPrompt('거리: 첫 점을 클릭하세요. (연속 측정, Esc 종료)');
 }
@@ -1670,10 +1686,10 @@ function clickArea(w, rawW) {
   if (!pts.length) { // 첫 클릭이 닫힌 도형이면 그 면적
     const hit = pick(w, rawW);
     if (hit && hit.type === 'CIRCLE') {
-      logLine(`  원 면적 = ${fmtNum(Math.PI * hit.r * hit.r)}   둘레 = ${fmtNum(2 * Math.PI * hit.r)}`, 'ok'); return;
+      logLine(`  원 면적 = ${fmtNum(Math.PI * hit.r * hit.r)} ${settings.units}²   둘레 = ${fmtNum(2 * Math.PI * hit.r)} ${settings.units}`, 'ok'); return;
     }
     if (hit && hit.type === 'LWPOLYLINE' && hit.closed) {
-      logLine(`  면적 = ${fmtNum(polyArea(hit.points))}   둘레 = ${fmtNum(polyPerimeter(hit.points, true))}`, 'ok'); return;
+      logLine(`  면적 = ${fmtNum(polyArea(hit.points))} ${settings.units}²   둘레 = ${fmtNum(polyPerimeter(hit.points, true))} ${settings.units}`, 'ok'); return;
     }
   }
   pts.push({ x: w.x, y: w.y });
@@ -1682,7 +1698,7 @@ function clickArea(w, rawW) {
 function finishArea() {
   if (pts.length >= 3) {
     const arr = pts.map(p => [p.x, p.y]);
-    logLine(`  면적 = ${fmtNum(polyArea(arr))}   둘레 = ${fmtNum(polyPerimeter(arr, true))}`, 'ok');
+    logLine(`  면적 = ${fmtNum(polyArea(arr))} ${settings.units}²   둘레 = ${fmtNum(polyPerimeter(arr, true))} ${settings.units}`, 'ok');
   } else logLine('  면적: 점이 3개 이상 필요합니다.', 'warn');
   pts = []; setPrompt('면적: 원/닫힌 폴리라인을 클릭하거나 점들을 찍고 Enter.'); draw();
 }
@@ -2169,7 +2185,7 @@ function runCommandInput(raw) {
     if (state.tool === 'scale' && cmdOp && (cmdOp.step === 'ref' || cmdOp.step === 'factor')) { applyScale(num); return; }
     logLine('  (입력한 숫자를 받을 명령이 없습니다)', 'warn'); return;
   }
-  const tool = CMD_ALIASES[v];
+  const tool = settings.aliases[v] || CMD_ALIASES[v]; // 사용자 단축키 우선
   if (tool && INSTANT_CMDS[tool]) { // 즉시 실행 명령(분해·결합·줌·실행취소 등)
     INSTANT_CMDS[tool]();
     if (tool === 'explode' || tool === 'join') lastCommand = tool;
@@ -2681,6 +2697,51 @@ window.addEventListener('keydown', (ev) => {
   document.getElementById('miSave').addEventListener('click', () => { close(); saveDXF(); });
   document.getElementById('miSaveAs').addEventListener('click', () => { close(); openSaveAs(); });
 })();
+// 옵션 드롭다운 + 설정 대화상자 (단축키/객체스냅/단위)
+(function () {
+  const btn = document.getElementById('btnOpts');
+  const menu = document.getElementById('optMenu');
+  const toggle = (open) => menu.classList.toggle('open', open === undefined ? !menu.classList.contains('open') : open);
+  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  document.addEventListener('click', () => toggle(false));
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  const dlg = document.getElementById('optionsDlg');
+  function openOptions(sec) {
+    toggle(false);
+    // 현재값 채우기
+    document.getElementById('optUnits').value = settings.units;
+    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest'])
+      document.getElementById('os_' + k).checked = !!settings.osnapModes[k];
+    // 단축키 목록 (도구명 → 현재 사용자 별칭 역조회)
+    const rev = {}; for (const [a, t] of Object.entries(settings.aliases)) if (!rev[t]) rev[t] = a;
+    document.getElementById('aliasList').innerHTML = COMMAND_LIST.map(c => {
+      const tool = CMD_ALIASES[c.name] || c.name;
+      return `<span class="aname">${escapeHtml(c.ko)} (${c.name})</span><input data-tool="${tool}" value="${escapeHtml(rev[tool] || '')}" placeholder="예: qq">`;
+    }).join('');
+    dlg.style.display = 'flex';
+    const el = document.getElementById(sec); if (el) el.scrollIntoView({ block: 'start' });
+  }
+  document.getElementById('moShortcut').addEventListener('click', () => openOptions('secShortcut'));
+  document.getElementById('moOsnap').addEventListener('click', () => openOptions('secOsnap'));
+  document.getElementById('moUnits').addEventListener('click', () => openOptions('secUnits'));
+  document.getElementById('optCancel').addEventListener('click', () => dlg.style.display = 'none');
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.style.display = 'none'; });
+  document.getElementById('optSave').addEventListener('click', () => {
+    settings.units = document.getElementById('optUnits').value;
+    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest'])
+      settings.osnapModes[k] = document.getElementById('os_' + k).checked;
+    const aliases = {};
+    document.querySelectorAll('#aliasList input').forEach(inp => {
+      const a = inp.value.trim().toLowerCase();
+      if (a) aliases[a] = inp.dataset.tool;
+    });
+    settings.aliases = aliases;
+    saveSettings();
+    dlg.style.display = 'none';
+    logLine(`  ✔ 옵션 저장 (단위 ${settings.units}, 단축키 ${Object.keys(aliases).length}개)`, 'ok');
+    draw();
+  });
+})();
 function doNew() {
   if (state.entities.length && !confirm('현재 도면을 지우고 새로 시작할까요?')) return;
   if (typeof clearLocal === 'function') clearLocal();
@@ -2899,7 +2960,7 @@ function buildDXFText() {
   // HEADER — AC1021(R2007)부터 DXF는 UTF-8 → 한글 레이어명 깨짐 방지
   g(0, 'SECTION'); g(2, 'HEADER');
   g(9, '$ACADVER'); g(1, 'AC1021');
-  g(9, '$INSUNITS'); g(70, 4); // mm
+  g(9, '$INSUNITS'); g(70, ({ mm: 4, cm: 5, m: 6, in: 1 })[settings.units] || 4); // 단위 설정 반영
   g(9, '$HANDSEED'); g(5, 'FFFF');
   g(0, 'ENDSEC');
 
