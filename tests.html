@@ -40,15 +40,19 @@ function eq(a,b,msg,tol=1e-6){ record(near(a,b,tol), `${msg}  (${(+a).toFixed?(+
 function eqi(a,b,msg){ record(a===b, `${msg}  (${a} === ${b})`); }
 function pt(p, x, y, msg, tol=1e-4){ record(near(p[0]??p.x,x,tol)&&near(p[1]??p.y,y,tol), `${msg}  (${(p[0]??p.x).toFixed(3)},${(p[1]??p.y).toFixed(3)} ≈ ${x},${y})`); }
 
+function updateSummary(label){
+  const total=pass+fail;
+  S.innerHTML = fail===0
+    ? `<span class="pass">✔ 전체 통과 — ${pass}/${total}${label||''}</span>`
+    : `<span class="fail">✗ 실패 ${fail}개</span> / 통과 ${pass} (총 ${total})`;
+  document.title = (fail===0?'PASS':'FAIL('+fail+')')+` — WebCAD 테스트`;
+}
+function finishAsync(){ updateSummary(); }
 function runAll(){
   R.innerHTML=''; pass=0; fail=0;
   try { tests(); }
   catch(e){ record(false, 'FATAL: '+e.message+'\n'+(e.stack||'')); }
-  const total=pass+fail;
-  S.innerHTML = fail===0
-    ? `<span class="pass">✔ 전체 통과 — ${pass}/${total}</span>`
-    : `<span class="fail">✗ 실패 ${fail}개</span> / 통과 ${pass} (총 ${total})`;
-  document.title = (fail===0?'PASS':'FAIL('+fail+')')+` — WebCAD 테스트`;
+  updateSummary(' (동기)');
 }
 
 function tests(){
@@ -154,6 +158,24 @@ function tests(){
     ok(re.entities.length===2,'왕복 후 엔티티 2개 유지');
     ok(out.includes('AC1021'),'버전 AC1021(UTF-8)');
     ok(out.includes('치수'),'한글 레이어명 UTF-8 보존'); }
+
+  group('링크 공유 — 인코딩 왕복');
+  { // 동기 컨텍스트에서 async 검증: 완료 후 요약 갱신
+    const original='WebCAD 공유 테스트 — 한글/기호 ⌀°± {}[]';
+    C.shareEncode(original).then(enc => {
+      record(typeof enc==='string' && enc.length>1, '공유 인코딩 생성 ('+(enc[0]==='g'?'gzip':'raw')+')');
+      return C.shareDecode(enc);
+    }).then(dec => {
+      record(dec===original, '공유 디코딩 = 원본 (한글·기호 보존)');
+      // 실제 도면 payload 왕복
+      C.reset(); C.state.entities=[{id:1,type:'CIRCLE',cx:1,cy:2,r:3}];
+      return C.shareEncode(C.drawingPayload());
+    }).then(enc2 => C.shareDecode(enc2)).then(json => {
+      const d=JSON.parse(json);
+      record(d.entities.length===1 && d.entities[0].r===3, '도면 payload 왕복 (원 r=3 유지)');
+      finishAsync();
+    }).catch(e => { record(false, '공유 왕복 오류: '+e.message); finishAsync(); });
+  }
 
   group('SVG 내보내기');
   { setEnts([{type:'CIRCLE',cx:0,cy:0,r:10},{type:'LINE',x1:0,y1:0,x2:10,y2:10}]);

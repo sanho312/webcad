@@ -2946,6 +2946,7 @@ window.addEventListener('keydown', (ev) => {
   document.getElementById('miOpen').addEventListener('click', () => { close(); openFile(); });
   document.getElementById('miSave').addEventListener('click', () => { close(); saveDXF(); });
   document.getElementById('miSaveAs').addEventListener('click', () => { close(); openSaveAs(); });
+  document.getElementById('miShare').addEventListener('click', () => { close(); shareLink(); });
 })();
 // 옵션 드롭다운 + 설정 대화상자 (단축키/객체스냅/단위)
 (function () {
@@ -3338,6 +3339,69 @@ async function saveBlob(blob, fname) {
   logLine('  ✔ ' + fname + ' 저장', 'ok');
 }
 const DXF_PICKER_TYPES = [{ description: 'DXF 도면', accept: { 'application/dxf': ['.dxf'] } }];
+// ---------- 링크 공유 (서버 불필요, 도면을 압축해 URL에 담음) ----------
+function b64ToUrl(b64) { return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function urlToB64(u) { u = u.replace(/-/g, '+').replace(/_/g, '/'); while (u.length % 4) u += '='; return u; }
+async function shareEncode(str) {
+  if (window.CompressionStream) {
+    const stream = new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
+    const buf = new Uint8Array(await new Response(stream).arrayBuffer());
+    let bin = ''; for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    return 'g' + b64ToUrl(btoa(bin));
+  }
+  return 'r' + b64ToUrl(btoa(unescape(encodeURIComponent(str)))); // 폴백(비압축)
+}
+async function shareDecode(enc) {
+  const mode = enc[0], bin = atob(urlToB64(enc.slice(1)));
+  if (mode === 'r') return decodeURIComponent(escape(bin));
+  const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new TextDecoder().decode(await new Response(stream).arrayBuffer());
+}
+function drawingPayload() {
+  return JSON.stringify({ v: 1, entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, blocks: state.blocks, nextId: state.nextId, view: state.view, fileName: currentFileName });
+}
+async function shareLink() {
+  if (!state.entities.length) { logLine('  공유할 도형이 없습니다.', 'warn'); return; }
+  const enc = await shareEncode(drawingPayload());
+  const url = location.origin + location.pathname + '#d=' + enc;
+  if (url.length > 30000) { logLine(`  ⚠ 도면이 커서 링크가 매우 깁니다(${url.length}자). 일부 앱에서 잘릴 수 있어요. DXF 저장 후 공유를 권장합니다.`, 'warn'); }
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; } catch (e) {}
+  logLine(`  ✔ 공유 링크 생성 (${(url.length / 1024).toFixed(1)}KB)${copied ? ' — 클립보드에 복사됨' : ''}`, 'ok');
+  showShareResult(url, copied);
+}
+async function loadFromHash() {
+  const m = location.hash.match(/^#d=(.+)$/);
+  if (!m) return false;
+  try {
+    const data = JSON.parse(await shareDecode(m[1]));
+    if (!data.entities) return false;
+    restoreLocal(data);
+    setFileName(data.fileName || null, null);
+    zoomFit(true);
+    logLine(`공유 링크에서 도면을 불러왔습니다 (도형 ${data.entities.length}개).`, 'info');
+    history.replaceState(null, '', location.pathname); // 주소창 정리(작업 시작)
+    return true;
+  } catch (err) { console.error(err); return false; }
+}
+function showShareResult(url, copied) {
+  const o = document.createElement('div');
+  o.style.cssText = 'position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);';
+  o.innerHTML = `<div style="background:#2a2a30;border:1px solid #3d3d46;border-radius:12px;max-width:520px;width:90%;padding:20px;color:#e6e6ea;">
+    <h2 style="margin:0 0 10px;font-size:16px;">🔗 공유 링크</h2>
+    <p style="margin:0 0 8px;font-size:13px;color:#9a9aa5;">${copied ? '클립보드에 복사되었습니다. ' : ''}이 링크를 열면 지금 도면이 그대로 보입니다(서버 없이 URL에 저장됨).</p>
+    <textarea readonly style="width:100%;height:90px;background:#33333b;color:#e6e6ea;border:1px solid #3d3d46;border-radius:6px;padding:8px;font-family:Consolas,monospace;font-size:12px;">${url}</textarea>
+    <div style="text-align:right;margin-top:12px;"><button id="shCopy" style="background:#33333b;color:#fff;border:1px solid #3d3d46;border-radius:6px;padding:7px 14px;cursor:pointer;margin-right:6px;">복사</button><button id="shClose" style="background:#2b6fc0;color:#fff;border:none;border-radius:6px;padding:7px 16px;cursor:pointer;">닫기</button></div>
+  </div>`;
+  document.body.appendChild(o);
+  const ta = o.querySelector('textarea');
+  o.querySelector('#shCopy').onclick = () => { ta.select(); try { navigator.clipboard.writeText(url); } catch (e) { document.execCommand('copy'); } };
+  const close = () => o.remove();
+  o.querySelector('#shClose').onclick = close;
+  o.addEventListener('click', e => { if (e.target === o) close(); });
+}
+
 async function saveDXF() {
   const text = buildDXFText();
   // 1) 실제 파일 핸들이 있으면 그 파일에 조용히 덮어쓰기 (CAD의 저장과 동일)
@@ -4030,8 +4094,9 @@ if (window.visualViewport) {
 }
 newDrawing();
 resize();
-// 시작 시 자동 저장된 작업이 있으면 복원
+// 시작 시: 공유 링크(#d=) 우선 → 없으면 자동 저장 복원
 (function () {
+  if (location.hash.indexOf('#d=') === 0) { loadFromHash(); return; } // 공유 링크로 진입
   const d = loadLocal();
   if (d && d.entities && d.entities.length) {
     restoreLocal(d);
@@ -4058,6 +4123,8 @@ window.__CADTEST__ = {
   trimLine, extendLine, doFillet, doChamfer, offsetEntity, insertChildren,
   // 유틸
   dxfColorIndex, aci2hex, rgbHex,
+  // 링크 공유
+  shareEncode, shareDecode, drawingPayload,
   reset: () => { state.blocks = {}; newDrawing(); },
 };
 
