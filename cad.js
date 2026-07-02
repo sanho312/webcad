@@ -46,6 +46,13 @@ let chamferDist = 10;   // 모따기 거리
 let polygonSides = 6;   // 다각형 변 개수
 let lengthenDelta = 10; // 길이조정 증감량(±)
 let hatchSpacing = 5;   // 해치 간격
+let currentFileName = null; // 현재 작업 파일명 (null = 새 파일)
+function setFileName(n) {
+  currentFileName = n || null;
+  const el = document.getElementById('fileName');
+  if (el) el.textContent = currentFileName || '새 파일';
+  document.title = (currentFileName ? currentFileName + ' — ' : '') + 'WebCAD — DXF 편집기';
+}
 let lastCommand = '';   // 직전에 실행한 명령(스페이스/Enter로 반복)
 let lastInputWasTouch = false; // 터치 입력 중에는 명령행 자동 포커스(키보드 팝업) 억제
 let osnapEnabled = true;   // 객체 스냅(OSNAP) 사용 여부
@@ -2672,16 +2679,21 @@ window.addEventListener('keydown', (ev) => {
 function doNew() {
   if (state.entities.length && !confirm('현재 도면을 지우고 새로 시작할까요?')) return;
   if (typeof clearLocal === 'function') clearLocal();
+  setFileName(null);
   newDrawing();
 }
 document.getElementById('fileInput').addEventListener('change', (ev) => {
   const f = ev.target.files[0]; if (!f) return;
   const reader = new FileReader();
-  reader.onload = () => { loadDXF(reader.result); ev.target.value = ''; };
+  reader.onload = () => { if (loadDXF(reader.result)) setFileName(f.name); ev.target.value = ''; };
   reader.readAsText(f);
 });
 // 다른 이름으로 저장 대화상자
-function openSaveAs() { document.getElementById('saveAsDlg').style.display = 'flex'; }
+function openSaveAs() {
+  const inp = document.getElementById('saveName');
+  if (inp) inp.value = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'drawing';
+  document.getElementById('saveAsDlg').style.display = 'flex';
+}
 function closeSaveAs() { document.getElementById('saveAsDlg').style.display = 'none'; }
 (function () {
   const dlg = document.getElementById('saveAsDlg');
@@ -2690,7 +2702,7 @@ function closeSaveAs() { document.getElementById('saveAsDlg').style.display = 'n
     const fmt = dlg.querySelector('input[name=saveFmt]:checked').value;
     const name = (document.getElementById('saveName').value || 'drawing').replace(/\.[^.]+$/, '');
     closeSaveAs();
-    if (fmt === 'dxf') saveBlob(new Blob([buildDXFText()], { type: 'application/dxf' }), name + '.dxf');
+    if (fmt === 'dxf') { setFileName(name + '.dxf'); saveBlob(new Blob([buildDXFText()], { type: 'application/dxf' }), name + '.dxf'); }
     else if (fmt === 'svg') saveBlob(new Blob([buildSVG()], { type: 'image/svg+xml' }), name + '.svg');
     else if (fmt === 'pdf') saveBlob(new Blob([buildPDF()], { type: 'application/pdf' }), name + '.pdf');
     else if (fmt === 'png') savePNG(name + '.png');
@@ -2935,7 +2947,11 @@ async function saveBlob(blob, fname) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
   logLine('  ✔ ' + fname + ' 저장', 'ok');
 }
-async function saveDXF() { await saveBlob(new Blob([buildDXFText()], { type: 'application/dxf' }), 'drawing.dxf'); }
+async function saveDXF() {
+  const fname = currentFileName && /\.dxf$/i.test(currentFileName) ? currentFileName : (currentFileName ? currentFileName.replace(/\.[^.]+$/, '') + '.dxf' : 'drawing.dxf');
+  if (!currentFileName) setFileName(fname); // 첫 저장 시 파일명 확정
+  await saveBlob(new Blob([buildDXFText()], { type: 'application/dxf' }), fname);
+}
 
 // ---------- 도면 경계(내보내기 공통) ----------
 function drawingBBox() {
@@ -3127,9 +3143,11 @@ function loadDXF(text) {
     state.selection.clear();
     renderLayers(); updateStat(); zoomFit(true);
     hint(`DXF 불러오기 완료: 도형 ${state.entities.length}개`);
+    return true;
   } catch (err) {
     alert('DXF 파일을 읽는 중 오류가 발생했습니다:\n' + err.message);
     console.error(err);
+    return false;
   }
 }
 function parseDXFPairs(text) {
@@ -3407,7 +3425,7 @@ function newDrawing() {
 const AUTOSAVE_KEY = 'webcad_autosave_v1';
 function saveLocal() {
   try {
-    const data = { entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, nextId: state.nextId, view: state.view, t: Date.now() };
+    const data = { entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, nextId: state.nextId, view: state.view, fileName: currentFileName, t: Date.now() };
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
   } catch (e) { /* 용량 초과 등 무시 */ }
 }
@@ -3422,6 +3440,7 @@ function restoreLocal(d) {
   state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
   state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   if (d.view) state.view = d.view;
+  setFileName(d.fileName || null);
   state.selection.clear();
   undoStack.length = 0; redoStack.length = 0;
   renderLayers(); renderProps(); updateStat(); setTool('select'); draw();

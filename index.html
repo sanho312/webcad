@@ -29,6 +29,9 @@
     padding:calc(6px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
     background:var(--panel);border-bottom:1px solid var(--line);}
   #topbar .title{font-weight:600;font-size:15px;margin-right:8px;color:var(--accent);}
+  #fileName{color:var(--text);font-size:13px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:6px;padding:5px 10px;margin-right:4px;max-width:200px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   #topbar .spacer{flex:1;}
   button.tbtn{background:var(--panel2);color:var(--text);border:1px solid var(--line);
     border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;}
@@ -159,6 +162,7 @@
   <!-- Top bar -->
   <div id="topbar">
     <span class="title">▦ WebCAD</span>
+    <span id="fileName" title="현재 작업 파일">새 파일</span>
     <div class="menuWrap">
       <button class="tbtn" id="btnFile">📁 파일 ▾</button>
       <div id="fileMenu" class="dropdown">
