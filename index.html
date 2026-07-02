@@ -343,7 +343,13 @@
             <label class="optChk"><input type="checkbox" id="os_midpoint"> 중점 △</label>
             <label class="optChk"><input type="checkbox" id="os_center"> 중심 ○</label>
             <label class="optChk"><input type="checkbox" id="os_perp"> 수직 ⌐</label>
-            <label class="optChk"><input type="checkbox" id="os_nearest"> 근처 ✕</label>
+            <label class="optChk"><input type="checkbox" id="os_intersection"> 교차 ✕</label>
+            <label class="optChk"><input type="checkbox" id="os_nearest"> 근처 ⧗</label>
+            <div class="optHint" style="margin-top:8px;">극좌표 추적(폴라): 작도 중 커서 각도를 아래 단위로 스냅 (직교 F8과 별개)</div>
+            <select id="optPolar" style="width:100%">
+              <option value="0">끄기</option><option value="15">15°</option>
+              <option value="30">30°</option><option value="45">45°</option><option value="90">90°</option>
+            </select>
           </div>
           <div class="optSec" id="secShortcut"><h4>⌨ 명령 단축키</h4>
             <div class="optHint">각 명령에 원하는 단축 입력을 지정하세요. 비워두면 기본 별칭(l, c, tr…)만 사용됩니다.</div>

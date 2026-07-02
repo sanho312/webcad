@@ -50,13 +50,14 @@ let hatchSpacing = 5;   // 해치 간격
 const SETTINGS_KEY = 'webcad_settings_v1';
 let settings = {
   units: 'mm',
-  osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true },
+  osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true },
+  polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
-    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.aliases = s.aliases || {}; }
+    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.polar = s.polar || 0; settings.aliases = s.aliases || {}; }
   } catch (e) {}
 })();
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
@@ -138,7 +139,18 @@ function cursorPoint(raw) {
   activeSnap = findObjectSnap(raw);
   if (activeSnap) return { x: activeSnap.x, y: activeSnap.y };
   let p = { x: raw.x, y: raw.y };
-  if (state.ortho) { const b = orthoBase(); if (b) p = applyOrtho(p, b); }
+  const b = orthoBase();
+  if (b) {
+    if (state.ortho) p = applyOrtho(p, b);
+    else if (settings.polar > 0) { // 폴라 트래킹: 기준점 대비 각도를 설정 단위로 스냅
+      const dx = p.x - b.x, dy = p.y - b.y, d = Math.hypot(dx, dy);
+      if (d > 1e-9) {
+        const step = settings.polar * Math.PI / 180;
+        const a = Math.round(Math.atan2(dy, dx) / step) * step;
+        p = { x: b.x + d * Math.cos(a), y: b.y + d * Math.sin(a) };
+      }
+    }
+  }
   return p;
 }
 function toggleOrtho() {
@@ -296,10 +308,15 @@ function drawSnapMarker(s, type) {
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x - r, s.y + r); ctx.lineTo(s.x + r, s.y + r); // ㄴ
     ctx.moveTo(s.x - r, s.y); ctx.lineTo(s.x, s.y); ctx.lineTo(s.x, s.y + r);                 // 안쪽 직각 표시
     ctx.stroke();
-  } else { // nearest
+  } else if (type === 'intersect') { // 교차: ✕
     ctx.beginPath();
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y + r);
     ctx.moveTo(s.x + r, s.y - r); ctx.lineTo(s.x - r, s.y + r);
+    ctx.stroke();
+  } else { // nearest: 모래시계(⧗)
+    ctx.beginPath();
+    ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y - r); ctx.lineTo(s.x - r, s.y + r);
+    ctx.lineTo(s.x + r, s.y + r); ctx.closePath();
     ctx.stroke();
   }
   ctx.fillStyle = '#2ee6a6'; ctx.font = '11px "Segoe UI",sans-serif'; ctx.textBaseline = 'bottom';
@@ -622,12 +639,55 @@ function findObjectSnap(raw) {
     const np = settings.osnapModes.nearest ? nearestOnEntity(e, raw) : null;
     if (np) consider(np.x, np.y, 'nearest', 5);
   }
-  // 우선순위: 끝점·중점·중심 > 수직점 > 근처점
+  // 교차점: 커서 근처 도형쌍의 실제 교차 계산 (근처 도형만 골라 저비용)
+  if (settings.osnapModes.intersection) {
+    const tolW = tol / state.view.scale, near = [];
+    for (const e of state.entities) {
+      if (!['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(e.type)) continue;
+      const l = getLayer(e.layer); if (l && !l.visible) continue;
+      if (skipSel && state.selection.has(e.id)) continue;
+      const bb = entityBBox(e); if (!bb) continue;
+      if (raw.x < bb.xmin - tolW || raw.x > bb.xmax + tolW || raw.y < bb.ymin - tolW || raw.y > bb.ymax + tolW) continue;
+      near.push(e); if (near.length > 12) break;
+    }
+    for (let i = 0; i < near.length; i++) for (let j = i + 1; j < near.length; j++)
+      for (const pt of intersectEntities(near[i], near[j])) consider(pt[0], pt[1], 'intersect', 1);
+  }
+  // 우선순위: 끝점·중점·중심·교차 > 수직점 > 근처점
   if (best && best.prio <= 3) return best;
   if (perp) return { x: perp.x, y: perp.y, type: 'perp' };
   return best;
 }
-const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', perp: '수직', nearest: '근처' };
+// 두 도형의 교차점 목록
+function intersectEntities(A, B) {
+  const out = [];
+  const segsA = entitySegments(A), segsB = entitySegments(B);
+  const isCirc = e => e.type === 'CIRCLE' || e.type === 'ARC';
+  const onArc = (e, x, y) => e.type !== 'ARC' || angleInArc(ang(e.cx, e.cy, x, y), e.startAngle, e.endAngle);
+  if (segsA.length && segsB.length) {
+    for (const a of segsA) for (const b of segsB) {
+      const r = segSeg([a[0], a[1]], [a[2], a[3]], [b[0], b[1]], [b[2], b[3]]);
+      if (r && r.t >= -1e-9 && r.t <= 1 + 1e-9 && r.u >= -1e-9 && r.u <= 1 + 1e-9) out.push([r.x, r.y]);
+    }
+  } else if (segsA.length && isCirc(B)) {
+    for (const a of segsA) for (const h of segCircle([a[0], a[1]], [a[2], a[3]], B.cx, B.cy, B.r))
+      if (h.t >= -1e-9 && h.t <= 1 + 1e-9 && onArc(B, h.x, h.y)) out.push([h.x, h.y]);
+  } else if (isCirc(A) && segsB.length) {
+    return intersectEntities(B, A);
+  } else if (isCirc(A) && isCirc(B)) {
+    const d = Math.hypot(B.cx - A.cx, B.cy - A.cy);
+    if (d > 1e-9 && d <= A.r + B.r && d >= Math.abs(A.r - B.r)) {
+      const aa = (A.r * A.r - B.r * B.r + d * d) / (2 * d);
+      const hh = Math.sqrt(Math.max(0, A.r * A.r - aa * aa));
+      const mx = A.cx + aa * (B.cx - A.cx) / d, my = A.cy + aa * (B.cy - A.cy) / d;
+      const ox = -(B.cy - A.cy) / d * hh, oy = (B.cx - A.cx) / d * hh;
+      for (const p of [[mx + ox, my + oy], [mx - ox, my - oy]])
+        if (onArc(A, p[0], p[1]) && onArc(B, p[0], p[1])) out.push(p);
+    }
+  }
+  return out;
+}
+const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', perp: '수직', nearest: '근처', intersect: '교차' };
 
 // ============================================================
 //  이동
@@ -2218,7 +2278,9 @@ function emptyEnterAction() {
 // "x,y" → 절대점 | "@dx,dy" → 상대점 | "12" → 단일 수치
 function parsePointOrNumber(v) {
   v = v.trim();
-  let m = v.match(/^@\s*(-?[\d.]+)\s*[, ]\s*(-?[\d.]+)$/);
+  let m = v.match(/^@\s*(-?[\d.]+)\s*<\s*(-?[\d.]+)$/); // 극좌표: @거리<각도
+  if (m) { const dd = +m[1], aa = +m[2] * Math.PI / 180; return { kind: 'rel', dx: dd * Math.cos(aa), dy: dd * Math.sin(aa) }; }
+  m = v.match(/^@\s*(-?[\d.]+)\s*[, ]\s*(-?[\d.]+)$/);
   if (m) return { kind: 'rel', dx: +m[1], dy: +m[2] };
   m = v.match(/^(-?[\d.]+)\s*[, ]\s*(-?[\d.]+)$/);
   if (m) return { kind: 'abs', x: +m[1], y: +m[2] };
@@ -2710,7 +2772,8 @@ window.addEventListener('keydown', (ev) => {
     toggle(false);
     // 현재값 채우기
     document.getElementById('optUnits').value = settings.units;
-    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest'])
+    document.getElementById('optPolar').value = String(settings.polar || 0);
+    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest', 'intersection'])
       document.getElementById('os_' + k).checked = !!settings.osnapModes[k];
     // 단축키 목록 (도구명 → 현재 사용자 별칭 역조회)
     const rev = {}; for (const [a, t] of Object.entries(settings.aliases)) if (!rev[t]) rev[t] = a;
@@ -2728,7 +2791,8 @@ window.addEventListener('keydown', (ev) => {
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.style.display = 'none'; });
   document.getElementById('optSave').addEventListener('click', () => {
     settings.units = document.getElementById('optUnits').value;
-    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest'])
+    settings.polar = parseInt(document.getElementById('optPolar').value, 10) || 0;
+    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest', 'intersection'])
       settings.osnapModes[k] = document.getElementById('os_' + k).checked;
     const aliases = {};
     document.querySelectorAll('#aliasList input').forEach(inp => {
