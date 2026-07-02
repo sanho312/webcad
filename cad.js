@@ -1195,6 +1195,8 @@ function handleClick(w, rawW, ev) {
     case 'break': clickBreak(w, rawW); break;
     case 'lengthen': clickLengthen(w, rawW); break;
     case 'hatch': clickHatch(w, rawW); break;
+    case 'dimrad': clickDimCircle(w, rawW, false); break;
+    case 'dimdia': clickDimCircle(w, rawW, true); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -1521,6 +1523,36 @@ function computeDimension(p1, p2, pos) {
   const mid = { x: (d1.x + d2.x) / 2, y: (d1.y + d2.y) / 2 };
   ents.push({ type: 'TEXT', layer: '치수', x: mid.x - tux * tw / 2 + nx * gap, y: mid.y - tuy * tw / 2 + ny * gap, height: th, text: txt, rotation: rot });
   return ents;
+}
+
+// ====== DIMRAD / DIMDIA (반지름·지름 치수) ======
+function clickDimCircle(w, rawW, dia) {
+  const name = dia ? 'dimdia' : 'dimrad';
+  if (!cmdOp || cmdOp.name !== name) cmdOp = { name, step: 'obj' };
+  if (cmdOp.step === 'obj') {
+    const hit = pick(w, rawW);
+    if (!hit || (hit.type !== 'CIRCLE' && hit.type !== 'ARC')) { logLine('  원 또는 호를 클릭하세요.', 'warn'); return; }
+    cmdOp.target = hit; cmdOp.step = 'pos';
+    setPrompt('치수: 문자 위치를 클릭하세요.'); return;
+  }
+  const e = cmdOp.target;
+  pushUndo();
+  ensureLayer('치수', '#5dff8f');
+  const a = Math.atan2(w.y - e.cy, w.x - e.cx);
+  const ex = e.cx + e.r * Math.cos(a), ey = e.cy + e.r * Math.sin(a); // 원 위의 점(화살표 위치)
+  const sx = dia ? e.cx - e.r * Math.cos(a) : e.cx, sy = dia ? e.cy - e.r * Math.sin(a) : e.cy; // 지름은 반대편 가장자리부터
+  const ln = (x1, y1, x2, y2) => addEntity({ type: 'LINE', layer: '치수', x1, y1, x2, y2 });
+  ln(sx, sy, w.x, w.y); // 지시선
+  // 원 가장자리 화살표(V) — 지시선 방향
+  const th = state.textHeight, s = th * 0.5;
+  const ux = Math.cos(a), uy = Math.sin(a), nx = -uy, ny = ux;
+  ln(ex, ey, ex - ux * s + nx * s * 0.35, ey - uy * s + ny * s * 0.35);
+  ln(ex, ey, ex - ux * s - nx * s * 0.35, ey - uy * s - ny * s * 0.35);
+  const txt = (dia ? '⌀' : 'R') + fmtNum(dia ? e.r * 2 : e.r);
+  addEntity({ type: 'TEXT', layer: '치수', x: w.x + th * 0.3, y: w.y - th * 0.3, height: th, text: txt, rotation: 0 });
+  logLine(`  ✔ ${dia ? '지름' : '반지름'} 치수 ${txt}`, 'ok');
+  cmdOp = { name, step: 'obj' }; updateStat();
+  setPrompt('치수: 원/호를 클릭하세요. (연속 기입, Esc 종료)');
 }
 
 // ====== DIST (거리 측정) ======
@@ -1897,6 +1929,7 @@ const TOOL_KO = {
   dim: '치수(DIM)', dist: '거리(DIST)', area: '면적(AREA)',
   explode: '분해(EXPLODE)', join: '결합(JOIN)', zoom: '줌(ZOOM)',
   break: '끊기(BREAK)', lengthen: '길이조정(LENGTHEN)', hatch: '해치(HATCH)',
+  dimrad: '반지름 치수(DIMRADIUS)', dimdia: '지름 치수(DIMDIAMETER)',
 };
 
 const CMD_ALIASES = {
@@ -1920,6 +1953,8 @@ const CMD_ALIASES = {
   pan: 'pan',
   break: 'break', br: 'break', lengthen: 'lengthen', len: 'lengthen',
   hatch: 'hatch', h: 'hatch',
+  dimradius: 'dimrad', dimrad: 'dimrad', dra: 'dimrad',
+  dimdiameter: 'dimdia', dimdia: 'dimdia', ddi: 'dimdia',
 };
 
 function runCommandInput(raw) {
@@ -2236,6 +2271,8 @@ function setTool(t) {
     dim: '치수: 첫 점 → 둘째 점 → 치수선 위치 클릭. (치수 레이어에 생성, 연속 기입)',
     dist: '거리 측정: 두 점을 클릭하세요. (결과는 명령 기록에 표시)',
     area: '면적: 원/닫힌 폴리라인을 클릭하거나, 점들을 찍고 Enter로 계산.',
+    dimrad: '반지름 치수: 원/호 클릭 → 문자 위치 클릭. (R값, 연속 기입)',
+    dimdia: '지름 치수: 원/호 클릭 → 문자 위치 클릭. (⌀값, 연속 기입)',
     break: '끊기: 선/원/호 선택 → 끊기점 두 개 클릭. (사이 구간 제거)',
     lengthen: `길이조정: 증감량 ${lengthenDelta > 0 ? '+' : ''}${lengthenDelta}. 선의 조정할 끝쪽을 클릭하세요. (음수=줄이기)`,
     hatch: `해치: 간격 ${hatchSpacing}. 원/닫힌 폴리라인을 클릭하세요. (숫자로 간격 변경)`,
@@ -2557,6 +2594,7 @@ const COMMAND_LIST = [
   { name: 'dist', ko: '거리 측정' }, { name: 'area', ko: '면적' }, { name: 'zoom', ko: '전체보기' },
   { name: 'undo', ko: '실행취소' }, { name: 'redo', ko: '다시실행' },
   { name: 'break', ko: '끊기' }, { name: 'lengthen', ko: '길이조정' }, { name: 'hatch', ko: '해치' },
+  { name: 'dimradius', ko: '반지름 치수' }, { name: 'dimdiameter', ko: '지름 치수' },
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
