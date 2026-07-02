@@ -816,10 +816,10 @@ function lineCutsFromEntity(a, b, o) {
 // ============================================================
 //  TRIM (자르기)
 // ============================================================
-function trimLine(line, clickW) {
+function trimLine(line, clickW, edges) {
   const a = [line.x1, line.y1], b = [line.x2, line.y2];
   const cuts = [];
-  for (const o of state.entities) {
+  for (const o of (edges || state.entities)) {
     if (o === line) continue; const l = getLayer(o.layer); if (l && !l.visible) continue;
     for (const t of lineCutsFromEntity(a, b, o)) if (t > 1e-4 && t < 1 - 1e-4) cuts.push(t);
   }
@@ -842,9 +842,9 @@ function trimLine(line, clickW) {
   }
   return true;
 }
-function trimCircleArc(e, clickW) {
+function trimCircleArc(e, clickW, edges) {
   const angs = [];
-  for (const o of state.entities) {
+  for (const o of (edges || state.entities)) {
     if (o === e) continue; const l = getLayer(o.layer); if (l && !l.visible) continue;
     let hits = [];
     if (o.type === 'LINE') hits = segCircle([o.x1, o.y1], [o.x2, o.y2], e.cx, e.cy, e.r).filter(h => h.t >= -1e-9 && h.t <= 1 + 1e-9);
@@ -1044,6 +1044,7 @@ window.addEventListener('mouseup', (ev) => {
 
 // 우클릭/두 손가락 탭: 작도 중이면 완료/취소, 아니면 선택 도구로
 function contextAction() {
+  if (state.tool === 'trim' && cmdOp && cmdOp.name === 'trim') { trimSpaceAction(); return; } // 우클릭=Space
   if (pts.length) { finishPolyline(); }
   else if (draft) { cancelDraft(); }
   else { setTool('select'); }
@@ -1390,12 +1391,53 @@ function applyPolarArray(p, center) {
 
 // ====== TRIM (자르기) ======
 function clickTrim(w, rawW) {
+  if (!cmdOp || cmdOp.name !== 'trim') cmdOp = { name: 'trim', phase: 'quick', edges: [] };
+  // 기준선 선택 단계: 클릭 = 기준 객체 추가/해제(하이라이트)
+  if (cmdOp.phase === 'edges') {
+    const hit = pick(w, rawW);
+    if (!hit || !['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(hit.type)) { logLine('  기준선: 선/폴리라인/원/호를 클릭하세요.', 'warn'); return; }
+    const i = cmdOp.edges.indexOf(hit);
+    if (i >= 0) { cmdOp.edges.splice(i, 1); state.selection.delete(hit.id); }
+    else { cmdOp.edges.push(hit); state.selection.add(hit.id); }
+    renderProps();
+    setPrompt(`자르기(기준선): ${cmdOp.edges.length}개 선택됨. 계속 클릭하거나 Space로 확정하세요.`);
+    return;
+  }
+  // 자르기 실행: bounds=null이면 모든 객체 기준(빠른), 아니면 선택한 기준선만
+  const bounds = cmdOp.phase === 'cut' ? cmdOp.edges : null;
   const hit = pick(w, rawW);
   if (!hit) return;
-  if (hit.type === 'LINE') { pushUndo(); if (trimLine(hit, rawW)) { logLine('  ✔ 선 자름', 'ok'); updateStat(); } }
-  else if (hit.type === 'CIRCLE' || hit.type === 'ARC') { pushUndo(); if (trimCircleArc(hit, rawW)) { logLine('  ✔ 원/호 자름', 'ok'); } }
+  if (bounds && bounds.indexOf(hit) >= 0) { logLine('  기준선 자체는 자를 수 없습니다.', 'warn'); return; }
+  if (hit.type === 'LINE') { pushUndo(); if (trimLine(hit, rawW, bounds)) { logLine('  ✔ 선 자름', 'ok'); updateStat(); } }
+  else if (hit.type === 'CIRCLE' || hit.type === 'ARC') { pushUndo(); if (trimCircleArc(hit, rawW, bounds)) { logLine('  ✔ 원/호 자름', 'ok'); } }
   else logLine('  자르기는 선/원/호만 지원합니다.', 'warn');
-  state.selection.clear(); renderProps();
+  if (cmdOp.phase !== 'cut') { state.selection.clear(); renderProps(); } // 기준선 모드에선 하이라이트 유지
+}
+// Space/Enter/우클릭으로 자르기 모드 전환: 빠른 → 기준선 선택 → (확정) 자르기 → 빠른
+function trimSpaceAction() {
+  if (!cmdOp || cmdOp.name !== 'trim') cmdOp = { name: 'trim', phase: 'quick', edges: [] };
+  if (cmdOp.phase === 'quick') {
+    cmdOp.phase = 'edges'; cmdOp.edges = [];
+    state.selection.clear(); renderProps();
+    setPrompt('자르기(기준선): 기준이 될 객체들을 클릭하고 Space로 확정하세요.');
+    logLine('  ▷ 기준선 선택 모드 (Space=확정)', 'info');
+  } else if (cmdOp.phase === 'edges') {
+    if (cmdOp.edges.length) {
+      cmdOp.phase = 'cut';
+      setPrompt(`자르기: 기준선 ${cmdOp.edges.length}개에 걸치는 부분을 클릭하세요. (Space=빠른 모드 복귀)`);
+      logLine(`  ▷ 자르기 시작 — 기준선 ${cmdOp.edges.length}개`, 'info');
+    } else {
+      cmdOp.phase = 'quick';
+      setPrompt('자르기(빠른): 잘라낼 부분을 클릭하세요. (Space=기준선 모드)');
+      logLine('  ▷ 빠른 모드 (모든 객체 기준)', 'info');
+    }
+  } else {
+    cmdOp.phase = 'quick'; cmdOp.edges = [];
+    state.selection.clear(); renderProps();
+    setPrompt('자르기(빠른): 잘라낼 부분을 클릭하세요. (Space=기준선 모드)');
+    logLine('  ▷ 빠른 모드 (모든 객체 기준)', 'info');
+  }
+  draw();
 }
 
 // ====== EXTEND (연장) ======
@@ -2139,6 +2181,7 @@ function emptyEnterAction() {
     pts = []; draw(); return;
   }
   if (state.tool === 'area' && pts.length) { finishArea(); return; } // 면적 계산 확정
+  if (state.tool === 'trim') { trimSpaceAction(); return; }           // 자르기 모드 전환/확정
   if (draft) { cancelDraft(); return; }
   repeatLastCommand();
 }
@@ -2400,7 +2443,7 @@ function setTool(t) {
     mirror: '대칭: 도형을 선택하고 대칭축 두 점을 클릭하세요.',
     rotate: '회전: 도형을 선택하고 중심 지정 후, 각도(°) 입력 또는 클릭.',
     array: '배열: 도형을 선택하면 배열 설정 창이 열립니다.',
-    trim: '자르기: 자를 선/원/호의 잘라낼 부분을 클릭하세요. (다른 도형이 경계, 반복)',
+    trim: '자르기(빠른): 잘라낼 부분 클릭. Space=기준선 모드(기준 객체 선택→Space→그 기준으로만 자름)',
     extend: '연장: 늘릴 선의 끝쪽을 클릭하면 가장 가까운 경계까지 연장됩니다.',
     fillet: `모깎기: 반지름 ${filletRadius}. 첫 번째 선 → 두 번째 선을 클릭하세요. (숫자로 반지름 변경)`,
     scale: '배율: 도형을 선택하고 기준점 → 배율(숫자) 또는 참조 두 점을 지정하세요.',
