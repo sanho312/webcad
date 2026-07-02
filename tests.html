@@ -183,6 +183,43 @@ function tests(){
     ok(svg.startsWith('<svg'),'SVG 시작 태그');
     ok(svg.includes('<circle')&&svg.includes('<line'),'circle·line 포함');
     ok(svg.includes('viewBox'),'viewBox 존재'); }
+
+  group('레이어 잠금');
+  { reset(); S0.layers=[{name:'0',color:'#fff',visible:true},{name:'L',color:'#f00',visible:true,locked:true}];
+    ok(C.isLocked({layer:'L'}),'잠긴 레이어 도형 = locked');
+    ok(!C.isLocked({layer:'0'}),'일반 레이어 = 미잠금'); }
+
+  group('그리기 순서(front/back)');
+  { setEnts([{type:'LINE',x1:0,y1:0,x2:1,y2:0},{type:'CIRCLE',cx:0,cy:0,r:1},{type:'ARC',cx:0,cy:0,r:1,startAngle:0,endAngle:90}]);
+    const id2=S0.entities[1].id; S0.selection.clear(); S0.selection.add(id2);
+    C.reorderSel(true); eqi(S0.entities[S0.entities.length-1].id,id2,'맨 앞: 선택이 배열 끝');
+    C.reorderSel(false); eqi(S0.entities[0].id,id2,'맨 뒤: 선택이 배열 처음'); }
+
+  group('유사 선택');
+  { setEnts([{type:'LINE',layer:'0',x1:0,y1:0,x2:1,y2:0},{type:'LINE',layer:'0',x1:0,y1:2,x2:1,y2:2},{type:'CIRCLE',layer:'0',cx:0,cy:0,r:1},{type:'LINE',layer:'치수',x1:0,y1:5,x2:1,y2:5}]);
+    S0.layers=[{name:'0',color:'#fff',visible:true},{name:'치수',color:'#0f0',visible:true}];
+    S0.selection.clear(); S0.selection.add(S0.entities[0].id); // 첫 LINE(0레이어)
+    C.selectSimilar();
+    eqi(S0.selection.size,2,'같은 종류+레이어(LINE/0) 2개만 선택'); }
+
+  group('각도 치수 계산');
+  { const l1={type:'LINE',x1:0,y1:0,x2:10,y2:0}, l2={type:'LINE',x1:0,y1:0,x2:5,y2:8.66};
+    const r=C.computeAngularDim(l1,l2,{x:4,y:2});
+    ok(r&&Math.abs(r.deg-60)<0.5,'수평선×60°선 = 60° ('+(r&&r.deg)+')'); }
+  { const l1={type:'LINE',x1:0,y1:0,x2:10,y2:0}, l2={type:'LINE',x1:0,y1:1,x2:10,y2:1};
+    ok(C.computeAngularDim(l1,l2,{x:5,y:5})===null,'평행선 = null'); }
+  { const X=C.lineInfIntersect([0,0],[10,0],[5,-5],[5,5]); pt(X,5,0,'무한직선 교차 (5,0)'); }
+
+  group('DIVIDE/MEASURE 점 배치');
+  { const line={type:'LINE',x1:0,y1:0,x2:100,y2:0};
+    const d=C.pointsAlongEntity(line,{count:5}); eqi(d.length,4,'선 5등분 → 내부 4점'); pt(d[0],20,0,'첫 등분점 (20,0)');
+    const m=C.pointsAlongEntity(line,{step:30}); eqi(m.length,3,'간격 30 → 3점(30·60·90)'); pt(m[2],90,0,'세번째 (90,0)');
+    const cir={type:'CIRCLE',cx:0,cy:0,r:10};
+    eqi(C.pointsAlongEntity(cir,{count:4}).length,4,'원 4등분 → 4점(닫힘)'); }
+
+  group('이전 뷰(zoom previous)');
+  { reset(); S0.view={x:0,y:0,scale:1}; C.pushViewPrev(); S0.view={x:50,y:50,scale:4};
+    C.zoomPrev(); ok(S0.view.x===0&&S0.view.scale===1,'zp: 직전 뷰로 복귀'); }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });

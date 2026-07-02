@@ -29,6 +29,7 @@ const state = {
   textHeight: 10,
   nextId: 1,
   blocks: {},            // 블록 정의: name -> { entities:[...상대좌표 도형] }
+  views: {},             // 저장된 뷰: name -> {x,y,scale}
 };
 
 // 작도 중 임시 상태
@@ -80,6 +81,8 @@ let lastCommand = '';   // 직전에 실행한 명령(스페이스/Enter로 반�
 let lastInputWasTouch = false; // 터치 입력 중에는 명령행 자동 포커스(키보드 팝업) 억제
 let osnapEnabled = true;   // 객체 스냅(OSNAP) 사용 여부
 let activeSnap = null;     // 현재 스냅된 점 {x,y,type}
+let trackPt = null;        // 스냅 추적 기준점(마지막 획득 스냅)
+let otrackAlign = null;    // 'x' | 'y' | 'xy' — 추적 정렬 활성
 
 // ---------- 실행취소 스택 ----------
 const undoStack = [], redoStack = [];
@@ -139,7 +142,16 @@ function applyOrtho(p, b) {
 // 커서 월드좌표 = 객체 스냅(OSNAP) 우선 → 없으면 그리드 스냅 + 직교 보정
 function cursorPoint(raw) {
   activeSnap = findObjectSnap(raw);
-  if (activeSnap) return { x: activeSnap.x, y: activeSnap.y };
+  if (activeSnap) { trackPt = { x: activeSnap.x, y: activeSnap.y }; otrackAlign = null; return { x: activeSnap.x, y: activeSnap.y }; }
+  // 객체 스냅 추적: 마지막 스냅점의 수평/수직선에 커서 정렬
+  otrackAlign = null;
+  if (osnapEnabled && trackPt) {
+    const tolW = 8 / state.view.scale;
+    const ax = Math.abs(raw.x - trackPt.x) <= tolW, ay = Math.abs(raw.y - trackPt.y) <= tolW;
+    if (ax && ay) { otrackAlign = 'xy'; return { x: trackPt.x, y: trackPt.y }; }
+    if (ax) { otrackAlign = 'x'; return { x: trackPt.x, y: raw.y }; }
+    if (ay) { otrackAlign = 'y'; return { x: raw.x, y: trackPt.y }; }
+  }
   let p = { x: raw.x, y: raw.y };
   const b = orthoBase();
   if (b) {
@@ -231,7 +243,9 @@ function draw() {
   const vxmin = Math.min(vtl.x, vbr.x), vxmax = Math.max(vtl.x, vbr.x);
   const vymin = Math.min(vtl.y, vbr.y), vymax = Math.max(vtl.y, vbr.y);
   const cull = state.entities.length > 300;
+  for (const pass of [0, 1]) // 0: 밑그림 이미지 먼저(항상 바닥), 1: 나머지
   for (const e of state.entities) {
+    if ((e.type === 'IMAGE') !== (pass === 0)) continue;
     const l = getLayer(e.layer);
     if (l && !l.visible) continue;
     if (cull) { const bb = entityBBox(e); if (bb && (bb.xmax < vxmin || bb.xmin > vxmax || bb.ymax < vymin || bb.ymin > vymax)) continue; }
@@ -325,6 +339,14 @@ function drawCursor() {
   ctx.moveTo(0, s.y); ctx.lineTo(cv._w, s.y);
   ctx.stroke();
   ctx.restore();
+  if (otrackAlign && trackPt) { // 스냅 추적선(주황 점선)
+    const tp = worldToScreen(trackPt.x, trackPt.y);
+    ctx.save(); ctx.strokeStyle = 'rgba(255,170,60,.8)'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(tp.x, tp.y); ctx.lineTo(s.x, s.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(tp.x - 4, tp.y); ctx.lineTo(tp.x + 4, tp.y); ctx.moveTo(tp.x, tp.y - 4); ctx.lineTo(tp.x, tp.y + 4); ctx.stroke();
+    ctx.restore();
+  }
   if (activeSnap) drawSnapMarker(s, activeSnap.type);
 }
 
@@ -428,6 +450,24 @@ function drawEntity(e, selected, preview) {
       if (selected && !preview) { path(); ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]); }
       break;
     }
+    case 'IMAGE': {
+      if (!e._img) {
+        const im = new Image(); im.src = e.src;
+        Object.defineProperty(e, '_img', { value: im, configurable: true, writable: true, enumerable: false });
+        im.onload = () => draw();
+      }
+      if (e._img.complete && e._img.naturalWidth) {
+        const tl = worldToScreen(e.x, e.y + e.h);
+        const ga = ctx.globalAlpha; ctx.globalAlpha = preview ? 0.4 : 0.9;
+        ctx.drawImage(e._img, tl.x, tl.y, e.w * state.view.scale, e.h * state.view.scale);
+        ctx.globalAlpha = ga;
+      }
+      if (selected && !preview) {
+        const tl = worldToScreen(e.x, e.y + e.h);
+        ctx.setLineDash([4, 3]); ctx.strokeRect(tl.x, tl.y, e.w * state.view.scale, e.h * state.view.scale); ctx.setLineDash([]);
+      }
+      break;
+    }
     case 'INSERT': {
       ctx.restore();
       for (const c of insertChildren(e)) drawEntity(c, false, preview); // 자식은 각자 색/선종류
@@ -479,6 +519,7 @@ function entityGrips(e) {
     case 'TEXT': return [{ x: e.x, y: e.y }];
     case 'HATCH': return e.boundary.kind === 'circle' ? [{ x: e.boundary.cx, y: e.boundary.cy }] : e.boundary.points.map(p => ({ x: p[0], y: p[1] }));
     case 'INSERT': return [{ x: e.x, y: e.y }];
+    case 'IMAGE': return [{ x: e.x, y: e.y }];
   }
   return [];
 }
@@ -494,11 +535,12 @@ function distToSeg(px, py, x1, y1, x2, y2) {
   const cx = x1 + t * dx, cy = y1 + t * dy;
   return Math.hypot(px - cx, py - cy);
 }
+function isLocked(e) { const l = getLayer(e.layer); return !!(l && l.locked); }
 function hitTest(w, tolWorld) {
-  // 뒤에서부터(위에 그려진 것 우선)
+  // 뒤에서부터(위에 그려진 것 우선). 잠긴 레이어는 선택 불가
   for (let i = state.entities.length - 1; i >= 0; i--) {
     const e = state.entities[i];
-    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) continue;
     if (entityHit(e, w, tolWorld)) return e;
   }
   return null;
@@ -536,6 +578,7 @@ function entityHit(e, w, tol) {
       return w.x >= e.x - tol && w.x <= e.x + w2 + tol && w.y >= e.y - tol && w.y <= e.y + e.height + tol;
     }
     case 'HATCH': return pointInBoundary(e.boundary, w.x, w.y); // 내부 클릭 = 선택
+    case 'IMAGE': return w.x >= e.x && w.x <= e.x + e.w && w.y >= e.y && w.y <= e.y + e.h;
     case 'INSERT': {
       if (Math.hypot(w.x - e.x, w.y - e.y) <= tol) return true; // 삽입점
       for (const c of insertChildren(e)) if (entityHit(c, w, tol)) return true;
@@ -570,6 +613,7 @@ function entityBBox(e) {
     case 'TEXT': { const w = (e.text ? e.text.length : 0) * e.height * 0.6; return { xmin: e.x, xmax: e.x + w, ymin: e.y, ymax: e.y + e.height }; }
     case 'HATCH': return boundaryBBox(e.boundary);
     case 'INSERT': return insertBBox(e);
+    case 'IMAGE': return { xmin: e.x, ymin: e.y, xmax: e.x + e.w, ymax: e.y + e.h };
   }
   return null;
 }
@@ -776,6 +820,7 @@ function translateEntity(e, dx, dy) {
       hatchDirty(e); break;
     }
     case 'INSERT': e.x += dx; e.y += dy; break;
+    case 'IMAGE': e.x += dx; e.y += dy; break;
   }
 }
 
@@ -1165,6 +1210,7 @@ function scaleEntities(ents, base, f) {
         e.spacing = (e.spacing || 5) * f; hatchDirty(e); break;
       }
       case 'INSERT': [e.x, e.y] = sp(e.x, e.y); e.sx = (e.sx != null ? e.sx : 1) * f; e.sy = (e.sy != null ? e.sy : 1) * f; break;
+      case 'IMAGE': [e.x, e.y] = sp(e.x, e.y); e.w *= f; e.h *= f; break;
     }
   }
 }
@@ -1192,7 +1238,7 @@ function stretchEntities(ents, box, dx, dy) {
 function entitiesTouchingBox(box) {
   const inB = (x, y) => x >= box.xmin && x <= box.xmax && y >= box.ymin && y <= box.ymax;
   return state.entities.filter(e => {
-    const l = getLayer(e.layer); if (l && !l.visible) return false;
+    const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) return false;
     return entityGrips(e).some(g => inB(g.x, g.y));
   });
 }
@@ -1250,11 +1296,16 @@ function contextAction() {
 }
 cv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); contextAction(); });
 
-// 더블클릭: 선택된 폴리라인의 정점 삭제
+// 더블클릭: 문자 편집 / 선택된 폴리라인의 정점 삭제
 cv.addEventListener('dblclick', () => {
   if (state.tool !== 'select') return;
   const rW = screenToWorld(mouseScreen.x, mouseScreen.y), tol = 8 / state.view.scale;
   const hit = pick(mouseWorld, rW);
+  if (hit && hit.type === 'TEXT') { // 문자 더블클릭 = 즉시 편집
+    const nt = prompt('문자 내용:', hit.text);
+    if (nt !== null && nt !== hit.text) { pushUndo(); hit.text = nt; logLine('  ✔ 문자 수정', 'ok'); renderProps(); draw(); }
+    return;
+  }
   if (!hit || hit.type !== 'LWPOLYLINE' || !state.selection.has(hit.id)) return;
   const g = nearGrip(hit, rW, tol) || nearGrip(hit, mouseWorld, tol);
   if (!g) return;
@@ -1487,6 +1538,7 @@ function handleClick(w, rawW, ev) {
     case 'dimang': clickDimAng(w, rawW); break;
     case 'divide': clickDivide(w, rawW); break;
     case 'measure': clickMeasure(w, rawW); break;
+    case 'leader': clickLeader(w); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -1900,6 +1952,32 @@ function clickDimCircle(w, rawW, dia) {
   logLine(`  ✔ ${dia ? '지름' : '반지름'} 치수 ${txt}`, 'ok');
   cmdOp = { name, step: 'obj' }; updateStat();
   setPrompt('치수: 원/호를 클릭하세요. (연속 기입, Esc 종료)');
+}
+
+// ====== LEADER (지시선) — 화살표 → 문자 위치 → 문구 ======
+function clickLeader(w) {
+  if (!cmdOp || cmdOp.name !== 'leader') cmdOp = { name: 'leader', step: 'p1' };
+  if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('지시선: 문자 위치를 클릭하세요.'); return; }
+  const p1 = cmdOp.p1, p2 = w;
+  const txt = prompt('지시 문구:', '');
+  if (txt === null) { cmdOp = { name: 'leader', step: 'p1' }; setPrompt('지시선: 화살표 지점을 클릭하세요.'); return; }
+  pushUndo();
+  ensureLayer('치수', '#5dff8f');
+  const th = state.textHeight, dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const dir = dx >= 0 ? 1 : -1, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
+  const ln = (x1, y1, x2, y2) => addEntity({ type: 'LINE', layer: '치수', x1, y1, x2, y2 });
+  ln(p1.x, p1.y, p2.x, p2.y);                       // 지시선
+  const tail = th * 1.2;
+  ln(p2.x, p2.y, p2.x + dir * tail, p2.y);           // 수평 꼬리
+  const s = th * 0.5, nx = -uy, ny = ux;             // 화살표(V)
+  ln(p1.x, p1.y, p1.x + ux * s + nx * s * 0.35, p1.y + uy * s + ny * s * 0.35);
+  ln(p1.x, p1.y, p1.x + ux * s - nx * s * 0.35, p1.y + uy * s - ny * s * 0.35);
+  if (txt.trim()) addEntity({ type: 'TEXT', layer: '치수',
+    x: p2.x + dir * (tail + th * 0.25) - (dir < 0 ? txt.length * th * 0.6 : 0),
+    y: p2.y - th * 0.35, height: th, text: txt, rotation: 0 });
+  logLine('  ✔ 지시선', 'ok');
+  cmdOp = { name: 'leader', step: 'p1' }; previewEnts = null;
+  updateStat(); setPrompt('지시선: 화살표 지점을 클릭하세요. (연속, Esc 종료)');
 }
 
 // ====== DIMANGULAR (각도 치수) — 두 선 사이 각도 호 + 도수 ======
@@ -2378,6 +2456,7 @@ function exportHatchExpand(ents) {
 function exportEntities(keepInserts) {
   const out = [];
   const emit = (e) => {
+    if (e.type === 'IMAGE') return; // 밑그림은 내보내기 제외
     if (e.type === 'INSERT') { if (keepInserts) out.push(e); else for (const c of insertChildren(e)) emit(c); return; }
     if (e.type !== 'HATCH') { out.push(e); return; }
     const hs = e.pattern === 'solid' ? { segs: [], dots: [] } : hatchSegments(e);
@@ -2441,12 +2520,39 @@ function cmdBlock() {
   logLine(`  ✔ 블록 "${name}" 정의 (${sel.length}개 → 블록 1개)`, 'ok');
   updateStat(); renderProps(); refreshBlockList(); draw();
 }
+// 그리기 순서: 선택을 맨앞/맨뒤로
+function reorderSel(front) {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  순서 변경: 도형을 먼저 선택하세요.', 'warn'); return; }
+  pushUndo();
+  state.entities = state.entities.filter(e => !state.selection.has(e.id));
+  if (front) state.entities.push(...sel); else state.entities.unshift(...sel);
+  logLine(`  ✔ ${sel.length}개 → ${front ? '맨 앞으로' : '맨 뒤로'}`, 'ok');
+  draw();
+}
+// 유사 선택: 선택과 같은 종류+레이어 전부 선택
+function selectSimilar() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  유사 선택: 기준 도형을 먼저 선택하세요.', 'warn'); return; }
+  const keys = new Set(sel.map(e => e.type + '|' + e.layer));
+  let n = 0;
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) continue;
+    if (keys.has(e.type + '|' + e.layer) && !state.selection.has(e.id)) { state.selection.add(e.id); n++; }
+  }
+  logLine(`  ✔ 유사 선택: +${n}개 (총 ${state.selection.size}개)`, 'ok');
+  renderProps(); draw();
+}
 // 도구 전환 없이 즉시 실행되는 명령들
 const INSTANT_CMDS = {
   explode: cmdExplode,
   join: cmdJoin,
   block: cmdBlock,
+  front: () => reorderSel(true),
+  back: () => reorderSel(false),
+  similar: selectSimilar,
   zoom: () => { zoomFit(); logLine('  ✔ 전체보기', 'info'); },
+  zp: zoomPrev,
   undo: () => { undo(); logLine('  ✔ 실행취소', 'info'); },
   redo: () => { redo(); logLine('  ✔ 다시실행', 'info'); },
 };
@@ -2564,7 +2670,7 @@ function finishDragSelect(ev) {
     const box = { xmin: Math.min(x1, x2), xmax: Math.max(x1, x2), ymin: Math.min(y1, y2), ymax: Math.max(y1, y2) };
     const crossing = x2 < x1; // 오른쪽→왼쪽 드래그 = 크로싱(걸치면 선택), 왼→오 = 윈도우(전체 포함)
     for (const e of state.entities) {
-      const l = getLayer(e.layer); if (l && !l.visible) continue;
+      const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) continue; // 잠긴 레이어 제외
       if (crossing ? entityCrossesBox(e, box) : entityFullyInBox(e, box)) state.selection.add(e.id);
     }
   }
@@ -2613,6 +2719,7 @@ const TOOL_KO = {
   dimrad: '반지름 치수(DIMRADIUS)', dimdia: '지름 치수(DIMDIAMETER)',
   block: '블록 정의(BLOCK)', insert: '블록 삽입(INSERT)', matchprop: '속성 일치(MATCHPROP)',
   dimang: '각도 치수(DIMANGULAR)', divide: '등분(DIVIDE)', measure: '간격 표식(MEASURE)',
+  leader: '지시선(LEADER)', front: '맨 앞으로(FRONT)', back: '맨 뒤로(BACK)', similar: '유사 선택(SIMILAR)',
 };
 
 const CMD_ALIASES = {
@@ -2632,7 +2739,7 @@ const CMD_ALIASES = {
   explode: 'explode', x: 'explode', join: 'join', j: 'join',
   dist: 'dist', di: 'dist', area: 'area', aa: 'area',
   dim: 'dim', dli: 'dim', dal: 'dim', dimlinear: 'dim', dimaligned: 'dim',
-  zoom: 'zoom', z: 'zoom', u: 'undo', undo: 'undo', redo: 'redo',
+  zoom: 'zoom', z: 'zoom', zp: 'zp', u: 'undo', undo: 'undo', redo: 'redo',
   pan: 'pan',
   break: 'break', br: 'break', lengthen: 'lengthen', len: 'lengthen',
   hatch: 'hatch', h: 'hatch',
@@ -2642,12 +2749,26 @@ const CMD_ALIASES = {
   matchprop: 'matchprop', ma: 'matchprop', mp: 'matchprop',
   dimangular: 'dimang', dimang: 'dimang', dan: 'dimang',
   divide: 'divide', div: 'divide', measure: 'measure', me: 'measure',
+  leader: 'leader', le: 'leader', ld: 'leader',
+  front: 'front', fr: 'front', back: 'back', bk: 'back',
+  similar: 'similar', ss: 'similar',
 };
 
 function runCommandInput(raw) {
   const v = raw.trim().toLowerCase();
   if (!v) return; // 빈 Enter
   logLine('명령: ' + v, 'cmd');
+  // 뷰 명령: vs 이름(저장) / vg 이름(이동) / vl(목록)
+  let vm = raw.trim().match(/^vs\s+(.+)$/i);
+  if (vm) { state.views[vm[1].trim()] = { ...state.view }; logLine(`  ✔ 뷰 저장: "${vm[1].trim()}"`, 'ok'); return; }
+  vm = raw.trim().match(/^vg\s+(.+)$/i);
+  if (vm) {
+    const vv = state.views[vm[1].trim()];
+    if (vv) { pushViewPrev(); state.view = { ...vv }; draw(); logLine(`  ✔ 뷰 이동: "${vm[1].trim()}"`, 'ok'); }
+    else logLine(`  뷰 "${vm[1].trim()}"이 없습니다. (vl=목록)`, 'warn');
+    return;
+  }
+  if (v === 'vl') { const ns = Object.keys(state.views); logLine('  저장된 뷰: ' + (ns.length ? ns.join(', ') : '(없음)') + '  — vs 이름=저장, vg 이름=이동', 'info'); return; }
   // 해치 도구 중 패턴명 입력 (예: brick, concrete)
   if (state.tool === 'hatch' && HATCH_PATTERNS[v]) {
     hatchPattern = v;
@@ -2900,6 +3021,8 @@ function updateCmdPreview() {
     if (L > 1e-9) previewEnts = computeDimension(p1, w, { x: (p1.x + w.x) / 2 + (-dy / L) * cmdOp.h, y: (p1.y + w.y) / 2 + (dx / L) * cmdOp.h });
   } else if (cmdOp.name === 'dim' && cmdOp.step === 'p2' && cmdOp.p1) {
     previewEnts = [{ type: 'LINE', x1: cmdOp.p1.x, y1: cmdOp.p1.y, x2: w.x, y2: w.y }];
+  } else if (cmdOp.name === 'leader' && cmdOp.step === 'p2' && cmdOp.p1) {
+    previewEnts = [{ type: 'LINE', x1: cmdOp.p1.x, y1: cmdOp.p1.y, x2: w.x, y2: w.y }];
   } else if (cmdOp.name === 'dist' && cmdOp.step === 'p2' && cmdOp.p1) {
     previewEnts = [{ type: 'LINE', x1: cmdOp.p1.x, y1: cmdOp.p1.y, x2: w.x, y2: w.y }];
     setPrompt(`거리: ${fmtNum(Math.hypot(w.x - cmdOp.p1.x, w.y - cmdOp.p1.y))} (두 번째 점 클릭)`);
@@ -2954,7 +3077,7 @@ function closeArrayDialog() { document.getElementById('arrayDlg').style.display 
 function setTool(t) {
   state.tool = t;
   draft = null; pts = []; arcState = null; moveOp = null; dragSelect = null;
-  cmdOp = null; previewEnts = null;
+  cmdOp = null; previewEnts = null; trackPt = null; otrackAlign = null;
   document.querySelectorAll('.tool').forEach(el => el.classList.toggle('active', el.dataset.tool === t));
   cv.style.cursor = (t === 'select') ? 'default' : (t === 'pan') ? 'grab' : 'crosshair';
   const hints = {
@@ -2987,6 +3110,7 @@ function setTool(t) {
     insert: '블록 삽입: 삽입 위치를 클릭하세요. (레이어 패널 아래 목록에서 블록 선택)',
     matchprop: '속성 일치: 원본 도형을 클릭 → 속성을 적용할 대상들을 클릭. (레이어·색·선종류·선굵기 복사)',
     dimang: '각도 치수: 첫 선 → 둘째 선 → 호 위치 클릭.',
+    leader: '지시선: 화살표 지점 → 문자 위치 클릭 → 문구 입력.',
     divide: `등분: 개수(숫자, 현재 ${divideCount}) 입력 후 선/폴리라인/원/호 클릭 → ✕ 표식 생성.`,
     measure: `간격 표식: 간격(숫자, 현재 ${measureStep}) 입력 후 대상 클릭 → 시작점부터 일정간격 ✕ 표식.`,
     dimrad: '반지름 치수: 원/호 클릭 → 문자 위치 클릭. (R값, 연속 기입)',
@@ -3026,6 +3150,7 @@ function renderLayers() {
       `<div class="lrow1">
         <span class="sw" style="background:${l.color}"></span>
         <span class="nm">${escapeHtml(l.name)}</span>
+        <span class="lk" title="잠금(수정 불가)">${l.locked ? '🔒' : '🔓'}</span>
         <span class="eye">${l.visible ? '👁' : '🚫'}</span>
        </div>
        <div class="lrow2" onclick="event.stopPropagation()">
@@ -3044,6 +3169,11 @@ function renderLayers() {
     div.querySelector('.eye').addEventListener('click', (e) => {
       e.stopPropagation(); l.visible = !l.visible; renderLayers(); draw();
     });
+    div.querySelector('.lk').addEventListener('click', (e) => {
+      e.stopPropagation(); l.locked = !l.locked;
+      if (l.locked) { state.entities.forEach(en => { if (en.layer === l.name) state.selection.delete(en.id); }); renderProps(); }
+      renderLayers(); draw();
+    });
     div.querySelector('.llt').addEventListener('change', (e) => { e.stopPropagation(); l.linetype = e.target.value; draw(); });
     div.querySelector('.llw').addEventListener('change', (e) => { e.stopPropagation(); l.lineweight = e.target.value === '' ? undefined : parseInt(e.target.value, 10); draw(); });
     div.querySelector('.nm').addEventListener('dblclick', (e) => {
@@ -3060,6 +3190,7 @@ function renderLayers() {
   }
 }
 
+document.getElementById('btnAllVis').addEventListener('click', () => { state.layers.forEach(l => { l.visible = true; l.locked = false; }); renderLayers(); draw(); });
 document.getElementById('blkScale').addEventListener('change', e => { insertScale = parseFloat(e.target.value) || 1; });
 document.getElementById('blkRot').addEventListener('change', e => { insertRot = parseFloat(e.target.value) || 0; });
 document.getElementById('btnAddLayer').addEventListener('click', () => {
@@ -3091,8 +3222,15 @@ function renderProps() {
        <div class="row"><label>레이어</label><select id="mLayer"><option value="">— 변경 —</option>${state.layers.map(l => `<option>${escapeHtml(l.name)}</option>`).join('')}</select></div>
        <div class="row"><label>색상</label><input type="color" id="mColor" value="#ffffff"><button class="miniBtn" id="mColApply">적용</button><button class="miniBtn" id="mColClear">레이어색</button></div>
        <div class="row"><label>선종류</label><select id="mLt"><option value="">— 변경 —</option>${Object.keys(LINETYPES).map(k => `<option value="${k}">${LINETYPE_KO[k]}</option>`).join('')}</select></div>
+       <div style="display:flex;gap:6px;margin-top:6px;">
+         <button class="miniBtn" id="pFront">맨 앞</button><button class="miniBtn" id="pBack">맨 뒤</button>
+         <button class="miniBtn" id="pSim">유사 선택</button>
+       </div>
        <button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
     const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); draw(); };
+    document.getElementById('pFront').addEventListener('click', () => reorderSel(true));
+    document.getElementById('pBack').addEventListener('click', () => reorderSel(false));
+    document.getElementById('pSim').addEventListener('click', selectSimilar);
     document.getElementById('mLayer').addEventListener('change', ev => { if (ev.target.value) apply(e => e.layer = ev.target.value); });
     document.getElementById('mColApply').addEventListener('click', () => apply(e => e.color = document.getElementById('mColor').value));
     document.getElementById('mColClear').addEventListener('click', () => apply(e => delete e.color));
@@ -3111,6 +3249,7 @@ function renderProps() {
     ARC: [['cx', '중심X'], ['cy', '중심Y'], ['r', '반지름'], ['startAngle', '시작각'], ['endAngle', '끝각']],
     TEXT: [['x', 'X'], ['y', 'Y'], ['height', '높이'], ['rotation', '회전']],
     HATCH: [['spacing', '간격']],
+    IMAGE: [['x', 'X'], ['y', 'Y'], ['w', '폭'], ['h', '높이']],
   };
   if (geomRows[e.type]) for (const [k, lab] of geomRows[e.type])
     rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-k="${k}" value="${e[k]}"></div>`;
@@ -3121,8 +3260,14 @@ function renderProps() {
       `<option value="${k}" ${e.pattern === k ? 'selected' : ''}>${HATCH_PATTERNS[k].ko}</option>`).join('')}</select></div>`;
   rows += `<div class="row"><label>색상</label><input type="color" id="pColor" value="${rgbHex(entityColor(e))}">
     <button class="miniBtn" id="pColClear">레이어색</button></div>`;
+  rows += `<div style="display:flex;gap:6px;margin-top:6px;">
+    <button class="miniBtn" id="pFront1">맨 앞</button><button class="miniBtn" id="pBack1">맨 뒤</button>
+    <button class="miniBtn" id="pSim1">유사 선택</button></div>`;
   rows += `<button class="miniBtn" id="pDel" style="margin-top:6px;">삭제</button>`;
   body.innerHTML = rows;
+  document.getElementById('pFront1').addEventListener('click', () => reorderSel(true));
+  document.getElementById('pBack1').addEventListener('click', () => reorderSel(false));
+  document.getElementById('pSim1').addEventListener('click', selectSimilar);
 
   body.querySelectorAll('input[data-k]').forEach(inp =>
     inp.addEventListener('change', () => {
@@ -3147,14 +3292,23 @@ function deleteSelection() {
   state.selection.clear(); renderProps(); updateStat(); draw();
 }
 
-function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자', HATCH: '해치', INSERT: '블록' })[t] || t; }
+function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자', HATCH: '해치', INSERT: '블록', IMAGE: '밑그림 이미지' })[t] || t; }
 function updateStat() { statEl.textContent = `도형 ${state.entities.length}개 · 레이어 ${state.layers.length}개`; }
 
 // ============================================================
 //  뷰 조작
 // ============================================================
 // robust=true이면 극단 이상치(드물게 도면에서 멀리 떨어진 잔여 도형)를 제외하고 맞춤 — 불러오기 직후 사용
+// 이전 뷰 스택 (zp)
+const viewPrevStack = [];
+function pushViewPrev() { viewPrevStack.push({ ...state.view }); if (viewPrevStack.length > 24) viewPrevStack.shift(); }
+function zoomPrev() {
+  const v = viewPrevStack.pop();
+  if (!v) { logLine('  이전 뷰가 없습니다.', 'warn'); return; }
+  state.view = v; draw(); logLine('  ✔ 이전 뷰', 'info');
+}
 function zoomFit(robust) {
+  pushViewPrev();
   if (!state.entities.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
   const xs = [], ys = [];
   const ext = (x, y) => { if (isFinite(x) && isFinite(y)) { xs.push(x); ys.push(y); } };
@@ -3165,6 +3319,8 @@ function zoomFit(robust) {
       case 'CIRCLE': case 'ARC': ext(e.cx - e.r, e.cy - e.r); ext(e.cx + e.r, e.cy + e.r); break;
       case 'TEXT': ext(e.x, e.y); ext(e.x + e.text.length * e.height * .6, e.y + e.height); break;
       case 'HATCH': { const bb = boundaryBBox(e.boundary); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
+      case 'IMAGE': ext(e.x, e.y); ext(e.x + e.w, e.y + e.h); break;
+      case 'INSERT': { const bb = insertBBox(e); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
     }
   }
   if (!xs.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
@@ -3229,7 +3385,36 @@ window.addEventListener('keydown', (ev) => {
   document.getElementById('miSave').addEventListener('click', () => { close(); saveDXF(); });
   document.getElementById('miSaveAs').addEventListener('click', () => { close(); openSaveAs(); });
   document.getElementById('miShare').addEventListener('click', () => { close(); shareLink(); });
+  document.getElementById('miImage').addEventListener('click', () => { close(); document.getElementById('imgInput').click(); });
 })();
+// 밑그림 이미지 삽입: 축소 인코딩 → '밑그림' 레이어(기본 잠금)에 배치 → 위에 트레이싱
+document.getElementById('imgInput').addEventListener('change', (ev) => {
+  const f = ev.target.files[0]; if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1600, k = Math.min(1, MAX / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const src = c.toDataURL('image/jpeg', 0.72);
+      // 뷰 중앙에 화면폭 60% 크기로 배치
+      const wWorld = (cv._w / state.view.scale) * 0.6;
+      const hWorld = wWorld * c.height / c.width;
+      const x = state.view.x - wWorld / 2, y = state.view.y - hWorld / 2;
+      const lay = ensureLayer('밑그림', '#8a8a94');
+      if (lay.locked === undefined) lay.locked = true; // 기본 잠금 → 위에 바로 트레이싱
+      pushUndo();
+      addEntity({ type: 'IMAGE', layer: '밑그림', x, y, w: wWorld, h: hWorld, src });
+      logLine(`  ✔ 밑그림 삽입 (${c.width}×${c.height}) — '밑그림' 레이어 🔒 잠금 상태`, 'ok');
+      renderLayers(); updateStat(); draw();
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(f);
+  ev.target.value = '';
+});
 // 옵션 드롭다운 + 설정 대화상자 (단축키/객체스냅/단위)
 (function () {
   const btn = document.getElementById('btnOpts');
@@ -3449,6 +3634,7 @@ const COMMAND_LIST = [
   { name: 'dimradius', ko: '반지름 치수' }, { name: 'dimdiameter', ko: '지름 치수' },
   { name: 'block', ko: '블록 정의' }, { name: 'insert', ko: '블록 삽입' }, { name: 'matchprop', ko: '속성 일치' },
   { name: 'dimangular', ko: '각도 치수' }, { name: 'divide', ko: '등분' }, { name: 'measure', ko: '간격 표식' },
+  { name: 'leader', ko: '지시선' }, { name: 'front', ko: '맨 앞으로' }, { name: 'back', ko: '맨 뒤로' }, { name: 'similar', ko: '유사 선택' },
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
@@ -4325,7 +4511,7 @@ let docs = [], curDoc = 0;
 function captureDoc() {
   return {
     entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
-    nextId: state.nextId, blocks: state.blocks, view: { ...state.view },
+    nextId: state.nextId, blocks: state.blocks, view: { ...state.view }, views: state.views,
     fileName: currentFileName, fileLoc: currentFileLoc, fileHandle,
     undo: undoStack.slice(), redo: redoStack.slice(),
   };
@@ -4337,6 +4523,8 @@ function applyDoc(d) {
   state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
   state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
+  state.views = d.views || {};
+  viewPrevStack.length = 0;
   if (d.view) state.view = { ...d.view };
   fileHandle = d.fileHandle || null;
   currentFileName = d.fileName || null; currentFileLoc = d.fileLoc || null;
@@ -4423,7 +4611,7 @@ function saveLocal() {
   try {
     if (!docs.length) docs = [{}];
     docs[curDoc] = captureDoc();
-    const sane = docs.map(d => ({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId, blocks: d.blocks, view: d.view, fileName: d.fileName, fileLoc: d.fileLoc === 'pc' ? null : d.fileLoc })); // 핸들·undo 제외
+    const sane = docs.map(d => ({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId, blocks: d.blocks, view: d.view, views: d.views, fileName: d.fileName, fileLoc: d.fileLoc === 'pc' ? null : d.fileLoc })); // 핸들·undo 제외
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ v: 2, docs: sane, cur: curDoc, t: Date.now() }));
   } catch (e) { /* 용량 초과 등 무시 */ }
 }
@@ -4503,7 +4691,10 @@ window.__CADTEST__ = {
   dxfColorIndex, aci2hex, rgbHex,
   // 링크 공유
   shareEncode, shareDecode, drawingPayload,
-  reset: () => { state.blocks = {}; newDrawing(); },
+  // 편의기능(1~8)
+  isLocked, reorderSel, selectSimilar, pointsAlongEntity,
+  computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
+  reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
 };
 
 })();

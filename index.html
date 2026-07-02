@@ -204,6 +204,7 @@
         <div class="menuSep"></div>
         <button class="menuItem" id="miSave">💾 저장 (DXF)</button>
         <button class="menuItem" id="miSaveAs">📤 다른 이름으로 저장…</button>
+        <button class="menuItem" id="miImage">🖼 밑그림 이미지 넣기…</button>
         <div class="menuSep"></div>
         <button class="menuItem" id="miShare">🔗 링크로 공유 (서버 불필요)</button>
       </div>
@@ -228,6 +229,7 @@
     <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처">객체스냅</button>
     <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
     <input type="file" id="fileInput" accept=".dxf" style="display:none">
+    <input type="file" id="imgInput" accept="image/*" style="display:none">
   </div>
 
   <div id="main">
@@ -438,6 +440,7 @@
           <div style="display:flex;gap:6px;margin-top:8px;">
             <button class="miniBtn" id="btnAddLayer">+ 추가</button>
             <button class="miniBtn" id="btnDelLayer">삭제</button>
+            <button class="miniBtn" id="btnAllVis" title="모든 레이어 표시+잠금해제">👁 전체</button>
           </div>
         </div>
       </div>
