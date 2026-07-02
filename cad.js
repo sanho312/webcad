@@ -282,8 +282,8 @@ function draw() {
   if (dragSelect) {
     ctx.save();
     const crossing = dragSelect.x2 < dragSelect.x1; // 오→왼 = 크로싱(초록 점선), 왼→오 = 윈도우(파랑 실선)
-    if (crossing) { ctx.strokeStyle = '#2ee6a6'; ctx.fillStyle = 'rgba(46,230,166,.12)'; ctx.setLineDash([5, 4]); }
-    else { ctx.strokeStyle = '#4ea1ff'; ctx.fillStyle = 'rgba(78,161,255,.12)'; ctx.setLineDash([]); }
+    if (crossing) { ctx.strokeStyle = '#30d158'; ctx.fillStyle = 'rgba(48,209,88,.12)'; ctx.setLineDash([5, 4]); }
+    else { ctx.strokeStyle = '#2997ff'; ctx.fillStyle = 'rgba(41,151,255,.14)'; ctx.setLineDash([]); }
     ctx.lineWidth = 1;
     const a = worldToScreen(dragSelect.x1, dragSelect.y1);
     const b = worldToScreen(dragSelect.x2, dragSelect.y2);
@@ -386,7 +386,7 @@ function drawEntity(e, selected, preview) {
   ctx.save();
   const lw = entityLineWeight(e);
   ctx.lineWidth = selected ? Math.max(2, lw) : lw;
-  ctx.strokeStyle = selected ? '#4ea1ff' : entityColor(e);
+  ctx.strokeStyle = selected ? '#2997ff' : entityColor(e);
   ctx.fillStyle = ctx.strokeStyle;
   const dash = entityDash(e);
   if (preview) { ctx.globalAlpha = .8; ctx.setLineDash([5, 4]); }
@@ -471,7 +471,7 @@ function drawEntity(e, selected, preview) {
     case 'INSERT': {
       ctx.restore();
       for (const c of insertChildren(e)) drawEntity(c, false, preview); // 자식은 각자 색/선종류
-      ctx.save(); ctx.strokeStyle = '#4ea1ff';
+      ctx.save(); ctx.strokeStyle = '#2997ff';
       if (selected && !preview) { // 삽입점 X 마커 + 경계
         const p = worldToScreen(e.x, e.y);
         ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(p.x - 5, p.y); ctx.lineTo(p.x + 5, p.y); ctx.moveTo(p.x, p.y - 5); ctx.lineTo(p.x, p.y + 5); ctx.stroke();
@@ -484,13 +484,13 @@ function drawEntity(e, selected, preview) {
 
   // 선택 시 그립 표시
   if (selected && !preview) {
-    ctx.setLineDash([]); ctx.fillStyle = '#4ea1ff';
+    ctx.setLineDash([]); ctx.fillStyle = '#2997ff';
     for (const g of entityGrips(e)) {
       const s = worldToScreen(g.x, g.y);
       ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
     }
     if (e.type === 'LWPOLYLINE') { // 세그먼트 중점: 속 빈 그립(클릭=정점 추가)
-      ctx.strokeStyle = '#4ea1ff'; ctx.lineWidth = 1.2;
+      ctx.strokeStyle = '#2997ff'; ctx.lineWidth = 1.2;
       const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
       for (let i = 0; i < segN; i++) {
         const s = worldToScreen((p[i][0] + p[(i + 1) % n][0]) / 2, (p[i][1] + p[(i + 1) % n][1]) / 2);
@@ -503,7 +503,7 @@ function drawEntity(e, selected, preview) {
 
 function drawDraftPolyline() {
   ctx.save();
-  ctx.strokeStyle = '#4ea1ff'; ctx.lineWidth = 1.4; ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = '#2997ff'; ctx.lineWidth = 1.4; ctx.setLineDash([5, 4]);
   ctx.beginPath();
   pts.forEach((p, i) => { const s = worldToScreen(p.x, p.y); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
   const m = worldToScreen(mouseWorld.x, mouseWorld.y);
@@ -3564,15 +3564,15 @@ function showHomeScreenHelp() {
   o.id = 'homeHelp';
   o.style.cssText = 'position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:20px;';
   o.innerHTML =
-    '<div style="background:#2a2a30;border:1px solid #3d3d46;border-radius:12px;max-width:360px;padding:20px 22px;color:#e6e6ea;box-shadow:0 12px 40px #000a;">' +
-    '<h2 style="margin:0 0 10px;font-size:17px;">전체화면으로 쓰는 법</h2>' +
-    '<p style="margin:0 0 12px;font-size:13px;color:#9a9aa5;line-height:1.6;">이 브라우저 탭은 전체화면 API를 지원하지 않습니다. 아래처럼 <b style="color:#e6e6ea;">홈 화면에 앱으로 추가</b>하면 주소창·툴바 없이 전체화면으로 실행됩니다.</p>' +
+    '<div style="background:rgba(40,40,42,0.94);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-radius:18px;max-width:360px;padding:24px;color:#f5f5f7;box-shadow:0 8px 30px rgba(0,0,0,0.55);font-family:-apple-system,\'SF Pro Text\',\'Segoe UI\',sans-serif;letter-spacing:-0.01em;">' +
+    '<h2 style="margin:0 0 10px;font-size:19px;font-weight:600;letter-spacing:-0.02em;">전체화면으로 쓰는 법</h2>' +
+    '<p style="margin:0 0 12px;font-size:13px;color:rgba(235,235,245,0.6);line-height:1.6;">이 브라우저 탭은 전체화면 API를 지원하지 않습니다. 아래처럼 <b style="color:#f5f5f7;">홈 화면에 앱으로 추가</b>하면 주소창·툴바 없이 전체화면으로 실행됩니다.</p>' +
     '<ol style="margin:0 0 4px;padding-left:20px;font-size:13px;line-height:1.9;">' +
     (isiOS
       ? '<li>Safari 하단(또는 상단)의 <b>공유 버튼 <span style="display:inline-block;border:1px solid #6a6a75;border-radius:4px;padding:0 5px;">⬆️</span></b> 탭</li><li>목록에서 <b>"홈 화면에 추가"</b> 선택</li><li>오른쪽 위 <b>"추가"</b> 탭</li><li>홈 화면의 <b>WebCAD 아이콘</b>으로 실행 → 전체화면</li>'
       : '<li>브라우저 메뉴(⋮) 열기</li><li><b>"홈 화면에 추가"</b> 또는 <b>"앱 설치"</b> 선택</li><li>추가된 아이콘으로 실행 → 전체화면</li>') +
     '</ol>' +
-    '<div style="text-align:right;margin-top:16px;"><button id="homeHelpClose" style="background:#2b6fc0;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer;">확인</button></div>' +
+    '<div style="text-align:right;margin-top:16px;"><button id="homeHelpClose" style="background:#0071e3;color:#fff;border:none;border-radius:8px;padding:8px 17px;font-size:14px;cursor:pointer;">확인</button></div>' +
     '</div>';
   document.body.appendChild(o);
   const close = () => o.remove();
@@ -3860,11 +3860,11 @@ async function loadFromHash() {
 function showShareResult(url, copied) {
   const o = document.createElement('div');
   o.style.cssText = 'position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);';
-  o.innerHTML = `<div style="background:#2a2a30;border:1px solid #3d3d46;border-radius:12px;max-width:520px;width:90%;padding:20px;color:#e6e6ea;">
-    <h2 style="margin:0 0 10px;font-size:16px;">🔗 공유 링크</h2>
-    <p style="margin:0 0 8px;font-size:13px;color:#9a9aa5;">${copied ? '클립보드에 복사되었습니다. ' : ''}이 링크를 열면 지금 도면이 그대로 보입니다(서버 없이 URL에 저장됨).</p>
-    <textarea readonly style="width:100%;height:90px;background:#33333b;color:#e6e6ea;border:1px solid #3d3d46;border-radius:6px;padding:8px;font-family:Consolas,monospace;font-size:12px;">${url}</textarea>
-    <div style="text-align:right;margin-top:12px;"><button id="shCopy" style="background:#33333b;color:#fff;border:1px solid #3d3d46;border-radius:6px;padding:7px 14px;cursor:pointer;margin-right:6px;">복사</button><button id="shClose" style="background:#2b6fc0;color:#fff;border:none;border-radius:6px;padding:7px 16px;cursor:pointer;">닫기</button></div>
+  o.innerHTML = `<div style="background:rgba(40,40,42,0.94);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-radius:18px;max-width:520px;width:90%;padding:24px;color:#f5f5f7;box-shadow:0 8px 30px rgba(0,0,0,0.55);font-family:-apple-system,'SF Pro Text','Segoe UI',sans-serif;letter-spacing:-0.01em;">
+    <h2 style="margin:0 0 10px;font-size:19px;font-weight:600;letter-spacing:-0.02em;">🔗 공유 링크</h2>
+    <p style="margin:0 0 10px;font-size:13px;color:rgba(235,235,245,0.6);line-height:1.5;">${copied ? '클립보드에 복사되었습니다. ' : ''}이 링크를 열면 지금 도면이 그대로 보입니다(서버 없이 URL에 저장됨).</p>
+    <textarea readonly style="width:100%;height:90px;background:#272729;color:#f5f5f7;border:none;border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;">${url}</textarea>
+    <div style="text-align:right;margin-top:14px;"><button id="shCopy" style="background:rgba(255,255,255,0.09);color:#fff;border:none;border-radius:8px;padding:8px 15px;cursor:pointer;margin-right:6px;font-size:14px;">복사</button><button id="shClose" style="background:#0071e3;color:#fff;border:none;border-radius:8px;padding:8px 17px;cursor:pointer;font-size:14px;">닫기</button></div>
   </div>`;
   document.body.appendChild(o);
   const ta = o.querySelector('textarea');
