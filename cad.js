@@ -1432,6 +1432,7 @@ function handleClick(w, rawW, ev) {
     case 'lengthen': clickLengthen(w, rawW); break;
     case 'hatch': clickHatch(w, rawW); break;
     case 'insert': clickInsert(w); break;
+    case 'matchprop': clickMatchprop(w, rawW); break;
     case 'dimrad': clickDimCircle(w, rawW, false); break;
     case 'dimdia': clickDimCircle(w, rawW, true); break;
   }
@@ -1991,6 +1992,29 @@ function doBreak(e, P1, P2) {
 }
 
 // ====== LENGTHEN (길이조정) — 클릭한 끝쪽을 ±delta 만큼 ======
+// ====== MATCHPROP (속성 일치) — 원본 선택 후 대상들에 속성 복사 ======
+function clickMatchprop(w, rawW) {
+  const hit = pick(w, rawW);
+  if (!hit) return;
+  if (!cmdOp || cmdOp.name !== 'matchprop') {
+    cmdOp = { name: 'matchprop', src: hit };
+    state.selection.clear(); state.selection.add(hit.id); renderProps();
+    setPrompt('속성일치: 이제 속성을 적용할 대상들을 클릭하세요. (Esc 종료)');
+    logLine('  속성 원본 선택됨', 'info'); return;
+  }
+  const s = cmdOp.src;
+  if (hit === s) return;
+  pushUndo();
+  hit.layer = s.layer;
+  if (s.color) hit.color = s.color; else delete hit.color;
+  if (s.linetype) hit.linetype = s.linetype; else delete hit.linetype;
+  if (s.lineweight != null) hit.lineweight = s.lineweight; else delete hit.lineweight;
+  if (hit.type === 'TEXT' && s.type === 'TEXT') hit.height = s.height;                 // 문자: 높이도
+  if (hit.type === 'HATCH' && s.type === 'HATCH') { hit.pattern = s.pattern; hit.spacing = s.spacing; hatchDirty(hit); } // 해치: 패턴
+  logLine('  ✔ 속성 적용', 'ok');
+  draw();
+}
+
 function clickLengthen(w, rawW) {
   const hit = pick(w, rawW);
   if (!hit) return;
@@ -2361,7 +2385,7 @@ const TOOL_KO = {
   explode: '분해(EXPLODE)', join: '결합(JOIN)', zoom: '줌(ZOOM)',
   break: '끊기(BREAK)', lengthen: '길이조정(LENGTHEN)', hatch: '해치(HATCH)',
   dimrad: '반지름 치수(DIMRADIUS)', dimdia: '지름 치수(DIMDIAMETER)',
-  block: '블록 정의(BLOCK)', insert: '블록 삽입(INSERT)',
+  block: '블록 정의(BLOCK)', insert: '블록 삽입(INSERT)', matchprop: '속성 일치(MATCHPROP)',
 };
 
 const CMD_ALIASES = {
@@ -2388,6 +2412,7 @@ const CMD_ALIASES = {
   dimradius: 'dimrad', dimrad: 'dimrad', dra: 'dimrad',
   dimdiameter: 'dimdia', dimdia: 'dimdia', ddi: 'dimdia',
   block: 'block', b: 'block', insert: 'insert', i: 'insert',
+  matchprop: 'matchprop', ma: 'matchprop', mp: 'matchprop',
 };
 
 function runCommandInput(raw) {
@@ -2718,6 +2743,7 @@ function setTool(t) {
     dist: '거리 측정: 두 점을 클릭하세요. (결과는 명령 기록에 표시)',
     area: '면적: 원/닫힌 폴리라인을 클릭하거나, 점들을 찍고 Enter로 계산.',
     insert: '블록 삽입: 삽입 위치를 클릭하세요. (레이어 패널 아래 목록에서 블록 선택)',
+    matchprop: '속성 일치: 원본 도형을 클릭 → 속성을 적용할 대상들을 클릭. (레이어·색·선종류·선굵기 복사)',
     dimrad: '반지름 치수: 원/호 클릭 → 문자 위치 클릭. (R값, 연속 기입)',
     dimdia: '지름 치수: 원/호 클릭 → 문자 위치 클릭. (⌀값, 연속 기입)',
     break: '끊기: 선/원/호 선택 → 끊기점 두 개 클릭. (사이 구간 제거)',
@@ -2815,8 +2841,17 @@ function renderProps() {
   const sel = [...state.selection].map(id => state.entities.find(e => e.id === id)).filter(Boolean);
   if (!sel.length) { body.innerHTML = '<div class="empty">선택된 도형이 없습니다.</div>'; return; }
   if (sel.length > 1) {
-    body.innerHTML = `<div class="row"><label>선택</label><span>${sel.length}개 도형</span></div>
-      <button class="miniBtn" id="pDel">선택 삭제</button>`;
+    body.innerHTML =
+      `<div class="row"><label>선택</label><span>${sel.length}개 도형</span></div>
+       <div class="row"><label>레이어</label><select id="mLayer"><option value="">— 변경 —</option>${state.layers.map(l => `<option>${escapeHtml(l.name)}</option>`).join('')}</select></div>
+       <div class="row"><label>색상</label><input type="color" id="mColor" value="#ffffff"><button class="miniBtn" id="mColApply">적용</button><button class="miniBtn" id="mColClear">레이어색</button></div>
+       <div class="row"><label>선종류</label><select id="mLt"><option value="">— 변경 —</option>${Object.keys(LINETYPES).map(k => `<option value="${k}">${LINETYPE_KO[k]}</option>`).join('')}</select></div>
+       <button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
+    const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); draw(); };
+    document.getElementById('mLayer').addEventListener('change', ev => { if (ev.target.value) apply(e => e.layer = ev.target.value); });
+    document.getElementById('mColApply').addEventListener('click', () => apply(e => e.color = document.getElementById('mColor').value));
+    document.getElementById('mColClear').addEventListener('click', () => apply(e => delete e.color));
+    document.getElementById('mLt').addEventListener('change', ev => { if (ev.target.value) apply(e => { if (ev.target.value === 'continuous') delete e.linetype; else e.linetype = ev.target.value; }); });
     document.getElementById('pDel').addEventListener('click', deleteSelection);
     return;
   }
@@ -3165,7 +3200,7 @@ const COMMAND_LIST = [
   { name: 'undo', ko: '실행취소' }, { name: 'redo', ko: '다시실행' },
   { name: 'break', ko: '끊기' }, { name: 'lengthen', ko: '길이조정' }, { name: 'hatch', ko: '해치' },
   { name: 'dimradius', ko: '반지름 치수' }, { name: 'dimdiameter', ko: '지름 치수' },
-  { name: 'block', ko: '블록 정의' }, { name: 'insert', ko: '블록 삽입' },
+  { name: 'block', ko: '블록 정의' }, { name: 'insert', ko: '블록 삽입' }, { name: 'matchprop', ko: '속성 일치' },
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
