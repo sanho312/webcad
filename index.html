@@ -150,9 +150,14 @@
 
   /* Layers */
   #layerList{display:flex;flex-direction:column;gap:3px;}
-  .layer{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:5px;
+  .layer{display:flex;flex-direction:column;gap:3px;padding:5px 6px;border-radius:5px;
     font-size:13px;cursor:pointer;}
   .layer.active{background:var(--accent2);}
+  .layer .lrow1{display:flex;align-items:center;gap:6px;}
+  .layer .lrow2{display:flex;gap:4px;}
+  .layer .lrow2 select{flex:1;min-width:0;background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);border-radius:4px;font-size:11px;padding:2px 3px;}
+  .layer.active .lrow2 select{background:rgba(0,0,0,.25);}
   .layer .sw{width:14px;height:14px;border-radius:3px;border:1px solid #0006;flex:0 0 auto;}
   .layer .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .layer .eye{opacity:.7;font-size:12px;}

@@ -181,6 +181,27 @@ function entityColor(e) {
   const l = getLayer(e.layer);
   return l ? l.color : '#ffffff';
 }
+// 선종류: 이름 → 월드 단위 dash 패턴. 화면 스케일 반영해 픽셀 배열 반환(null=실선)
+const LINETYPES = {
+  continuous: null,
+  dashed: [6, 3], hidden: [4, 3], center: [12, 3, 3, 3], phantom: [16, 3, 3, 3, 3, 3], dot: [1, 3],
+};
+const LINETYPE_KO = { continuous: '실선', dashed: '파선', hidden: '숨은선', center: '중심선(일점쇄선)', phantom: '가상선(이점쇄선)', dot: '점선' };
+function entityLineType(e) {
+  const lt = e.linetype || (getLayer(e.layer) || {}).linetype || 'continuous';
+  return LINETYPES[lt] === undefined ? 'continuous' : lt;
+}
+function entityDash(e) {
+  const pat = LINETYPES[entityLineType(e)];
+  if (!pat) return null;
+  const s = state.view.scale, ltscale = state.ltscale || 1;
+  return pat.map(v => Math.max(0.5, v * ltscale * s * 0.5));
+}
+function entityLineWeight(e) {
+  const lw = (e.lineweight != null) ? e.lineweight : ((getLayer(e.layer) || {}).lineweight);
+  if (lw == null || lw < 0) return 1.4;          // 기본
+  return Math.max(0.5, lw / 100 * state.view.scale * 3.5); // mm → 화면 픽셀(대략)
+}
 
 // ---------- 도형 생성 ----------
 function addEntity(e) {
@@ -326,10 +347,13 @@ function drawSnapMarker(s, type) {
 
 function drawEntity(e, selected, preview) {
   ctx.save();
-  ctx.lineWidth = selected ? 2 : 1.4;
+  const lw = entityLineWeight(e);
+  ctx.lineWidth = selected ? Math.max(2, lw) : lw;
   ctx.strokeStyle = selected ? '#4ea1ff' : entityColor(e);
   ctx.fillStyle = ctx.strokeStyle;
+  const dash = entityDash(e);
   if (preview) { ctx.globalAlpha = .8; ctx.setLineDash([5, 4]); }
+  else if (dash && e.type !== 'TEXT' && e.type !== 'HATCH') ctx.setLineDash(dash);
 
   switch (e.type) {
     case 'LINE': {
@@ -2576,10 +2600,20 @@ function renderLayers() {
   for (const l of state.layers) {
     const div = document.createElement('div');
     div.className = 'layer' + (l.name === state.currentLayer ? ' active' : '');
+    const ltOpts = Object.keys(LINETYPES).map(k => `<option value="${k}" ${(l.linetype || 'continuous') === k ? 'selected' : ''}>${LINETYPE_KO[k]}</option>`).join('');
     div.innerHTML =
-      `<span class="sw" style="background:${l.color}"></span>
-       <span class="nm">${escapeHtml(l.name)}</span>
-       <span class="eye">${l.visible ? '👁' : '🚫'}</span>`;
+      `<div class="lrow1">
+        <span class="sw" style="background:${l.color}"></span>
+        <span class="nm">${escapeHtml(l.name)}</span>
+        <span class="eye">${l.visible ? '👁' : '🚫'}</span>
+       </div>
+       <div class="lrow2" onclick="event.stopPropagation()">
+        <select class="llt" title="선종류">${ltOpts}</select>
+        <select class="llw" title="선굵기(mm)">
+          ${[['', '기본'], ['0', '가는'], ['25', '0.25'], ['50', '0.50'], ['70', '0.70'], ['100', '1.00'], ['200', '2.00']]
+            .map(([v, t]) => `<option value="${v}" ${String(l.lineweight ?? '') === v ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+       </div>`;
     div.querySelector('.sw').addEventListener('click', (e) => {
       e.stopPropagation();
       const inp = document.createElement('input'); inp.type = 'color'; inp.value = rgbHex(l.color);
@@ -2589,6 +2623,8 @@ function renderLayers() {
     div.querySelector('.eye').addEventListener('click', (e) => {
       e.stopPropagation(); l.visible = !l.visible; renderLayers(); draw();
     });
+    div.querySelector('.llt').addEventListener('change', (e) => { e.stopPropagation(); l.linetype = e.target.value; draw(); });
+    div.querySelector('.llw').addEventListener('change', (e) => { e.stopPropagation(); l.lineweight = e.target.value === '' ? undefined : parseInt(e.target.value, 10); draw(); });
     div.querySelector('.nm').addEventListener('dblclick', (e) => {
       e.stopPropagation();
       const nn = prompt('레이어 이름:', l.name);
@@ -3028,13 +3064,27 @@ function buildDXFText() {
   g(9, '$HANDSEED'); g(5, 'FFFF');
   g(0, 'ENDSEC');
 
-  // TABLES (레이어)
+  // TABLES
   g(0, 'SECTION'); g(2, 'TABLES');
+  // LTYPE 테이블(사용 선종류 정의)
+  const LTDEF = { dashed: [6, -3], hidden: [4, -3], center: [12, -3, 3, -3], phantom: [16, -3, 3, -3, 3, -3], dot: [0, -3] };
+  const usedLts = new Set(['continuous']);
+  for (const l of state.layers) if (l.linetype && LTDEF[l.linetype]) usedLts.add(l.linetype);
+  for (const e of state.entities) if (e.linetype && LTDEF[e.linetype]) usedLts.add(e.linetype);
+  g(0, 'TABLE'); g(2, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, usedLts.size);
+  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, 0);
+  for (const lt of usedLts) { if (lt === 'continuous') continue; const pat = LTDEF[lt]; const total = pat.reduce((s, v) => s + Math.abs(v), 0);
+    g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, lt.toUpperCase()); g(70, 0); g(3, lt); g(72, 65); g(73, pat.length); g(40, total);
+    for (const v of pat) g(49, v); }
+  g(0, 'ENDTAB');
+  // LAYER 테이블
   g(0, 'TABLE'); g(2, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, state.layers.length);
   for (const l of state.layers) {
     g(0, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLayerTableRecord');
     g(2, l.name); g(70, l.visible ? 0 : 1);
-    g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color)); g(6, 'CONTINUOUS');
+    g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color));
+    g(6, (l.linetype && LTDEF[l.linetype]) ? l.linetype.toUpperCase() : 'CONTINUOUS');
+    if (l.lineweight != null && l.lineweight >= 0) g(370, l.lineweight);
   }
   g(0, 'ENDTAB');
   g(0, 'ENDSEC');
@@ -3273,7 +3323,9 @@ function buildPDF() {
 }
 function writeEntity(g, e, H) {
   // AC1021(R2007) 구조: 핸들(5) + AcDbEntity + 서브클래스 마커
-  const head = (type, sub) => { g(0, type); g(5, H()); g(100, 'AcDbEntity'); g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color)); g(100, sub); };
+  const head = (type, sub) => { g(0, type); g(5, H()); g(100, 'AcDbEntity'); g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color));
+    if (e.linetype && e.linetype !== 'continuous') g(6, e.linetype.toUpperCase());
+    if (e.lineweight != null && e.lineweight >= 0) g(370, e.lineweight); g(100, sub); };
   switch (e.type) {
     case 'LINE':
       head('LINE', 'AcDbLine');
@@ -3351,6 +3403,8 @@ function parseDXFEntities(pairs) {
       const n = parseInt(Array.isArray(d[62]) ? d[62][0] : d[62], 10);
       if (n !== 256 && n !== 0) base.color = aci2hex(n); // 256=ByLayer, 0=ByBlock → 기본색
     }
+    if (d[6] !== undefined) { const lt = String(Array.isArray(d[6]) ? d[6][0] : d[6]).trim().toLowerCase(); if (LINETYPES[lt] !== undefined && lt !== 'continuous' && lt !== 'bylayer') base.linetype = lt; }
+    if (d[370] !== undefined) { const lw = parseInt(Array.isArray(d[370]) ? d[370][0] : d[370], 10); if (lw >= 0) base.lineweight = lw; }
     return base;
   }
   function buildEntity(t, d, verts) {
@@ -3537,6 +3591,8 @@ function parseDXFEntities(pairs) {
           const [c, v] = p[j];
           if (c === 2) lay.name = v.trim();
           else if (c === 62) { const n = parseInt(v, 10); lay.visible = n >= 0; lay.color = aci2hex(n); }
+          else if (c === 6) { const lt = v.trim().toLowerCase(); if (LINETYPES[lt] !== undefined && lt !== 'continuous') lay.linetype = lt; }
+          else if (c === 370) { const lw = parseInt(v, 10); if (lw >= 0) lay.lineweight = lw; }
           j++;
         }
         if (!out.find(l => l.name === lay.name)) out.push(lay);
