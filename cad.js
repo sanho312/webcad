@@ -74,6 +74,7 @@ function setFileName(n, loc) {
     (currentFileName && currentFileLoc
       ? `<span class="floc">${currentFileLoc === 'pc' ? '— 내 PC (저장 시 덮어쓰기)' : '— 다운로드/파일 앱'}</span>` : '');
   document.title = (currentFileName ? currentFileName + ' — ' : '') + 'WebCAD — DXF 편집기';
+  if (typeof renderDocTabs === 'function' && typeof docs !== 'undefined' && docs.length) renderDocTabs();
 }
 let lastCommand = '';   // 직전에 실행한 명령(스페이스/Enter로 반복)
 let lastInputWasTouch = false; // 터치 입력 중에는 명령행 자동 포커스(키보드 팝업) 억제
@@ -4317,6 +4318,86 @@ function updateDimHint() {
   } else { el.classList.remove('on'); el.textContent = ''; cmdInputEl.classList.remove('dim'); }
 }
 
+// ============================================================
+//  다중 문서 탭 — 각 탭 = 독립 도면(엔티티·레이어·블록·뷰·undo·파일명)
+// ============================================================
+let docs = [], curDoc = 0;
+function captureDoc() {
+  return {
+    entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
+    nextId: state.nextId, blocks: state.blocks, view: { ...state.view },
+    fileName: currentFileName, fileLoc: currentFileLoc, fileHandle,
+    undo: undoStack.slice(), redo: redoStack.slice(),
+  };
+}
+function applyDoc(d) {
+  state.entities = d.entities || [];
+  state.layers = (d.layers && d.layers.length) ? d.layers : [{ name: '0', color: '#ffffff', visible: true }];
+  if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
+  state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
+  state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
+  state.blocks = d.blocks || {}; insertName = null;
+  if (d.view) state.view = { ...d.view };
+  fileHandle = d.fileHandle || null;
+  currentFileName = d.fileName || null; currentFileLoc = d.fileLoc || null;
+  undoStack.length = 0; if (d.undo) undoStack.push(...d.undo);
+  redoStack.length = 0; if (d.redo) redoStack.push(...d.redo);
+  state.selection.clear(); cmdOp = null; draft = null; pts = []; previewEnts = null; moveOp = null;
+  setFileName(currentFileName, currentFileLoc);
+  renderLayers(); renderProps(); updateStat(); refreshBlockList(); draw();
+}
+function switchDoc(i) {
+  if (i === curDoc || !docs[i]) { renderDocTabs(); return; }
+  docs[curDoc] = captureDoc();
+  curDoc = i;
+  applyDoc(docs[i]);
+  renderDocTabs();
+  logLine(`▷ 탭 전환: ${currentFileName || '새 파일'}`, 'info');
+}
+function newDocTab() {
+  docs[curDoc] = captureDoc();
+  docs.push({});
+  curDoc = docs.length - 1;
+  applyDoc({}); // 빈 도면
+  state.layers = [
+    { name: '0', color: '#ffffff', visible: true },
+    { name: '치수', color: '#5dff8f', visible: true },
+    { name: '보조선', color: '#5d9dff', visible: true },
+  ];
+  state.view = { x: 0, y: 0, scale: 4 };
+  renderLayers(); draw();
+  renderDocTabs();
+  logLine('▷ 새 탭', 'info');
+}
+function closeDocTab(i) {
+  const d = docs[i] && i !== curDoc ? docs[i] : (i === curDoc ? captureDoc() : docs[i]);
+  if (d && d.entities && d.entities.length && !confirm(`"${d.fileName || '새 파일'}" 탭을 닫을까요? (저장 안 된 내용은 사라집니다)`)) return;
+  if (docs.length <= 1) { doNew(); renderDocTabs(); return; } // 마지막 탭 = 내용만 초기화
+  docs.splice(i, 1);
+  if (curDoc === i) { curDoc = Math.max(0, i - 1); applyDoc(docs[curDoc]); }
+  else if (curDoc > i) curDoc--;
+  renderDocTabs();
+}
+function renderDocTabs() {
+  const bar = document.getElementById('docTabs');
+  if (!bar) return;
+  let untitled = 0;
+  bar.innerHTML = docs.map((d, i) => {
+    const isCur = i === curDoc;
+    const nm = (isCur ? currentFileName : d.fileName) || ('새 파일' + (++untitled > 1 ? ' ' + untitled : ''));
+    return `<div class="dtab${isCur ? ' active' : ''}" data-doc="${i}" title="${escapeHtml(nm)}">
+      <span class="dname">${escapeHtml(nm)}</span><span class="dclose" data-close="${i}" title="탭 닫기">×</span></div>`;
+  }).join('') + `<button class="dtabNew" id="dtabNew" title="새 탭">+</button>`;
+  bar.querySelectorAll('.dtab').forEach(el => el.addEventListener('click', (ev) => {
+    if (ev.target.dataset.close !== undefined) return;
+    switchDoc(+el.dataset.doc);
+  }));
+  bar.querySelectorAll('.dclose').forEach(el => el.addEventListener('click', (ev) => {
+    ev.stopPropagation(); closeDocTab(+el.dataset.close);
+  }));
+  document.getElementById('dtabNew').addEventListener('click', newDocTab);
+}
+
 function newDrawing() {
   state.entities = [];
   state.layers = [
@@ -4340,8 +4421,10 @@ function newDrawing() {
 const AUTOSAVE_KEY = 'webcad_autosave_v1';
 function saveLocal() {
   try {
-    const data = { entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks, view: state.view, fileName: currentFileName, fileLoc: currentFileLoc, t: Date.now() };
-    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
+    if (!docs.length) docs = [{}];
+    docs[curDoc] = captureDoc();
+    const sane = docs.map(d => ({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId, blocks: d.blocks, view: d.view, fileName: d.fileName, fileLoc: d.fileLoc === 'pc' ? null : d.fileLoc })); // 핸들·undo 제외
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ v: 2, docs: sane, cur: curDoc, t: Date.now() }));
   } catch (e) { /* 용량 초과 등 무시 */ }
 }
 function loadLocal() {
@@ -4349,6 +4432,12 @@ function loadLocal() {
 }
 function clearLocal() { try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) {} }
 function restoreLocal(d) {
+  if (d && d.docs) { // v2: 다중 문서
+    docs = d.docs.map(x => ({ ...x }));
+    curDoc = Math.min(d.cur || 0, docs.length - 1);
+    applyDoc(docs[curDoc]); setTool('select'); renderDocTabs();
+    return;
+  }
   state.entities = d.entities || [];
   state.layers = (d.layers && d.layers.length) ? d.layers : [{ name: '0', color: '#ffffff', visible: true }];
   if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
@@ -4360,6 +4449,7 @@ function restoreLocal(d) {
   state.selection.clear();
   undoStack.length = 0; redoStack.length = 0;
   renderLayers(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
+  docs[curDoc] = captureDoc(); renderDocTabs();
 }
 // 변경 시 자동 저장(디바운스) + 백그라운드 전환/종료 시 즉시 저장
 let _autosaveTimer = null;
@@ -4378,14 +4468,18 @@ if (window.visualViewport) {
 }
 newDrawing();
 resize();
-// 시작 시: 공유 링크(#d=) 우선 → 없으면 자동 저장 복원
+// 시작 시: 공유 링크(#d=) 우선 → 없으면 자동 저장 복원(다중 탭 포함)
 (function () {
-  if (location.hash.indexOf('#d=') === 0) { loadFromHash(); return; } // 공유 링크로 진입
-  const d = loadLocal();
-  if (d && d.entities && d.entities.length) {
-    restoreLocal(d);
-    logLine(`이전 작업을 복원했습니다 (도형 ${d.entities.length}개). 새로 시작하려면 "새로 만들기".`, 'info');
+  if (location.hash.indexOf('#d=') === 0) { loadFromHash(); }
+  else {
+    const d = loadLocal();
+    if (d && ((d.docs && d.docs.length) || (d.entities && d.entities.length))) {
+      restoreLocal(d);
+      logLine(`이전 작업을 복원했습니다${d.docs ? ` (탭 ${d.docs.length}개)` : ''}. 새로 시작하려면 "새로 만들기".`, 'info');
+    }
   }
+  if (!docs.length) docs = [captureDoc()];
+  renderDocTabs();
 })();
 
 // ============================================================
