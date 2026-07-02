@@ -210,6 +210,12 @@ function tests(){
     ok(C.computeAngularDim(l1,l2,{x:5,y:5})===null,'평행선 = null'); }
   { const X=C.lineInfIntersect([0,0],[10,0],[5,-5],[5,5]); pt(X,5,0,'무한직선 교차 (5,0)'); }
 
+  group('회귀 방지 — 적대적 검증에서 발견');
+  { const c={type:'CIRCLE',cx:10,cy:0,r:4}; C.scaleEntities([c],{x:0,y:0},-2);
+    ok(c.r>0 && Math.abs(c.r-8)<1e-6,'음수 배율 → 반지름 양수(|f|=8, r='+c.r+')'); }
+  { const t={type:'TEXT',x:0,y:0,height:5,text:'a'}; C.scaleEntities([t],{x:0,y:0},-3);
+    ok(t.height>0,'음수 배율 → 문자 높이 양수(h='+t.height+')'); }
+
   group('DIVIDE/MEASURE 점 배치');
   { const line={type:'LINE',x1:0,y1:0,x2:100,y2:0};
     const d=C.pointsAlongEntity(line,{count:5}); eqi(d.length,4,'선 5등분 → 내부 4점'); pt(d[0],20,0,'첫 등분점 (20,0)');

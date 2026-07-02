@@ -1197,20 +1197,21 @@ function doFillet(line1, line2, radius) {
 // ============================================================
 function scaleEntities(ents, base, f) {
   const sp = (x, y) => [base.x + (x - base.x) * f, base.y + (y - base.y) * f];
+  const af = Math.abs(f); // 크기 속성은 부호 없는 배율(음수 반지름 등 방지)
   for (const e of ents) {
     switch (e.type) {
       case 'LINE': [e.x1, e.y1] = sp(e.x1, e.y1); [e.x2, e.y2] = sp(e.x2, e.y2); break;
       case 'LWPOLYLINE': e.points = e.points.map(p => sp(p[0], p[1])); break;
-      case 'CIRCLE': case 'ARC': [e.cx, e.cy] = sp(e.cx, e.cy); e.r *= f; break;
-      case 'TEXT': [e.x, e.y] = sp(e.x, e.y); e.height *= f; break;
+      case 'CIRCLE': case 'ARC': [e.cx, e.cy] = sp(e.cx, e.cy); e.r *= af; break;
+      case 'TEXT': [e.x, e.y] = sp(e.x, e.y); e.height *= af; break;
       case 'HATCH': {
         const b = e.boundary;
-        if (b.kind === 'circle') { [b.cx, b.cy] = sp(b.cx, b.cy); b.r *= f; }
+        if (b.kind === 'circle') { [b.cx, b.cy] = sp(b.cx, b.cy); b.r *= af; }
         else b.points = b.points.map(p => sp(p[0], p[1]));
-        e.spacing = (e.spacing || 5) * f; hatchDirty(e); break;
+        e.spacing = (e.spacing || 5) * af; hatchDirty(e); break;
       }
-      case 'INSERT': [e.x, e.y] = sp(e.x, e.y); e.sx = (e.sx != null ? e.sx : 1) * f; e.sy = (e.sy != null ? e.sy : 1) * f; break;
-      case 'IMAGE': [e.x, e.y] = sp(e.x, e.y); e.w *= f; e.h *= f; break;
+      case 'INSERT': [e.x, e.y] = sp(e.x, e.y); e.sx = (e.sx != null ? e.sx : 1) * af; e.sy = (e.sy != null ? e.sy : 1) * af; break;
+      case 'IMAGE': [e.x, e.y] = sp(e.x, e.y); e.w *= af; e.h *= af; break;
     }
   }
 }
@@ -2848,6 +2849,8 @@ function feedDrawInput(v) {
     case 'polygon': return feedPolygon(p);
     case 'ellipse': return feedEllipse(p);
     case 'dim': return feedPointCmd(p, clickDim);
+    case 'leader': return feedPointCmd(p, clickLeader);
+    case 'text': return feedPointCmd(p, (w) => { const t = prompt('문자 입력:', ''); if (t) { pushUndo(); addEntity({ type: 'TEXT', x: w.x, y: w.y, height: state.textHeight, text: t, rotation: 0 }); updateStat(); } });
     case 'dist': return feedPointCmd(p, clickDist);
     case 'area': return feedPointCmd(p, (w) => clickArea(w, w));
     case 'break': return feedPointCmd(p, (w) => clickBreak(w, w));
