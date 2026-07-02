@@ -3308,12 +3308,68 @@ function parseDXFEntities(pairs) {
         if (num(d, 230, 1) < 0) { cx = -cx; const ns = 180 - ea, ne = 180 - sa; sa = ns; ea = ne; } // OCS X축 반전: 좌표·각도 미러 + 진행방향 반전
         return { ...base, type: 'ARC', cx, cy, r: num(d, 40), startAngle: sa, endAngle: ea };
       }
-      case 'TEXT': case 'MTEXT': {
+      case 'TEXT': case 'MTEXT': case 'ATTRIB': {
         let parts = [];
         if (d[3] !== undefined) parts.push(...(Array.isArray(d[3]) ? d[3] : [d[3]])); // MTEXT 연속 텍스트
         if (d[1] !== undefined) parts.push(...(Array.isArray(d[1]) ? d[1] : [d[1]]));
-        let txt = parts.join('').replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '');
+        let txt = parts.join('')
+          .replace(/\\P/gi, ' ')                 // MTEXT 줄바꿈 → 공백
+          .replace(/\\[A-Za-z][^;]*;/g, '')      // 서식 코드 제거
+          .replace(/[{}]/g, '')
+          .replace(/%%c/gi, '⌀').replace(/%%d/gi, '°').replace(/%%p/gi, '±');
+        if (!txt.trim()) return null;
         return { ...base, type: 'TEXT', x: num(d, 10), y: num(d, 20), height: num(d, 40, 10), text: txt, rotation: num(d, 50) };
+      }
+      case 'ELLIPSE': {
+        const cx = num(d, 10), cy = num(d, 20), mx = num(d, 11), my = num(d, 21);
+        const ratio = num(d, 40, 1), t0 = num(d, 41, 0), t1 = num(d, 42, Math.PI * 2);
+        const nx = -my * ratio, ny = mx * ratio; // 단축 벡터
+        const full = Math.abs((t1 - t0) - Math.PI * 2) < 1e-6;
+        const N = 48, pts = [];
+        for (let k = 0; k <= (full ? N - 1 : N); k++) {
+          const t = t0 + (t1 - t0) * k / N;
+          pts.push([cx + Math.cos(t) * mx + Math.sin(t) * nx, cy + Math.cos(t) * my + Math.sin(t) * ny]);
+        }
+        return { ...base, type: 'LWPOLYLINE', closed: full, points: pts };
+      }
+      case 'SPLINE': {
+        const arr = c => d[c] === undefined ? [] : (Array.isArray(d[c]) ? d[c] : [d[c]]).map(parseFloat);
+        const fx = arr(11), fy = arr(12).length ? arr(12) : arr(21); // 일부 파일은 21 사용
+        const cxs = arr(10), cys = arr(20);
+        let pts = [];
+        if (fx.length >= 2 && fy.length >= 2) pts = fx.map((x, i) => [x, fy[i]]);       // 맞춤점 통과
+        else if (cxs.length >= 2) pts = cxs.map((x, i) => [x, cys[i]]);                  // 제어점 근사
+        if (pts.length < 2) return null;
+        const closed = (num(d, 70) & 1) === 1;
+        return { ...base, type: 'LWPOLYLINE', closed, points: pts };
+      }
+      case 'SOLID': {
+        const pts = [[num(d, 10), num(d, 20)], [num(d, 11), num(d, 21)]];
+        if (d[13] !== undefined) { pts.push([num(d, 13), num(d, 23)]); pts.push([num(d, 12), num(d, 22)]); }
+        else if (d[12] !== undefined) pts.push([num(d, 12), num(d, 22)]);
+        if (pts.length < 3) return null;
+        return { ...base, type: 'HATCH', pattern: 'solid', spacing: 5, boundary: { kind: 'poly', points: pts } };
+      }
+      case 'HATCH': {
+        const arr = c => d[c] === undefined ? [] : (Array.isArray(d[c]) ? d[c] : [d[c]]).map(parseFloat);
+        let xs = arr(10), ys = arr(20);
+        const seedN = num(d, 98, 0);                       // 마지막 N쌍은 시드점 → 제외
+        if (seedN > 0) { xs = xs.slice(0, xs.length - seedN); ys = ys.slice(0, ys.length - seedN); }
+        const v93 = arr(93);                               // 폴리라인 경계 정점 수(첫 루프만 사용)
+        const nv = v93.length ? Math.min(v93[0], xs.length) : xs.length;
+        const pts = [];
+        for (let k = 0; k < nv; k++) if (isFinite(xs[k]) && isFinite(ys[k])) pts.push([xs[k], ys[k]]);
+        if (pts.length < 3) return null;
+        const pname = (d[2] !== undefined ? String(Array.isArray(d[2]) ? d[2][0] : d[2]) : '').trim().toUpperCase();
+        const solid = num(d, 70) === 1 || pname === 'SOLID';
+        const PMAP = { ANSI31: 'ansi31', ANSI37: 'ansi37', ANSI32: 'steel', 'AR-CONC': 'concrete', 'AR-SAND': 'dots', DOTS: 'dots', 'AR-B816': 'brick', BRICK: 'brick', NET: 'grid', GRID: 'grid' };
+        const scale = num(d, 41, 1);
+        return { ...base, type: 'HATCH', pattern: solid ? 'solid' : (PMAP[pname] || 'ansi31'),
+          spacing: Math.max(0.5, Math.min(1000, 3.175 * scale)), boundary: { kind: 'poly', points: pts } };
+      }
+      case 'POINT': {
+        const x = num(d, 10), y = num(d, 20), s = 1;
+        return { ...base, type: 'LINE', x1: x - s, y1: y, x2: x + s, y2: y };
       }
     }
     return null;
@@ -3345,6 +3401,13 @@ function parseDXFEntities(pairs) {
         break;
       }
       case 'TEXT': [e.x, e.y] = tp(e.x, e.y); e.height *= sc; e.rotation = (e.rotation || 0) + rot; break;
+      case 'HATCH': {
+        const b = e.boundary;
+        if (b.kind === 'circle') { [b.cx, b.cy] = tp(b.cx, b.cy); b.r *= sc; }
+        else b.points = b.points.map(p => tp(p[0], p[1]));
+        e.spacing = (e.spacing || 5) * sc;
+        break;
+      }
     }
     return e;
   }
@@ -3388,6 +3451,13 @@ function parseDXFEntities(pairs) {
         continue;
       }
       if (t === 'INSERT') { expandInsert(data, out); continue; }
+      if (t === 'DIMENSION') {
+        // 치수는 렌더링된 기하가 담긴 익명 블록(*D..)을 참조 → 그대로 전개(WCS 좌표)
+        const bn = (data[2] !== undefined ? String(Array.isArray(data[2]) ? data[2][0] : data[2]) : '').trim();
+        const blk = blocks[bn];
+        if (blk) for (const src of blk.entities) out.push(JSON.parse(JSON.stringify(src)));
+        continue;
+      }
       const e = buildEntity(t, data, verts);
       if (e) out.push(e);
     }
