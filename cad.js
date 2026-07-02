@@ -1784,7 +1784,10 @@ function setTool(t) {
   setPrompt(hints[t] || '');
   if (t !== 'select') {
     logLine('▶ ' + (TOOL_KO[t] || t), 'cmd');
-    if (cmdInputEl && !lastInputWasTouch) cmdInputEl.focus({ preventScroll: true }); // 명령행 활성 유지(터치 제외)
+    // 도구 활성 즉시 치수 입력이 가능한 명령(offset·fillet 등)은 터치에서도 바로 포커스(키보드 표시).
+    // 그 외에는 터치 시 키보드 팝업 방지를 위해 포커스 생략.
+    const dimNow = typeof currentDimPrompt === 'function' && currentDimPrompt();
+    if (cmdInputEl && (dimNow || !lastInputWasTouch)) cmdInputEl.focus({ preventScroll: true });
   }
   draw();
 }
