@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebCAD — 테스트</title>
+<style>
+  body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:#15151a;color:#e6e6ea;}
+  header{padding:14px 20px;background:#2a2a30;border-bottom:1px solid #3d3d46;position:sticky;top:0;}
+  h1{margin:0;font-size:18px;} #summary{margin-top:6px;font-size:14px;}
+  .pass{color:#6ad28a;} .fail{color:#ff6b6b;} .muted{color:#9a9aa5;}
+  #results{padding:10px 20px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.7;}
+  .group{margin:10px 0 2px;color:#4ea1ff;font-weight:700;font-family:"Segoe UI";}
+  .case{white-space:pre-wrap;}
+  iframe{position:fixed;left:-9999px;width:1200px;height:800px;border:0;}
+  #rerun{background:#2b6fc0;color:#fff;border:0;border-radius:6px;padding:6px 14px;cursor:pointer;margin-left:12px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>▦ WebCAD 자동 테스트 <button id="rerun">다시 실행</button></h1>
+  <div id="summary" class="muted">앱 로딩 중…</div>
+</header>
+<div id="results"></div>
+<iframe id="app" src="index.html"></iframe>
+
+<script>
+const R = document.getElementById('results'), S = document.getElementById('summary');
+let pass = 0, fail = 0, T = null;
+
+function group(name){ const d=document.createElement('div'); d.className='group'; d.textContent='▷ '+name; R.appendChild(d); }
+function record(ok, msg){
+  const d=document.createElement('div'); d.className='case '+(ok?'pass':'fail');
+  d.textContent=(ok?'  ✓ ':'  ✗ ')+msg; R.appendChild(d);
+  ok?pass++:fail++;
+}
+const near = (a,b,tol=1e-6)=>Math.abs(a-b)<=tol;
+function ok(cond,msg){ record(!!cond,msg); }
+function eq(a,b,msg,tol=1e-6){ record(near(a,b,tol), `${msg}  (${(+a).toFixed?(+a).toFixed(4):a} ≈ ${b})`); }
+function eqi(a,b,msg){ record(a===b, `${msg}  (${a} === ${b})`); }
+function pt(p, x, y, msg, tol=1e-4){ record(near(p[0]??p.x,x,tol)&&near(p[1]??p.y,y,tol), `${msg}  (${(p[0]??p.x).toFixed(3)},${(p[1]??p.y).toFixed(3)} ≈ ${x},${y})`); }
+
+function runAll(){
+  R.innerHTML=''; pass=0; fail=0;
+  try { tests(); }
+  catch(e){ record(false, 'FATAL: '+e.message+'\n'+(e.stack||'')); }
+  const total=pass+fail;
+  S.innerHTML = fail===0
+    ? `<span class="pass">✔ 전체 통과 — ${pass}/${total}</span>`
+    : `<span class="fail">✗ 실패 ${fail}개</span> / 통과 ${pass} (총 ${total})`;
+  document.title = (fail===0?'PASS':'FAIL('+fail+')')+` — WebCAD 테스트`;
+}
+
+function tests(){
+  const C = T;                    // __CADTEST__
+  const S0 = C.state;
+  const reset = () => C.reset();
+  const setEnts = (arr) => { reset(); S0.entities = arr.map((e,i)=>({id:i+1,...e})); S0.nextId=arr.length+1; };
+
+  group('기하 — 교차/투영/각도');
+  { const r=C.segSeg([0,0],[10,0],[5,-5],[5,5]); pt([r.x,r.y],5,0,'선분 교차 (5,0)'); }
+  ok(C.segSeg([0,0],[10,0],[0,1],[10,1])===null, '평행 선분 = null');
+  { const hs=C.segCircle([-20,0],[20,0],0,0,10).filter(h=>h.t>=0&&h.t<=1); ok(hs.length===2,'선-원 교차 2점'); }
+  eq(C.distToSeg(5,3,0,0,10,0),3,'점-선분 거리 = 3');
+  eq(C.ang(0,0,1,1),45,'각도 45°');
+  ok(C.angleInArc(45,0,90),'45°는 [0,90] 호 안');
+  ok(!C.angleInArc(180,0,90),'180°는 호 밖');
+  pt(C.closestOnSeg(5,9,0,0,10,0),5,0,'선분 위 최근접점');
+
+  group('교차 스냅 — intersectEntities');
+  { const L1={type:'LINE',x1:0,y1:0,x2:10,y2:10}, L2={type:'LINE',x1:0,y1:10,x2:10,y2:0};
+    const xs=C.intersectEntities(L1,L2); ok(xs.length===1,'X자 교차 1점'); if(xs[0]) pt(xs[0],5,5,'교차점 (5,5)'); }
+  { const L={type:'LINE',x1:-20,y1:0,x2:20,y2:0}, Ci={type:'CIRCLE',cx:0,cy:0,r:10};
+    const xs=C.intersectEntities(L,Ci); ok(xs.length===2,'선-원 교차 2점'); }
+  { const A={type:'CIRCLE',cx:0,cy:0,r:10}, B={type:'CIRCLE',cx:16,cy:0,r:10};
+    const xs=C.intersectEntities(A,B); ok(xs.length===2,'원-원 교차 2점'); if(xs[0]) eq(xs[0][0],8,'교차 x=8'); }
+
+  group('경계상자 / 윈도우·크로싱');
+  { const e={type:'CIRCLE',cx:5,cy:5,r:3}; const bb=C.entityBBox(e); pt([bb.xmin,bb.ymin],2,2,'원 bbox 최소'); pt([bb.xmax,bb.ymax],8,8,'원 bbox 최대'); }
+  { const e={type:'LINE',x1:1,y1:1,x2:4,y2:4};
+    ok(C.entityFullyInBox(e,{xmin:0,ymin:0,xmax:5,ymax:5}),'윈도우: 완전 포함 → 선택');
+    ok(!C.entityFullyInBox(e,{xmin:0,ymin:0,xmax:3,ymax:3}),'윈도우: 일부만 → 제외');
+    ok(C.entityCrossesBox(e,{xmin:2,ymin:2,xmax:3,ymax:3}),'크로싱: 걸침 → 선택'); }
+  ok(C.pointInBoundary({kind:'poly',points:[[0,0],[10,0],[10,10],[0,10]]},5,5),'다각형 내부 점');
+  ok(!C.pointInBoundary({kind:'poly',points:[[0,0],[10,0],[10,10],[0,10]]},15,5),'다각형 외부 점');
+
+  group('변환 — 이동/회전/대칭/배율');
+  { const e={type:'LINE',x1:0,y1:0,x2:2,y2:0}; C.translateEntity(e,5,3); pt([e.x1,e.y1],5,3,'이동'); }
+  { const e={type:'ARC',cx:10,cy:0,r:5,startAngle:0,endAngle:90}; C.applyTransform(e,C.T_rotate(0,0,90)); pt([e.cx,e.cy],0,10,'호 중심 회전'); eq(e.startAngle,90,'호 시작각 +90'); }
+  { const e={type:'ARC',cx:0,cy:5,r:3,startAngle:0,endAngle:90}; C.applyTransform(e,C.T_mirror(0,0,1,0)); ok(Math.abs(e.cy+5)<1e-6,'대칭: 중심 y반전'); }
+  { const e={type:'CIRCLE',cx:2,cy:0,r:4}; C.scaleEntities([e],{x:0,y:0},2); eq(e.r,8,'배율 ×2 반지름'); pt([e.cx,e.cy],4,0,'배율 중심'); }
+
+  group('좌표 파서 — parsePointOrNumber');
+  { const p=C.parsePointOrNumber('10,20'); eqi(p.kind,'abs','절대 x,y'); pt([p.x,p.y],10,20,'절대값'); }
+  { const p=C.parsePointOrNumber('@3,4'); eqi(p.kind,'rel','상대 @dx,dy'); }
+  { const p=C.parsePointOrNumber('@10<30'); eqi(p.kind,'rel','극좌표'); eq(p.dx,10*Math.cos(Math.PI/6),'극좌표 dx'); eq(p.dy,10*Math.sin(Math.PI/6),'극좌표 dy'); }
+  { const p=C.parsePointOrNumber('42.5'); eqi(p.kind,'num','단일 수치'); eq(p.n,42.5,'수치값'); }
+  ok(C.parsePointOrNumber('abc')===null,'문자 = null');
+
+  group('편집 — 오프셋/모깎기/모따기/자르기');
+  { const e={type:'LINE',x1:0,y1:0,x2:10,y2:0}; const o=C.offsetEntity(e,5,{x:5,y:100}); pt([o.x1,o.y1],0,5,'선 오프셋 +5(위쪽)'); }
+  { setEnts([{type:'LINE',x1:0,y1:0,x2:10,y2:0}]);
+    S0.currentLayer='0';
+    const l1={type:'LINE',x1:0,y1:0,x2:10,y2:0}, l2={type:'LINE',x1:10,y1:0,x2:10,y2:10};
+    S0.entities=[{id:1,...l1},{id:2,...l2}]; C.doFillet(S0.entities[0],S0.entities[1],0);
+    pt([S0.entities[0].x2,S0.entities[0].y2],10,0,'모깎기 R0: 코너 정합'); }
+  { const l1={id:1,type:'LINE',x1:0,y1:0,x2:100,y2:0}, l2={id:2,type:'LINE',x1:100,y1:0,x2:100,y2:100};
+    reset(); S0.entities=[l1,l2]; C.doChamfer(l1,l2,10);
+    pt([l1.x2,l1.y2],90,0,'모따기: 첫 선 끝 90'); pt([l2.x1,l2.y1],100,10,'모따기: 둘째 선 시작 (100,10)'); }
+  { // trim: 수평선 + 수직 경계 2개, 빠른모드(모든 객체 기준) x=100 지점 제거
+    const H={id:1,type:'LINE',x1:0,y1:0,x2:200,y2:0};
+    const V1={id:2,type:'LINE',x1:60,y1:-10,x2:60,y2:10}, V2={id:3,type:'LINE',x1:140,y1:-10,x2:140,y2:10};
+    reset(); S0.entities=[H,V1,V2]; C.trimLine(H,{x:100,y:0},null);
+    // H는 [0,60]으로 잘리고 새 조각 [140,200] 추가
+    const hs=S0.entities.filter(e=>e.type==='LINE'&&Math.abs(e.y1)<1e-6&&Math.abs(e.y2)<1e-6)
+      .map(e=>[Math.min(e.x1,e.x2),Math.max(e.x1,e.x2)]).sort((a,b)=>a[0]-b[0]);
+    ok(hs.length===2 && near(hs[0][1],60) && near(hs[1][0],140),'자르기: [0,60]+[140,200] 두 조각'); }
+
+  group('면적/둘레/다각형');
+  eq(C.polyArea([[0,0],[10,0],[10,10],[0,10]]),100,'정사각형 면적 100');
+  eq(C.polyPerimeter([[0,0],[10,0],[10,10],[0,10]],true),40,'정사각형 둘레 40');
+  { const p=C.polygonPoints(0,0,10,4,0); ok(p.length===4,'4각형 정점 4개'); eq(Math.hypot(p[0][0],p[0][1]),10,'정점 반지름 10'); }
+
+  group('해치 — 경계 내부 세그먼트');
+  { const e={type:'HATCH',pattern:'ansi31',spacing:5,boundary:{kind:'poly',points:[[0,0],[40,0],[40,30],[0,30]]}};
+    const hs=C.computeHatchSegs(e);
+    ok(hs.segs.length>0,'해치 세그먼트 생성');
+    const inside=hs.segs.every(s=>C.pointInBoundary(e.boundary,(s[0]+s[2])/2,(s[1]+s[3])/2));
+    ok(inside,'모든 해치선 중점이 경계 내부'); }
+
+  group('블록 — insertChildren 변환');
+  { reset(); S0.blocks={ B:{ entities:[{type:'LINE',x1:0,y1:0,x2:10,y2:0}] } };
+    const ch=C.insertChildren({type:'INSERT',layer:'0',name:'B',x:100,y:50,sx:2,sy:2,rot:0});
+    ok(ch.length===1,'블록 자식 1개'); pt([ch[0].x1,ch[0].y1],100,50,'삽입점 반영'); pt([ch[0].x2,ch[0].y2],120,50,'배율 ×2 반영'); }
+  { reset(); S0.blocks={ B:{ entities:[{type:'LINE',x1:0,y1:0,x2:10,y2:0}] } };
+    const ch=C.insertChildren({type:'INSERT',layer:'0',name:'B',x:0,y:0,sx:1,sy:1,rot:90});
+    pt([ch[0].x2,ch[0].y2],0,10,'회전 90° 반영'); }
+
+  group('DXF 왕복 — 색/레이어/좌표');
+  { const P=(c,v)=>`${c}\n${v}\n`;
+    let dxf=P(0,'SECTION')+P(2,'ENTITIES')
+      +P(0,'LINE')+P(8,'0')+P(10,0)+P(20,0)+P(11,30)+P(21,40)
+      +P(0,'CIRCLE')+P(8,'치수')+P(62,1)+P(10,5)+P(20,5)+P(40,12.5)
+      +P(0,'ENDSEC')+P(0,'EOF');
+    C.reset();
+    const okLoad=C.loadDXF(dxf);
+    ok(okLoad,'DXF 로드 성공');
+    ok(S0.entities.length===2,'엔티티 2개');
+    const ln=S0.entities.find(e=>e.type==='LINE'); if(ln){ eq(Math.hypot(ln.x2-ln.x1,ln.y2-ln.y1),50,'선 길이 50(3-4-5)'); }
+    const ci=S0.entities.find(e=>e.type==='CIRCLE'); if(ci){ eq(ci.r,12.5,'원 반지름 12.5'); eqi(ci.color,'#ff0000','ACI 1 → 빨강'); }
+    // 재직렬화 후 다시 파싱 → 개수 유지
+    const out=C.buildDXFText();
+    const pairs=C.parseDXFPairs(out); const re=C.parseDXFEntities(pairs);
+    ok(re.entities.length===2,'왕복 후 엔티티 2개 유지');
+    ok(out.includes('AC1021'),'버전 AC1021(UTF-8)');
+    ok(out.includes('치수'),'한글 레이어명 UTF-8 보존'); }
+
+  group('SVG 내보내기');
+  { setEnts([{type:'CIRCLE',cx:0,cy:0,r:10},{type:'LINE',x1:0,y1:0,x2:10,y2:10}]);
+    const svg=C.buildSVG();
+    ok(svg.startsWith('<svg'),'SVG 시작 태그');
+    ok(svg.includes('<circle')&&svg.includes('<line'),'circle·line 포함');
+    ok(svg.includes('viewBox'),'viewBox 존재'); }
+}
+
+document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });
+document.getElementById('app').addEventListener('load', () => {
+  setTimeout(() => {
+    T = document.getElementById('app').contentWindow.__CADTEST__;
+    if (!T) { S.innerHTML = '<span class="fail">__CADTEST__ 훅을 찾을 수 없습니다 (cad.js 로드 실패?)</span>'; return; }
+    runAll();
+  }, 300);
+});
+</script>
+</body>
+</html>

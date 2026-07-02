@@ -4039,4 +4039,26 @@ resize();
   }
 })();
 
+// ============================================================
+//  테스트 훅 — tests.html 에서 내부 순수 로직을 검증하기 위해 노출
+// ============================================================
+window.__CADTEST__ = {
+  state,
+  // 기하/스냅
+  segSeg, segCircle, distToSeg, closestOnSeg, angleInArc, norm360, ang,
+  intersectEntities, entityBBox, entityEndpoints, entityMidpoints, nearestOnEntity,
+  entityFullyInBox, entityCrossesBox, pointInBoundary,
+  // 변환
+  T_translate, T_rotate, T_mirror, applyTransform, translateEntity, scaleEntities, stretchEntities,
+  // 파서/직렬화
+  parsePointOrNumber, buildDXFText, buildSVG, loadDXF, parseDXFPairs, parseDXFEntities,
+  exportEntities, computeHatchSegs: (e) => hatchSegments(e),
+  polyArea, polyPerimeter, polygonPoints,
+  // 편집 연산(순수)
+  trimLine, extendLine, doFillet, doChamfer, offsetEntity, insertChildren,
+  // 유틸
+  dxfColorIndex, aci2hex, rgbHex,
+  reset: () => { state.blocks = {}; newDrawing(); },
+};
+
 })();
