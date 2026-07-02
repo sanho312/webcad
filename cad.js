@@ -442,6 +442,14 @@ function drawEntity(e, selected, preview) {
       const s = worldToScreen(g.x, g.y);
       ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
     }
+    if (e.type === 'LWPOLYLINE') { // 세그먼트 중점: 속 빈 그립(클릭=정점 추가)
+      ctx.strokeStyle = '#4ea1ff'; ctx.lineWidth = 1.2;
+      const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+      for (let i = 0; i < segN; i++) {
+        const s = worldToScreen((p[i][0] + p[(i + 1) % n][0]) / 2, (p[i][1] + p[(i + 1) % n][1]) / 2);
+        ctx.strokeRect(s.x - 2.6, s.y - 2.6, 5.2, 5.2);
+      }
+    }
   }
   ctx.restore();
 }
@@ -1230,6 +1238,23 @@ function contextAction() {
 }
 cv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); contextAction(); });
 
+// 더블클릭: 선택된 폴리라인의 정점 삭제
+cv.addEventListener('dblclick', () => {
+  if (state.tool !== 'select') return;
+  const rW = screenToWorld(mouseScreen.x, mouseScreen.y), tol = 8 / state.view.scale;
+  const hit = pick(mouseWorld, rW);
+  if (!hit || hit.type !== 'LWPOLYLINE' || !state.selection.has(hit.id)) return;
+  const g = nearGrip(hit, rW, tol) || nearGrip(hit, mouseWorld, tol);
+  if (!g) return;
+  const minPts = hit.closed ? 3 : 2;
+  if (hit.points.length <= minPts) { logLine('  정점을 더 삭제할 수 없습니다.', 'warn'); return; }
+  moveOp = null;
+  pushUndo();
+  hit.points.splice(g.index, 1);
+  logLine('  ✔ 정점 삭제 (더블클릭)', 'ok');
+  renderProps(); draw();
+});
+
 cv.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   const before = screenToWorld(mouseScreen.x, mouseScreen.y);
@@ -1353,10 +1378,21 @@ function handleClick(w, rawW, ev) {
       const hit = pick(w, rawW);
       if (hit) {
         // 그립(끝점 등) 클릭 → 그 점만 늘리기. 본체 클릭은 선택만(통째 이동 안 함)
+        const wasSelected = state.selection.has(hit.id);
         const grip = nearGrip(hit, rawW, tol) || nearGrip(hit, w, tol);
-        if (!ev.shiftKey && !state.selection.has(hit.id)) { state.selection.clear(); }
+        if (!ev.shiftKey && !wasSelected) { state.selection.clear(); }
         state.selection.add(hit.id);
         if (grip) { pushUndo(); moveOp = { gripEntity: hit, gripIndex: grip.index, base: w, dx: 0, dy: 0, grip: true }; }
+        else if (wasSelected && hit.type === 'LWPOLYLINE') {
+          // 선택된 폴리라인의 세그먼트 중점 그립 → 정점 삽입 후 드래그
+          const mg = nearMidGrip(hit, rawW, tol) || nearMidGrip(hit, w, tol);
+          if (mg) {
+            pushUndo();
+            hit.points.splice(mg.index + 1, 0, [w.x, w.y]);
+            moveOp = { gripEntity: hit, gripIndex: mg.index + 1, base: w, dx: 0, dy: 0, grip: true };
+            logLine('  ✔ 정점 추가 (드래그로 위치 조정)', 'ok');
+          }
+        }
         renderProps(); draw();
       } else {
         if (!ev.shiftKey) state.selection.clear();
@@ -1765,11 +1801,27 @@ function clickDim(w) {
   if (!cmdOp || cmdOp.name !== 'dim') cmdOp = { name: 'dim', step: 'p1' };
   if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('치수: 두 번째 점을 클릭하세요.'); return; }
   if (cmdOp.step === 'p2') { cmdOp.p2 = w; cmdOp.step = 'pos'; setPrompt('치수: 치수선 위치를 클릭하세요.'); return; }
+  if (cmdOp.step === 'cont') { // 연속 치수: 직전 끝점에서 같은 오프셋으로 체인 기입
+    const p1 = cmdOp.p1, p2 = w;
+    const dx = p2.x - p1.x, dy = p2.y - p1.y, L = Math.hypot(dx, dy);
+    if (L < 1e-9) return;
+    const nx = -dy / L, ny = dx / L;
+    const pos = { x: (p1.x + p2.x) / 2 + nx * cmdOp.h, y: (p1.y + p2.y) / 2 + ny * cmdOp.h };
+    pushUndo();
+    for (const e of computeDimension(p1, p2, pos)) addEntity(e);
+    logLine(`  ✔ 치수 ${fmtNum(L)} (연속)`, 'ok');
+    cmdOp = { name: 'dim', step: 'cont', p1: p2, h: cmdOp.h };
+    previewEnts = null; updateStat(); return;
+  }
+  // pos: 치수선 위치 확정 → 연속 모드 진입
   pushUndo();
   for (const e of computeDimension(cmdOp.p1, cmdOp.p2, w)) addEntity(e);
   logLine(`  ✔ 치수 ${fmtNum(Math.hypot(cmdOp.p2.x - cmdOp.p1.x, cmdOp.p2.y - cmdOp.p1.y))}`, 'ok');
-  cmdOp = { name: 'dim', step: 'p1' }; previewEnts = null;
-  updateStat(); setPrompt('치수: 첫 점을 클릭하세요. (연속 기입, Esc 종료)');
+  const ddx = cmdOp.p2.x - cmdOp.p1.x, ddy = cmdOp.p2.y - cmdOp.p1.y, DL = Math.hypot(ddx, ddy) || 1;
+  const h = (w.x - cmdOp.p1.x) * (-ddy / DL) + (w.y - cmdOp.p1.y) * (ddx / DL); // 부호 있는 오프셋
+  cmdOp = { name: 'dim', step: 'cont', p1: cmdOp.p2, h };
+  previewEnts = null;
+  updateStat(); setPrompt('치수(연속): 다음 점을 클릭하면 이어서 기입됩니다. (Esc 종료)');
 }
 // 치수 그래픽(치수 레이어의 선·화살표·문자) 생성 — 미리보기/확정 공용
 function computeDimension(p1, p2, pos) {
@@ -2241,6 +2293,16 @@ function nearGrip(e, w, tol) {
     if (Math.hypot(grips[i].x - w.x, grips[i].y - w.y) <= tol) return { index: i, p: grips[i] };
   return null;
 }
+// 폴리라인 세그먼트 중점 그립(정점 추가용)
+function nearMidGrip(e, w, tol) {
+  if (e.type !== 'LWPOLYLINE') return null;
+  const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+  for (let i = 0; i < segN; i++) {
+    const mx = (p[i][0] + p[(i + 1) % n][0]) / 2, my = (p[i][1] + p[(i + 1) % n][1]) / 2;
+    if (Math.hypot(mx - w.x, my - w.y) <= tol) return { index: i, x: mx, y: my };
+  }
+  return null;
+}
 
 // 드래프트 업데이트(미리보기)
 function updateDraft() {
@@ -2656,6 +2718,9 @@ function updateCmdPreview() {
     stretchEntities(previewEnts, cmdOp.box, w.x - cmdOp.base.x, w.y - cmdOp.base.y);
   } else if (cmdOp.name === 'dim' && cmdOp.step === 'pos' && cmdOp.p1 && cmdOp.p2) {
     previewEnts = computeDimension(cmdOp.p1, cmdOp.p2, w);
+  } else if (cmdOp.name === 'dim' && cmdOp.step === 'cont' && cmdOp.p1) {
+    const p1 = cmdOp.p1, dx = w.x - p1.x, dy = w.y - p1.y, L = Math.hypot(dx, dy);
+    if (L > 1e-9) previewEnts = computeDimension(p1, w, { x: (p1.x + w.x) / 2 + (-dy / L) * cmdOp.h, y: (p1.y + w.y) / 2 + (dx / L) * cmdOp.h });
   } else if (cmdOp.name === 'dim' && cmdOp.step === 'p2' && cmdOp.p1) {
     previewEnts = [{ type: 'LINE', x1: cmdOp.p1.x, y1: cmdOp.p1.y, x2: w.x, y2: w.y }];
   } else if (cmdOp.name === 'dist' && cmdOp.step === 'p2' && cmdOp.p1) {
