@@ -59,9 +59,9 @@
     overflow-y:auto;overflow-x:hidden;align-content:start;}
   .tdiv{grid-column:1 / -1;height:1px;background:var(--line);margin:2px 2px;}
   .tool{display:flex;flex-direction:column;align-items:center;gap:1px;
-    background:transparent;border:1px solid transparent;border-radius:7px;
-    padding:3px 2px;cursor:pointer;color:var(--muted);font-size:9.5px;}
-  .tool svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.6;}
+    background:transparent;border:1px solid transparent;border-radius:6px;
+    padding:2px 1px;cursor:pointer;color:var(--muted);font-size:9px;line-height:1.15;}
+  .tool svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;}
   .tool:hover{background:var(--panel2);color:var(--text);}
   .tool.active{background:var(--accent2);color:#fff;border-color:var(--accent);}
 
@@ -272,6 +272,10 @@
       <div class="tool" data-tool="hatch" title="해치 (hatch) — 닫힌 영역 빗금 채우기">
         <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><path d="M4 14L14 4M4 20L20 4M10 20l10-10"/></svg>해치</div>
       <div class="tdiv"></div>
+      <div class="tool" data-tool="block" title="블록 정의 (block) — 선택 도형을 블록으로">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><rect x="4" y="4" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>블록</div>
+      <div class="tool" data-tool="insert" title="블록 삽입 (insert)">
+        <svg viewBox="0 0 24 24"><rect x="5" y="9" width="14" height="11"/><path d="M12 3v6M9 6l3-3 3 3"/></svg>삽입</div>
       <div class="tool" data-tool="dist" title="거리 측정 (dist)">
         <svg viewBox="0 0 24 24"><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/><path d="M6.5 17.5L17.5 6.5" stroke-dasharray="3 2"/></svg>거리</div>
       <div class="tool" data-tool="area" title="면적 (area) — 도형 클릭 또는 점 지정 후 Enter">
@@ -410,6 +414,18 @@
           <div style="display:flex;gap:6px;margin-top:8px;">
             <button class="miniBtn" id="btnAddLayer">+ 추가</button>
             <button class="miniBtn" id="btnDelLayer">삭제</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="blockSection" style="display:none">
+        <h3>블록</h3>
+        <div class="body">
+          <div id="blockList" style="display:flex;flex-direction:column;gap:3px;"></div>
+          <div class="dlgHint" style="margin-top:6px;">목록에서 선택 후 <b>삽입</b> 도구로 배치. 배율/회전은 아래.</div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:4px;">
+            <span style="color:var(--muted);font-size:12px;flex:0 0 34px;">배율</span><input type="number" id="blkScale" value="1" step="any" style="flex:1">
+            <span style="color:var(--muted);font-size:12px;flex:0 0 34px;">회전</span><input type="number" id="blkRot" value="0" step="any" style="flex:1">
           </div>
         </div>
       </div>

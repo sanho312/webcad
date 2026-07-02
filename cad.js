@@ -28,6 +28,7 @@ const state = {
   selection: new Set(),
   textHeight: 10,
   nextId: 1,
+  blocks: {},            // 블록 정의: name -> { entities:[...상대좌표 도형] }
 };
 
 // 작도 중 임시 상태
@@ -84,16 +85,16 @@ const undoStack = [], redoStack = [];
 function snapshot() {
   return JSON.stringify({
     entities: state.entities, layers: state.layers,
-    currentLayer: state.currentLayer, nextId: state.nextId,
+    currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks,
   });
 }
 function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; if (typeof autosave === 'function') autosave(); }
 function restore(snap) {
   const d = JSON.parse(snap);
   state.entities = d.entities; state.layers = d.layers;
-  state.currentLayer = d.currentLayer; state.nextId = d.nextId;
+  state.currentLayer = d.currentLayer; state.nextId = d.nextId; state.blocks = d.blocks || {};
   state.selection.clear();
-  renderLayers(); draw(); updateStat();
+  renderLayers(); if (typeof refreshBlockList === 'function') refreshBlockList(); draw(); updateStat();
   if (typeof autosave === 'function') autosave();
 }
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
@@ -420,6 +421,18 @@ function drawEntity(e, selected, preview) {
       if (selected && !preview) { path(); ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]); }
       break;
     }
+    case 'INSERT': {
+      ctx.restore();
+      for (const c of insertChildren(e)) drawEntity(c, false, preview); // 자식은 각자 색/선종류
+      ctx.save(); ctx.strokeStyle = '#4ea1ff';
+      if (selected && !preview) { // 삽입점 X 마커 + 경계
+        const p = worldToScreen(e.x, e.y);
+        ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(p.x - 5, p.y); ctx.lineTo(p.x + 5, p.y); ctx.moveTo(p.x, p.y - 5); ctx.lineTo(p.x, p.y + 5); ctx.stroke();
+        const bb = insertBBox(e), a = worldToScreen(bb.xmin, bb.ymax), c2 = worldToScreen(bb.xmax, bb.ymin);
+        ctx.setLineDash([4, 3]); ctx.strokeRect(a.x, a.y, c2.x - a.x, c2.y - a.y); ctx.setLineDash([]);
+      }
+      break;
+    }
   }
 
   // 선택 시 그립 표시
@@ -450,6 +463,7 @@ function entityGrips(e) {
     case 'CIRCLE': case 'ARC': return [{ x: e.cx, y: e.cy }];
     case 'TEXT': return [{ x: e.x, y: e.y }];
     case 'HATCH': return e.boundary.kind === 'circle' ? [{ x: e.boundary.cx, y: e.boundary.cy }] : e.boundary.points.map(p => ({ x: p[0], y: p[1] }));
+    case 'INSERT': return [{ x: e.x, y: e.y }];
   }
   return [];
 }
@@ -507,6 +521,11 @@ function entityHit(e, w, tol) {
       return w.x >= e.x - tol && w.x <= e.x + w2 + tol && w.y >= e.y - tol && w.y <= e.y + e.height + tol;
     }
     case 'HATCH': return pointInBoundary(e.boundary, w.x, w.y); // 내부 클릭 = 선택
+    case 'INSERT': {
+      if (Math.hypot(w.x - e.x, w.y - e.y) <= tol) return true; // 삽입점
+      for (const c of insertChildren(e)) if (entityHit(c, w, tol)) return true;
+      return false;
+    }
   }
   return false;
 }
@@ -535,6 +554,7 @@ function entityBBox(e) {
     }
     case 'TEXT': { const w = (e.text ? e.text.length : 0) * e.height * 0.6; return { xmin: e.x, xmax: e.x + w, ymin: e.y, ymax: e.y + e.height }; }
     case 'HATCH': return boundaryBBox(e.boundary);
+    case 'INSERT': return insertBBox(e);
   }
   return null;
 }
@@ -735,6 +755,7 @@ function translateEntity(e, dx, dy) {
       else b.points = b.points.map(p => [p[0] + dx, p[1] + dy]);
       hatchDirty(e); break;
     }
+    case 'INSERT': e.x += dx; e.y += dy; break;
   }
 }
 
@@ -809,11 +830,49 @@ function applyTransform(e, T) {
       else b.points = b.points.map(p => T.pt(p[0], p[1]));
       hatchDirty(e); break;
     }
+    case 'INSERT': {
+      [e.x, e.y] = T.pt(e.x, e.y);
+      if (T.type === 'rotate') e.rot = (e.rot || 0) + T.deg;
+      else if (T.type === 'mirror') { e.sx = -(e.sx != null ? e.sx : 1); e.rot = 2 * T.axisDeg - (e.rot || 0); } // 미러: X배율 반전 + 회전 반사
+      break;
+    }
   }
   return e;
 }
 function transformedClone(e, T) { return applyTransform(cloneEntity(e), T); }
 function selectedEntities() { return [...state.selection].map(id => state.entities.find(x => x.id === id)).filter(Boolean); }
+
+// ---------- 블록(INSERT) ----------
+// INSERT 인스턴스의 자식 도형을 월드좌표로 전개(축척·회전 적용). 렌더·히트·내보내기 공용.
+function insertChildren(e) {
+  const def = state.blocks[e.name];
+  if (!def) return [];
+  const sx = e.sx != null ? e.sx : 1, sy = e.sy != null ? e.sy : 1, rot = e.rot || 0;
+  const a = rot * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  const sc = Math.sqrt(Math.abs(sx * sy));
+  const pt = (x, y) => { const px = x * sx, py = y * sy; return [px * ca - py * sa + e.x, px * sa + py * ca + e.y]; };
+  const dirAngle = (deg) => { const t = deg * Math.PI / 180, vx = Math.cos(t) * sx, vy = Math.sin(t) * sy; return Math.atan2(vx * sa + vy * ca, vx * ca - vy * sa) * 180 / Math.PI; };
+  const out = [];
+  for (const src of def.entities) {
+    const c = cloneEntity(src); c.layer = c.layer || e.layer;
+    switch (c.type) {
+      case 'LINE': [c.x1, c.y1] = pt(c.x1, c.y1); [c.x2, c.y2] = pt(c.x2, c.y2); break;
+      case 'LWPOLYLINE': c.points = c.points.map(p => pt(p[0], p[1])); break;
+      case 'CIRCLE': [c.cx, c.cy] = pt(c.cx, c.cy); c.r *= sc; break;
+      case 'ARC': { [c.cx, c.cy] = pt(c.cx, c.cy); c.r *= sc; let s = dirAngle(c.startAngle), en = dirAngle(c.endAngle); if (sx * sy < 0) { const t = s; s = en; en = t; } c.startAngle = s; c.endAngle = en; break; }
+      case 'TEXT': [c.x, c.y] = pt(c.x, c.y); c.height *= sc; c.rotation = (c.rotation || 0) + rot; break;
+      case 'HATCH': { const b = c.boundary; if (b.kind === 'circle') { [b.cx, b.cy] = pt(b.cx, b.cy); b.r *= sc; } else b.points = b.points.map(p => pt(p[0], p[1])); c.spacing = (c.spacing || 5) * sc; break; }
+    }
+    out.push(c);
+  }
+  return out;
+}
+function insertBBox(e) {
+  let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+  for (const c of insertChildren(e)) { const bb = entityBBox(c); if (bb) { mnx = Math.min(mnx, bb.xmin); mny = Math.min(mny, bb.ymin); mxx = Math.max(mxx, bb.xmax); mxy = Math.max(mxy, bb.ymax); } }
+  if (!isFinite(mnx)) return { xmin: e.x, ymin: e.y, xmax: e.x, ymax: e.y };
+  return { xmin: mnx, ymin: mny, xmax: mxx, ymax: mxy };
+}
 
 // ---------- 오프셋(간격복사) ----------
 function lineLineIntersect(p1, d1, p2, d2) {
@@ -1085,6 +1144,7 @@ function scaleEntities(ents, base, f) {
         else b.points = b.points.map(p => sp(p[0], p[1]));
         e.spacing = (e.spacing || 5) * f; hatchDirty(e); break;
       }
+      case 'INSERT': [e.x, e.y] = sp(e.x, e.y); e.sx = (e.sx != null ? e.sx : 1) * f; e.sy = (e.sy != null ? e.sy : 1) * f; break;
     }
   }
 }
@@ -1139,7 +1199,7 @@ cv.addEventListener('mousemove', (ev) => {
     if (moveOp.grip) updateGripMove();
   }
   if (draft) updateDraft();
-  if (cmdOp) updateCmdPreview();
+  if (cmdOp || state.tool === 'insert') updateCmdPreview();
   draw();
 });
 
@@ -1194,7 +1254,7 @@ function setPointer(sx, sy) {
   coordsEl.textContent = `X: ${mouseWorld.x.toFixed(2)}  Y: ${mouseWorld.y.toFixed(2)} ${settings.units}` + (activeSnap ? `   [${SNAP_KO[activeSnap.type]}]` : '');
   if (moveOp) { moveOp.dx = mouseWorld.x - moveOp.base.x; moveOp.dy = mouseWorld.y - moveOp.base.y; if (moveOp.grip) updateGripMove(); }
   if (draft) updateDraft();
-  if (cmdOp) updateCmdPreview();
+  if (cmdOp || state.tool === 'insert') updateCmdPreview();
 }
 let touch = null;  // {mode:'tap'|'pan'|'pinch'|'twotap', ...}
 function touchXY(t) { const r = cv.getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; }
@@ -1371,6 +1431,7 @@ function handleClick(w, rawW, ev) {
     case 'break': clickBreak(w, rawW); break;
     case 'lengthen': clickLengthen(w, rawW); break;
     case 'hatch': clickHatch(w, rawW); break;
+    case 'insert': clickInsert(w); break;
     case 'dimrad': clickDimCircle(w, rawW, false); break;
     case 'dimdia': clickDimCircle(w, rawW, true); break;
   }
@@ -1806,20 +1867,24 @@ function finishArea() {
 
 // ====== EXPLODE (분해) / JOIN (결합) — 즉시 실행 명령 ======
 function cmdExplode() {
-  const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE');
-  if (!sel.length) { logLine('  분해: 폴리라인(사각형·다각형 등)을 먼저 선택하세요.', 'warn'); return; }
+  const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' || e.type === 'INSERT');
+  if (!sel.length) { logLine('  분해: 폴리라인 또는 블록을 먼저 선택하세요.', 'warn'); return; }
   pushUndo(); let made = 0;
   for (const e of sel) {
-    const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
-    for (let i = 0; i < segN; i++) {
-      const a = p[i], b = p[(i + 1) % n];
-      const ne = { type: 'LINE', layer: e.layer, x1: a[0], y1: a[1], x2: b[0], y2: b[1] };
-      if (e.color) ne.color = e.color;
-      addEntity(ne); made++;
+    if (e.type === 'INSERT') {
+      for (const c of insertChildren(e)) { addEntity(c); made++; }
+    } else {
+      const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+      for (let i = 0; i < segN; i++) {
+        const a = p[i], b = p[(i + 1) % n];
+        const ne = { type: 'LINE', layer: e.layer, x1: a[0], y1: a[1], x2: b[0], y2: b[1] };
+        if (e.color) ne.color = e.color;
+        addEntity(ne); made++;
+      }
     }
     state.entities = state.entities.filter(x => x !== e); state.selection.delete(e.id);
   }
-  logLine(`  ✔ 분해: 폴리라인 ${sel.length}개 → 선 ${made}개`, 'ok');
+  logLine(`  ✔ 분해: ${sel.length}개 → 도형 ${made}개`, 'ok');
   updateStat(); renderProps(); draw();
 }
 function cmdJoin() {
@@ -2058,10 +2123,23 @@ function clickHatch(w, rawW) {
   updateStat(); renderProps(); draw();
 }
 // 내보내기용: HATCH → 선/점(짧은 선) 분해 목록
-function exportEntities() {
+// 블록 정의 내부 엔티티에서 HATCH만 선으로 분해(정의는 로컬좌표라 hatchSegments 그대로 사용)
+function exportHatchExpand(ents) {
   const out = [];
-  for (const e of state.entities) {
+  for (const e of ents) {
     if (e.type !== 'HATCH') { out.push(e); continue; }
+    const hs = e.pattern === 'solid' ? { segs: [], dots: [] } : hatchSegments(e);
+    for (const s of hs.segs) out.push({ type: 'LINE', layer: e.layer, color: e.color, x1: s[0], y1: s[1], x2: s[2], y2: s[3] });
+    if (e.pattern === 'solid') { const b = e.boundary; out.push(b.kind === 'circle' ? { type: 'CIRCLE', layer: e.layer, cx: b.cx, cy: b.cy, r: b.r } : { type: 'LWPOLYLINE', layer: e.layer, closed: true, points: b.points }); }
+  }
+  return out;
+}
+// keepInserts=true: INSERT는 그대로(DXF 블록 저장용). false: 자식으로 전개(SVG/PNG/PDF용)
+function exportEntities(keepInserts) {
+  const out = [];
+  const emit = (e) => {
+    if (e.type === 'INSERT') { if (keepInserts) out.push(e); else for (const c of insertChildren(e)) emit(c); return; }
+    if (e.type !== 'HATCH') { out.push(e); return; }
     const hs = e.pattern === 'solid' ? { segs: [], dots: [] } : hatchSegments(e);
     for (const s of hs.segs) out.push({ type: 'LINE', layer: e.layer, color: e.color, x1: s[0], y1: s[1], x2: s[2], y2: s[3] });
     const t = (e.spacing || 5) * 0.06;
@@ -2072,14 +2150,62 @@ function exportEntities() {
         ? { type: 'CIRCLE', layer: e.layer, color: e.color, cx: b.cx, cy: b.cy, r: b.r }
         : { type: 'LWPOLYLINE', layer: e.layer, color: e.color, closed: true, points: b.points });
     }
-  }
+  };
+  for (const e of state.entities) emit(e);
   return out;
 }
 
+// BLOCK: 선택 도형으로 블록 정의(선택 기준점=선택 bbox 좌하단), 원본은 그 블록 인스턴스로 대체
+let insertName = null;   // insert 도구가 삽입할 블록
+let insertScale = 1, insertRot = 0;
+function refreshBlockList() {
+  const sec = document.getElementById('blockSection'), list = document.getElementById('blockList');
+  if (!sec || !list) return;
+  const names = Object.keys(state.blocks);
+  sec.style.display = names.length ? '' : 'none';
+  if (!insertName || !state.blocks[insertName]) insertName = names[0] || null;
+  list.innerHTML = names.map(n => `<div class="layer${n === insertName ? ' active' : ''}" data-blk="${escapeHtml(n)}" style="flex-direction:row;align-items:center;">
+    <span class="nm">▣ ${escapeHtml(n)}</span></div>`).join('');
+  list.querySelectorAll('[data-blk]').forEach(el => el.addEventListener('click', () => {
+    insertName = el.dataset.blk; refreshBlockList();
+    if (state.tool !== 'insert') { setTool('insert'); lastCommand = 'insert'; }
+  }));
+}
+function clickInsert(w) {
+  const names = Object.keys(state.blocks);
+  if (!names.length) { logLine('  삽입할 블록이 없습니다. 먼저 block 명령으로 블록을 만드세요.', 'warn'); setTool('select'); return; }
+  if (!insertName || !state.blocks[insertName]) insertName = names[0];
+  pushUndo();
+  const ins = addEntity({ type: 'INSERT', layer: state.currentLayer, name: insertName, x: w.x, y: w.y, sx: insertScale, sy: insertScale, rot: insertRot });
+  state.selection.clear(); state.selection.add(ins.id);
+  logLine(`  ✔ 블록 "${insertName}" 삽입 (배율 ${insertScale}, 회전 ${insertRot}°)`, 'ok');
+  updateStat(); renderProps(); draw(); // 도구 유지 → 연속 삽입
+}
+function cmdBlock() {
+  const sel = selectedEntities().filter(e => e.type !== 'INSERT');
+  if (!sel.length) { logLine('  블록: 먼저 도형을 선택하세요.', 'warn'); return; }
+  let name = prompt('블록 이름:', 'Block' + (Object.keys(state.blocks).length + 1));
+  if (!name) return; name = name.trim(); if (!name) return;
+  if (state.blocks[name] && !confirm(`블록 "${name}"이 이미 있습니다. 덮어쓸까요?`)) return;
+  // 기준점 = 선택 bbox 좌하단
+  let mnx = Infinity, mny = Infinity;
+  for (const e of sel) { const bb = entityBBox(e); if (bb) { mnx = Math.min(mnx, bb.xmin); mny = Math.min(mny, bb.ymin); } }
+  if (!isFinite(mnx)) { mnx = 0; mny = 0; }
+  pushUndo();
+  const defEnts = sel.map(e => { const c = cloneEntity(e); translateEntity(c, -mnx, -mny); return c; }); // 블록 좌표계(기준점 원점)
+  state.blocks[name] = { entities: defEnts };
+  const layer = sel[0].layer;
+  for (const e of sel) { state.entities = state.entities.filter(x => x !== e); state.selection.delete(e.id); }
+  const ins = addEntity({ type: 'INSERT', layer, name, x: mnx, y: mny, sx: 1, sy: 1, rot: 0 });
+  state.selection.add(ins.id);
+  logLine(`  ✔ 블록 "${name}" 정의 (${sel.length}개 → 블록 1개)`, 'ok');
+  updateStat(); renderProps(); refreshBlockList(); draw();
+}
 // 도구 전환 없이 즉시 실행되는 명령들
 const INSTANT_CMDS = {
   explode: cmdExplode,
   join: cmdJoin,
+  block: cmdBlock,
   zoom: () => { zoomFit(); logLine('  ✔ 전체보기', 'info'); },
   undo: () => { undo(); logLine('  ✔ 실행취소', 'info'); },
   redo: () => { redo(); logLine('  ✔ 다시실행', 'info'); },
@@ -2235,6 +2361,7 @@ const TOOL_KO = {
   explode: '분해(EXPLODE)', join: '결합(JOIN)', zoom: '줌(ZOOM)',
   break: '끊기(BREAK)', lengthen: '길이조정(LENGTHEN)', hatch: '해치(HATCH)',
   dimrad: '반지름 치수(DIMRADIUS)', dimdia: '지름 치수(DIMDIAMETER)',
+  block: '블록 정의(BLOCK)', insert: '블록 삽입(INSERT)',
 };
 
 const CMD_ALIASES = {
@@ -2260,6 +2387,7 @@ const CMD_ALIASES = {
   hatch: 'hatch', h: 'hatch',
   dimradius: 'dimrad', dimrad: 'dimrad', dra: 'dimrad',
   dimdiameter: 'dimdia', dimdia: 'dimdia', ddi: 'dimdia',
+  block: 'block', b: 'block', insert: 'insert', i: 'insert',
 };
 
 function runCommandInput(raw) {
@@ -2472,6 +2600,10 @@ function feedArc(p) {
 // 명령 실행 전 결과 미리보기(점선 고스트)
 function updateCmdPreview() {
   previewEnts = null;
+  if (state.tool === 'insert' && insertName && state.blocks[insertName]) { // 블록 삽입 고스트
+    previewEnts = insertChildren({ type: 'INSERT', layer: state.currentLayer, name: insertName, x: mouseWorld.x, y: mouseWorld.y, sx: insertScale, sy: insertScale, rot: insertRot });
+    return;
+  }
   if (!cmdOp) return;
   const sel = selectedEntities();
   const w = mouseWorld;
@@ -2585,6 +2717,7 @@ function setTool(t) {
     dim: '치수: 첫 점 → 둘째 점 → 치수선 위치 클릭. (치수 레이어에 생성, 연속 기입)',
     dist: '거리 측정: 두 점을 클릭하세요. (결과는 명령 기록에 표시)',
     area: '면적: 원/닫힌 폴리라인을 클릭하거나, 점들을 찍고 Enter로 계산.',
+    insert: '블록 삽입: 삽입 위치를 클릭하세요. (레이어 패널 아래 목록에서 블록 선택)',
     dimrad: '반지름 치수: 원/호 클릭 → 문자 위치 클릭. (R값, 연속 기입)',
     dimdia: '지름 치수: 원/호 클릭 → 문자 위치 클릭. (⌀값, 연속 기입)',
     break: '끊기: 선/원/호 선택 → 끊기점 두 개 클릭. (사이 구간 제거)',
@@ -2656,6 +2789,8 @@ function renderLayers() {
   }
 }
 
+document.getElementById('blkScale').addEventListener('change', e => { insertScale = parseFloat(e.target.value) || 1; });
+document.getElementById('blkRot').addEventListener('change', e => { insertRot = parseFloat(e.target.value) || 0; });
 document.getElementById('btnAddLayer').addEventListener('click', () => {
   let i = state.layers.length, name;
   do { name = 'Layer' + i++; } while (getLayer(name));
@@ -2732,7 +2867,7 @@ function deleteSelection() {
   state.selection.clear(); renderProps(); updateStat(); draw();
 }
 
-function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자', HATCH: '해치' })[t] || t; }
+function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자', HATCH: '해치', INSERT: '블록' })[t] || t; }
 function updateStat() { statEl.textContent = `도형 ${state.entities.length}개 · 레이어 ${state.layers.length}개`; }
 
 // ============================================================
@@ -3029,6 +3164,7 @@ const COMMAND_LIST = [
   { name: 'undo', ko: '실행취소' }, { name: 'redo', ko: '다시실행' },
   { name: 'break', ko: '끊기' }, { name: 'lengthen', ko: '길이조정' }, { name: 'hatch', ko: '해치' },
   { name: 'dimradius', ko: '반지름 치수' }, { name: 'dimdiameter', ko: '지름 치수' },
+  { name: 'block', ko: '블록 정의' }, { name: 'insert', ko: '블록 삽입' },
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
@@ -3153,9 +3289,19 @@ function buildDXFText() {
   g(0, 'ENDTAB');
   g(0, 'ENDSEC');
 
+  // BLOCKS (정의된 블록 + INSERT가 참조하는 것)
+  g(0, 'SECTION'); g(2, 'BLOCKS');
+  for (const [nm, def] of Object.entries(state.blocks || {})) {
+    g(0, 'BLOCK'); g(5, H()); g(100, 'AcDbEntity'); g(8, '0'); g(100, 'AcDbBlockBegin');
+    g(2, nm); g(70, 0); g(10, 0); g(20, 0); g(30, 0); g(3, nm); g(1, '');
+    for (const ce of exportHatchExpand(def.entities)) writeEntity(g, ce, H);
+    g(0, 'ENDBLK'); g(5, H()); g(100, 'AcDbEntity'); g(8, '0'); g(100, 'AcDbBlockEnd');
+  }
+  g(0, 'ENDSEC');
+
   // ENTITIES
   g(0, 'SECTION'); g(2, 'ENTITIES');
-  for (const e of exportEntities()) writeEntity(g, e, H); // HATCH는 선으로 분해되어 포함
+  for (const e of exportEntities(true)) writeEntity(g, e, H); // INSERT 보존, HATCH는 선으로 분해
   g(0, 'ENDSEC');
   g(0, 'EOF');
 
@@ -3448,6 +3594,12 @@ function writeEntity(g, e, H) {
       g(10, e.x); g(20, e.y); g(30, 0); g(40, e.height);
       g(1, e.text); g(50, e.rotation || 0);
       break;
+    case 'INSERT':
+      head('INSERT', 'AcDbBlockReference');
+      g(2, e.name); g(10, e.x); g(20, e.y); g(30, 0);
+      g(41, e.sx != null ? e.sx : 1); g(42, e.sy != null ? e.sy : 1); g(43, 1);
+      g(50, e.rot || 0);
+      break;
   }
 }
 
@@ -3463,9 +3615,10 @@ function loadDXF(text) {
     state.layers = result.layers.length ? result.layers : [{ name: '0', color: '#ffffff', visible: true }];
     if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
     state.currentLayer = '0';
+    state.blocks = result.blocks || {}; insertName = null;
     state.nextId = state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1;
     state.selection.clear();
-    renderLayers(); updateStat(); zoomFit(true);
+    renderLayers(); refreshBlockList(); updateStat(); zoomFit(true);
     hint(`DXF 불러오기 완료: 도형 ${state.entities.length}개`);
     return true;
   } catch (err) {
@@ -3491,6 +3644,7 @@ function aci2hex(n) {
 function parseDXFEntities(pairs) {
   const entities = [], layers = [];
   const blocks = {}; // 블록 정의: name -> { bx, by, entities: [] }
+  const usedBlocks = new Set(); // INSERT로 유지된 블록 이름
 
   function num(d, code, def = 0) { const v = d[code]; return v === undefined ? def : parseFloat(Array.isArray(v) ? v[0] : v); }
   function baseOf(d) {
@@ -3665,7 +3819,15 @@ function parseDXFEntities(pairs) {
         if (e) out.push(e);
         continue;
       }
-      if (t === 'INSERT') { expandInsert(data, out); continue; }
+      if (t === 'INSERT') {
+        const nm = (data[2] !== undefined ? String(Array.isArray(data[2]) ? data[2][0] : data[2]) : '').trim();
+        if (blocks[nm]) { // 정의가 있으면 INSERT 엔티티로 유지(블록 보존)
+          usedBlocks.add(nm);
+          out.push({ ...baseOf(data), type: 'INSERT', name: nm, x: num(data, 10), y: num(data, 20),
+            sx: num(data, 41, 1), sy: num(data, 42, 1), rot: num(data, 50, 0) });
+        } else expandInsert(data, out); // 없으면 전개(빈 블록 방지)
+        continue;
+      }
       if (t === 'DIMENSION') {
         // 치수는 렌더링된 기하가 담긴 익명 블록(*D..)을 참조 → 그대로 전개(WCS 좌표)
         const bn = (data[2] !== undefined ? String(Array.isArray(data[2]) ? data[2][0] : data[2]) : '').trim();
@@ -3728,7 +3890,13 @@ function parseDXFEntities(pairs) {
   }
   let id = 1;
   for (const e of entities) e.id = id++;
-  return { entities, layers };
+  // 유지된 INSERT가 참조하는 블록 정의를 WebCAD 형식(기준점=원점)으로 변환
+  const outBlocks = {};
+  for (const nm of usedBlocks) {
+    const bd = blocks[nm]; if (!bd) continue;
+    outBlocks[nm] = { entities: bd.entities.map(src => { const c = JSON.parse(JSON.stringify(src)); delete c.id; translateEntity(c, -bd.bx, -bd.by); return c; }) };
+  }
+  return { entities, layers, blocks: outBlocks };
 }
 
 // ============================================================
@@ -3811,9 +3979,10 @@ function newDrawing() {
   state.currentLayer = '0';
   state.selection.clear();
   state.nextId = 1;
+  state.blocks = {}; insertName = null;
   undoStack.length = 0; redoStack.length = 0;
   state.view = { x: 0, y: 0, scale: 4 };
-  renderLayers(); renderProps(); updateStat(); setTool('select'); draw();
+  renderLayers(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
   logLine('새 도면을 시작했습니다. 명령행에 명령을 입력하거나 도구를 선택하세요.', 'info');
 }
 
@@ -3823,7 +3992,7 @@ function newDrawing() {
 const AUTOSAVE_KEY = 'webcad_autosave_v1';
 function saveLocal() {
   try {
-    const data = { entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, nextId: state.nextId, view: state.view, fileName: currentFileName, fileLoc: currentFileLoc, t: Date.now() };
+    const data = { entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks, view: state.view, fileName: currentFileName, fileLoc: currentFileLoc, t: Date.now() };
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
   } catch (e) { /* 용량 초과 등 무시 */ }
 }
@@ -3837,11 +4006,12 @@ function restoreLocal(d) {
   if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
   state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
   state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
+  state.blocks = d.blocks || {}; insertName = null;
   if (d.view) state.view = d.view;
   setFileName(d.fileName || null, d.fileLoc === 'pc' ? null : (d.fileLoc || null)); // 핸들은 복원 불가 → 'pc' 표시는 내림
   state.selection.clear();
   undoStack.length = 0; redoStack.length = 0;
-  renderLayers(); renderProps(); updateStat(); setTool('select'); draw();
+  renderLayers(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
 }
 // 변경 시 자동 저장(디바운스) + 백그라운드 전환/종료 시 즉시 저장
 let _autosaveTimer = null;
