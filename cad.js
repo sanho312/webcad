@@ -235,6 +235,13 @@ function draw() {
   if (pts.length) drawDraftPolyline();
   if (previewEnts) for (const e of previewEnts) drawEntity({ layer: '0', ...e }, false, true);
 
+  // 플롯 영역 지정 미리보기
+  if (state.tool === '_plotregion' && cmdOp && cmdOp.name === 'plotrgn') {
+    const a = worldToScreen(cmdOp.p1.x, cmdOp.p1.y), b = worldToScreen(mouseWorld.x, mouseWorld.y);
+    ctx.save(); ctx.strokeStyle = '#ffd65d'; ctx.fillStyle = 'rgba(255,214,93,.10)'; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
+    ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.restore();
+  }
+
   // STRETCH 걸침 영역 박스
   if (cmdOp && cmdOp.name === 'stretch' && (cmdOp.step === 'c2' || cmdOp.box)) {
     const c1 = cmdOp.c1, c2 = cmdOp.box ? { x: cmdOp.box.xmax, y: cmdOp.box.ymax } : mouseWorld;
@@ -1270,6 +1277,16 @@ cv.addEventListener('touchend', (ev) => {
 
 // 클릭 처리 (도구별)
 function handleClick(w, rawW, ev) {
+  if (state.tool === '_plotregion') { // 플롯 영역 지정: 두 점
+    if (!cmdOp || cmdOp.name !== 'plotrgn') { cmdOp = { name: 'plotrgn', p1: w }; setPrompt('플롯 영역: 반대 모서리를 클릭하세요.'); return; }
+    const p1 = cmdOp.p1;
+    plotRegion = { minX: Math.min(p1.x, w.x), minY: Math.min(p1.y, w.y), maxX: Math.max(p1.x, w.x), maxY: Math.max(p1.y, w.y) };
+    cmdOp = null; const after = regionPickState && regionPickState.after; const prev = regionPickState ? regionPickState.prevTool : 'select';
+    regionPickState = null; setTool(prev || 'select');
+    logLine('  ✔ 플롯 영역 지정됨', 'info');
+    if (after) after();
+    return;
+  }
   switch (state.tool) {
     case 'select': {
       const tol = 8 / state.view.scale;
@@ -2820,6 +2837,7 @@ window.addEventListener('keydown', (ev) => {
     dlg.style.display = 'flex';
     const el = document.getElementById(sec); if (el) el.scrollIntoView({ block: 'start' });
   }
+  document.getElementById('moPlot').addEventListener('click', () => { toggle(false); openPlot(); });
   document.getElementById('moShortcut').addEventListener('click', () => openOptions('secShortcut'));
   document.getElementById('moOsnap').addEventListener('click', () => openOptions('secOsnap'));
   document.getElementById('moUnits').addEventListener('click', () => openOptions('secUnits'));
@@ -2842,6 +2860,52 @@ window.addEventListener('keydown', (ev) => {
     draw();
   });
 })();
+// ---------- 인쇄 / 플롯 ----------
+let plotRegion = null; // {minX,minY,maxX,maxY} — 창 지정 시
+function openPlot() { document.getElementById('plotDlg').style.display = 'flex'; }
+function closePlot() { document.getElementById('plotDlg').style.display = 'none'; }
+(function () {
+  const dlg = document.getElementById('plotDlg');
+  document.getElementById('plCancel').addEventListener('click', closePlot);
+  dlg.addEventListener('click', e => { if (e.target === dlg) closePlot(); });
+  document.getElementById('plOk').addEventListener('click', () => {
+    const region = document.getElementById('plRegion').value;
+    if (region === 'win' && !plotRegion) { // 영역 미지정 → 창 드래그 요청
+      closePlot();
+      startRegionPick(() => { document.getElementById('plotDlg').style.display = 'flex'; });
+      return;
+    }
+    doPlot();
+  });
+})();
+function startRegionPick(after) {
+  const prevTool = state.tool;
+  cmdOp = null; dragSelect = null;
+  state.tool = '_plotregion';
+  setPrompt('플롯 영역: 인쇄할 사각형 영역의 두 모서리를 클릭하세요.');
+  regionPickState = { after, prevTool };
+  cv.style.cursor = 'crosshair'; draw();
+}
+let regionPickState = null;
+function doPlot() {
+  const paper = document.getElementById('plPaper').value;
+  const landscape = document.getElementById('plOrient').value === 'land';
+  const scaleDenom = parseInt(document.getElementById('plScale').value, 10) || 0;
+  const useRegion = document.getElementById('plRegion').value === 'win' && plotRegion;
+  const title = document.getElementById('plTitleBlock').checked ? {
+    title: document.getElementById('plTitle').value || (currentFileName || '무제'),
+    file: currentFileName || '(미저장)',
+    scale: scaleDenom ? '1:' + scaleDenom : 'FIT',
+    date: new Date().toISOString().slice(0, 10),
+  } : null;
+  closePlot();
+  const opt = { paper, landscape, scaleDenom, region: useRegion ? plotRegion : null, title, units: settings.units };
+  const pdf = buildPDF(opt);
+  const base = (currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'plot');
+  logLine(`  ✔ 플롯 PDF (${paper.toUpperCase()} ${landscape ? '가로' : '세로'}, ${scaleDenom ? '1:' + scaleDenom : '맞춤'})`, 'ok');
+  saveBlob(new Blob([pdf], { type: 'application/pdf' }), base + '_plot.pdf');
+}
+
 function doNew() {
   if (state.entities.length && !confirm('현재 도면을 지우고 새로 시작할까요?')) return;
   if (typeof clearLocal === 'function') clearLocal();
@@ -3261,18 +3325,33 @@ function savePNG(fname) {
 // ============================================================
 //  PDF 내보내기 (벡터 단일 페이지)
 // ============================================================
-function buildPDF() {
-  const b = drawingBBox();
-  const margin = 28; // pt
-  const maxDim = 760; // A 영역 한 변 최대 pt
-  const sc = Math.min(maxDim / b.w, maxDim / b.h);
-  const PW = (b.w * sc + 2 * margin), PH = (b.h * sc + 2 * margin);
-  const X = x => (margin + (x - b.minX) * sc);
-  const Y = y => (margin + (y - b.minY) * sc); // PDF는 Y가 위로 → 그대로
+const PAPER_SIZES = { // pt (1mm=2.8346pt)
+  a4: [841.89, 595.28], a3: [1190.55, 841.89], a2: [1683.78, 1190.55], a1: [2383.94, 1683.78], letter: [792, 612],
+};
+// opt: { paper:'a3', landscape:true, scaleDenom:100(=1:100, 0=자동맞춤), region:{minX..}|null, title:{...}|null, units:'mm' }
+function buildPDF(opt) {
+  opt = opt || {};
+  const MM = 2.83464567; // mm → pt
+  const size = PAPER_SIZES[opt.paper || 'a3'] || PAPER_SIZES.a3;
+  let PW = size[0], PH = size[1];
+  if (opt.landscape === false) { PW = size[1]; PH = size[0]; }        // 기본 가로
+  const margin = 15 * MM;
+  const b = opt.region ? { minX: opt.region.minX, minY: opt.region.minY, w: opt.region.maxX - opt.region.minX, h: opt.region.maxY - opt.region.minY, maxX: opt.region.maxX, maxY: opt.region.maxY } : drawingBBox();
+  const availW = PW - 2 * margin, availH = PH - 2 * margin - (opt.title ? 12 * MM : 0);
+  // 축척: scaleDenom>0 이면 1:denom 고정, 아니면 용지에 맞춤
+  const unitToMM = ({ mm: 1, cm: 10, m: 1000, in: 25.4 })[opt.units || settings.units] || 1;
+  let sc; // 도면단위 → pt
+  if (opt.scaleDenom > 0) sc = (unitToMM * MM) / opt.scaleDenom;      // 1 도면단위 = unitToMM mm, 축척 적용
+  else sc = Math.min(availW / b.w, availH / b.h);                     // 자동 맞춤
+  // 그림을 인쇄영역 중앙에 배치
+  const drawW = b.w * sc, drawH = b.h * sc;
+  const offX = margin + (availW - drawW) / 2, offY = margin + (opt.title ? 12 * MM : 0) + (availH - drawH) / 2;
+  const X = x => (offX + (x - b.minX) * sc);
+  const Y = y => (offY + (y - b.minY) * sc);
   const num = n => (Math.round(n * 1000) / 1000).toFixed(3);
-  const K = 0.5522847498; // 원 베지어 상수
+  const K = 0.5522847498;
   const ops = [];
-  ops.push((Math.max(b.w, b.h) * sc / 600).toFixed(2) + ' w');
+  ops.push('0.7 w');
   const setColor = (hex) => { hex = rgbHex(hex === '#ffffff' ? '#000000' : hex); const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, bl = parseInt(hex.slice(5, 7), 16) / 255; ops.push(`${num(r)} ${num(g)} ${num(bl)} RG`); ops.push(`${num(r)} ${num(g)} ${num(bl)} rg`); };
   const circlePath = (cx, cy, r) => {
     const x = X(cx), y = Y(cy), rr = r * sc;
@@ -3293,6 +3372,9 @@ function buildPDF() {
     }
     ops.push('S');
   };
+  // 인쇄영역으로 클리핑(축척 고정 시 용지 밖 잘림)
+  ops.push('q');
+  ops.push(`${num(margin)} ${num(margin)} ${num(availW)} ${num(PH - 2 * margin)} re W n`);
   for (const e of exportEntities()) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     setColor(entityColor(e));
@@ -3303,6 +3385,21 @@ function buildPDF() {
       case 'ARC': arcPath(e); break;
       case 'TEXT': { const txt = String(e.text).replace(/[^\x20-\x7e]/g, '?').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)'); ops.push(`BT /F1 ${num(e.height * sc)} Tf ${num(X(e.x))} ${num(Y(e.y))} Td (${txt}) Tj ET`); break; }
     }
+  }
+  ops.push('Q');
+  // 제목블록(하단 테두리 + 정보)
+  if (opt.title) {
+    const t = opt.title, bx = margin, by = margin, bw = PW - 2 * margin, bh = 11 * MM;
+    ops.push('0 0 0 RG 0.8 w');
+    ops.push(`${num(bx)} ${num(by)} ${num(bw)} ${num(bh)} re S`);
+    ops.push(`${num(bx + bw * 0.7)} ${num(by)} m ${num(bx + bw * 0.7)} ${num(by + bh)} l S`);
+    ops.push(`${num(bx)} ${num(by + bh / 2)} m ${num(bx + bw * 0.7)} ${num(by + bh / 2)} l S`);
+    const asc = s => String(s == null ? '' : s).replace(/[^\x20-\x7e]/g, '?').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    const txt = (x, y, s, sz) => ops.push(`BT /F1 ${num(sz)} Tf ${num(x)} ${num(y)} Td (${asc(s)}) Tj ET`);
+    txt(bx + 4 * MM, by + bh * 0.62, 'TITLE: ' + (t.title || ''), 9);
+    txt(bx + 4 * MM, by + bh * 0.2, 'FILE: ' + (t.file || ''), 7);
+    txt(bx + bw * 0.7 + 4 * MM, by + bh * 0.62, 'SCALE: ' + (t.scale || ''), 9);
+    txt(bx + bw * 0.7 + 4 * MM, by + bh * 0.2, 'DATE: ' + (t.date || ''), 7);
   }
   const content = ops.join('\n');
   // PDF 객체 조립 (오프셋 정확히 계산)

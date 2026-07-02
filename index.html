@@ -113,11 +113,11 @@
   .sugItem:hover .match,.sugItem.sel .match{color:#cfe6ff;}
 
   /* Array dialog */
-  #arrayDlg,#saveAsDlg,#optionsDlg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  #arrayDlg,#saveAsDlg,#optionsDlg,#plotDlg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
     background:rgba(0,0,0,.45);z-index:20;}
-  #arrayDlg .dlgBox,#saveAsDlg .dlgBox,#optionsDlg .dlgBox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  #arrayDlg .dlgBox,#saveAsDlg .dlgBox,#optionsDlg .dlgBox,#plotDlg .dlgBox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
     padding:18px 20px;width:300px;box-shadow:0 10px 40px #000a;}
-  #arrayDlg h2,#saveAsDlg h2,#optionsDlg h2{margin:0 0 12px;font-size:16px;}
+  #arrayDlg h2,#saveAsDlg h2,#optionsDlg h2,#plotDlg h2{margin:0 0 12px;font-size:16px;}
   .optSec{border-top:1px solid var(--line);padding:12px 0;}
   .optSec h4{margin:0 0 8px;font-size:13px;color:var(--accent);}
   .optHint{font-size:11.5px;color:var(--muted);margin:6px 0;line-height:1.5;}
@@ -189,6 +189,8 @@
     <div class="menuWrap">
       <button class="tbtn" id="btnOpts">⚙ 옵션 ▾</button>
       <div id="optMenu" class="dropdown">
+        <button class="menuItem" id="moPlot">🖨 인쇄 / 플롯 (PDF)…</button>
+        <div class="menuSep"></div>
         <button class="menuItem" id="moShortcut">⌨ 명령 단축키…</button>
         <button class="menuItem" id="moOsnap">🧲 객체 스냅 설정…</button>
         <button class="menuItem" id="moUnits">📏 단위 설정…</button>
@@ -326,6 +328,37 @@
           <div class="dlgBtns">
             <button class="miniBtn" id="saveAsCancel">취소</button>
             <button class="tbtn" id="saveAsOk">저장</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 인쇄 / 플롯 -->
+      <div id="plotDlg">
+        <div class="dlgBox" style="width:340px;">
+          <h2>🖨 인쇄 / 플롯 (PDF)</h2>
+          <div class="dlgRow"><label style="flex:0 0 70px;color:var(--muted)">용지</label>
+            <select id="plPaper" style="flex:1"><option value="a4">A4</option><option value="a3" selected>A3</option><option value="a2">A2</option><option value="a1">A1</option><option value="letter">Letter</option></select>
+            <select id="plOrient" style="flex:0 0 78px"><option value="land">가로</option><option value="port">세로</option></select>
+          </div>
+          <div class="dlgRow"><label style="flex:0 0 70px;color:var(--muted)">축척</label>
+            <select id="plScale" style="flex:1">
+              <option value="0">용지에 맞춤</option>
+              <option value="1">1 : 1</option><option value="2">1 : 2</option><option value="5">1 : 5</option>
+              <option value="10">1 : 10</option><option value="20">1 : 20</option><option value="50">1 : 50</option>
+              <option value="100" selected>1 : 100</option><option value="200">1 : 200</option><option value="500">1 : 500</option>
+              <option value="1000">1 : 1000</option>
+            </select>
+          </div>
+          <div class="dlgRow"><label style="flex:0 0 70px;color:var(--muted)">출력 영역</label>
+            <select id="plRegion" style="flex:1"><option value="all">도면 전체</option><option value="win">영역 지정(창)</option></select>
+          </div>
+          <div class="dlgRow"><label style="flex:0 0 70px;color:var(--muted)">제목</label>
+            <input type="text" id="plTitle" placeholder="도면 제목(선택)" style="flex:1"></div>
+          <label class="optChk"><input type="checkbox" id="plTitleBlock" checked> 제목블록(테두리·정보) 넣기</label>
+          <div class="dlgHint" id="plHint">1:100 = 도면 100mm가 종이 1mm로 출력. "용지에 맞춤"은 축척 무시.</div>
+          <div class="dlgBtns">
+            <button class="miniBtn" id="plCancel">취소</button>
+            <button class="tbtn" id="plOk">PDF 만들기</button>
           </div>
         </div>
       </div>
