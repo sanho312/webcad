@@ -50,9 +50,9 @@
   /* Main layout */
   #main{display:flex;flex:1 1 auto;min-height:0;}
 
-  /* Toolbar — 2열 그리드(모든 도구가 보이도록) */
-  #toolbar{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;padding:6px 5px;
-    background:var(--panel);border-right:1px solid var(--line);width:108px;flex:0 0 auto;
+  /* Toolbar — 3열 그리드(모든 도구가 보이도록) */
+  #toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:6px 5px;
+    background:var(--panel);border-right:1px solid var(--line);width:156px;flex:0 0 auto;
     overflow-y:auto;overflow-x:hidden;align-content:start;}
   .tdiv{grid-column:1 / -1;height:1px;background:var(--line);margin:2px 2px;}
   .tool{display:flex;flex-direction:column;align-items:center;gap:1px;
@@ -196,8 +196,14 @@
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>원</div>
       <div class="tool" data-tool="arc" title="호 (A) — 중심·시작·끝">
         <svg viewBox="0 0 24 24"><path d="M4 18 A 9 9 0 0 1 20 12"/></svg>호</div>
+      <div class="tool" data-tool="polygon" title="정다각형 (polygon) — 변 개수 입력 후 중심·반지름">
+        <svg viewBox="0 0 24 24"><polygon points="12,3 20,8.5 17,18 7,18 4,8.5"/></svg>다각형</div>
+      <div class="tool" data-tool="ellipse" title="타원 (ellipse) — 중심·코너">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="5.5"/></svg>타원</div>
       <div class="tool" data-tool="text" title="문자 (T)">
         <svg viewBox="0 0 24 24"><path d="M5 6h14M12 6v13"/></svg>문자</div>
+      <div class="tool" data-tool="dim" title="치수 기입 (dim) — 두 점·위치">
+        <svg viewBox="0 0 24 24"><path d="M4 16h16M4 13v6M20 13v6M7 16l-3 0M6 14.5L4 16l2 1.5M18 14.5L20 16l-2 1.5"/><path d="M9 8h6" stroke-dasharray="2 2"/></svg>치수</div>
       <div class="tool" data-tool="move" title="이동 (M)">
         <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>이동</div>
       <div class="tool" data-tool="erase" title="지우기 (Del)">
@@ -220,10 +226,21 @@
         <svg viewBox="0 0 24 24"><path d="M3 12h12"/><path d="M11 8l4 4-4 4"/><path d="M19 5v14"/></svg>연장</div>
       <div class="tool" data-tool="fillet" title="모깎기 (fillet)">
         <svg viewBox="0 0 24 24"><path d="M5 19V11a6 6 0 0 1 6-6h8"/></svg>모깎기</div>
+      <div class="tool" data-tool="chamfer" title="모따기 (chamfer) — 거리 입력 후 두 선">
+        <svg viewBox="0 0 24 24"><path d="M5 19V11l6-6h8"/></svg>모따기</div>
       <div class="tool" data-tool="scale" title="배율 (scale)">
         <svg viewBox="0 0 24 24"><rect x="4" y="12" width="6" height="6"/><rect x="12" y="4" width="9" height="9"/><path d="M10 12L21 4" stroke-dasharray="2 2"/></svg>배율</div>
       <div class="tool" data-tool="stretch" title="신축 (stretch)">
         <svg viewBox="0 0 24 24"><path d="M3 12h18"/><path d="M6 9l-3 3 3 3"/><path d="M18 9l3 3-3 3"/><path d="M12 5v14" stroke-dasharray="2 2"/></svg>신축</div>
+      <div class="tool" data-tool="explode" title="분해 (explode) — 선택한 폴리라인을 선들로">
+        <svg viewBox="0 0 24 24"><path d="M9 9L4 4M15 9l5-5M9 15l-5 5M15 15l5 5"/><rect x="9" y="9" width="6" height="6"/></svg>분해</div>
+      <div class="tool" data-tool="join" title="결합 (join) — 선택한 선들을 폴리라인으로">
+        <svg viewBox="0 0 24 24"><path d="M4 18L10 12M14 12l6-6"/><circle cx="12" cy="12" r="2.4"/></svg>결합</div>
+      <div class="tdiv"></div>
+      <div class="tool" data-tool="dist" title="거리 측정 (dist)">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/><path d="M6.5 17.5L17.5 6.5" stroke-dasharray="3 2"/></svg>거리</div>
+      <div class="tool" data-tool="area" title="면적 (area) — 도형 클릭 또는 점 지정 후 Enter">
+        <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M8 16l3-5 3 3 2-4" /></svg>면적</div>
     </div>
 
     <!-- Canvas -->
