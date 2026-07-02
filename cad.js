@@ -327,6 +327,24 @@ function drawEntity(e, selected, preview) {
       } else ctx.fillText(e.text, p.x, p.y);
       break;
     }
+    case 'HATCH': {
+      const b = e.boundary;
+      const path = () => {
+        ctx.beginPath();
+        if (b.kind === 'circle') { const c = worldToScreen(b.cx, b.cy); ctx.arc(c.x, c.y, b.r * state.view.scale, 0, Math.PI * 2); }
+        else { b.points.forEach((p, i) => { const s = worldToScreen(p[0], p[1]); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
+      };
+      if (e.pattern === 'solid') { path(); const ga = ctx.globalAlpha; ctx.globalAlpha = 0.35; ctx.fill(); ctx.globalAlpha = ga; }
+      else {
+        const hs = hatchSegments(e);
+        ctx.beginPath();
+        for (const s of hs.segs) { const A = worldToScreen(s[0], s[1]), B = worldToScreen(s[2], s[3]); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); }
+        ctx.stroke();
+        for (const dp of hs.dots) { const P = worldToScreen(dp[0], dp[1]); ctx.fillRect(P.x - 1.2, P.y - 1.2, 2.4, 2.4); }
+      }
+      if (selected && !preview) { path(); ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]); }
+      break;
+    }
   }
 
   // 선택 시 그립 표시
@@ -356,6 +374,7 @@ function entityGrips(e) {
     case 'LWPOLYLINE': return e.points.map(p => ({ x: p[0], y: p[1] }));
     case 'CIRCLE': case 'ARC': return [{ x: e.cx, y: e.cy }];
     case 'TEXT': return [{ x: e.x, y: e.y }];
+    case 'HATCH': return e.boundary.kind === 'circle' ? [{ x: e.boundary.cx, y: e.boundary.cy }] : e.boundary.points.map(p => ({ x: p[0], y: p[1] }));
   }
   return [];
 }
@@ -412,6 +431,7 @@ function entityHit(e, w, tol) {
       const w2 = e.height * 0.6 * e.text.length;
       return w.x >= e.x - tol && w.x <= e.x + w2 + tol && w.y >= e.y - tol && w.y <= e.y + e.height + tol;
     }
+    case 'HATCH': return pointInBoundary(e.boundary, w.x, w.y); // 내부 클릭 = 선택
   }
   return false;
 }
@@ -439,6 +459,7 @@ function entityBBox(e) {
       return { xmin: Math.min(...xs), xmax: Math.max(...xs), ymin: Math.min(...ys), ymax: Math.max(...ys) };
     }
     case 'TEXT': { const w = (e.text ? e.text.length : 0) * e.height * 0.6; return { xmin: e.x, xmax: e.x + w, ymin: e.y, ymax: e.y + e.height }; }
+    case 'HATCH': return boundaryBBox(e.boundary);
   }
   return null;
 }
@@ -449,6 +470,7 @@ function entityFullyInBox(e, b) {
 }
 // 크로싱 선택: 객체가 박스에 걸치거나 들어옴
 function entityCrossesBox(e, b) {
+  if (e.type === 'HATCH') { const bb = entityBBox(e); return !(bb.xmax < b.xmin || bb.xmin > b.xmax || bb.ymax < b.ymin || bb.ymin > b.ymax); }
   const inB = (x, y) => x >= b.xmin && x <= b.xmax && y >= b.ymin && y <= b.ymax;
   const edges = [[b.xmin, b.ymin, b.xmax, b.ymin], [b.xmax, b.ymin, b.xmax, b.ymax], [b.xmax, b.ymax, b.xmin, b.ymax], [b.xmin, b.ymax, b.xmin, b.ymin]];
   const segHitsBox = (x1, y1, x2, y2) => {
@@ -588,6 +610,12 @@ function translateEntity(e, dx, dy) {
     case 'LWPOLYLINE': e.points = e.points.map(p => [p[0] + dx, p[1] + dy]); break;
     case 'CIRCLE': case 'ARC': e.cx += dx; e.cy += dy; break;
     case 'TEXT': e.x += dx; e.y += dy; break;
+    case 'HATCH': {
+      const b = e.boundary;
+      if (b.kind === 'circle') { b.cx += dx; b.cy += dy; }
+      else b.points = b.points.map(p => [p[0] + dx, p[1] + dy]);
+      hatchDirty(e); break;
+    }
   }
 }
 
@@ -655,6 +683,12 @@ function applyTransform(e, T) {
       if (T.type === 'rotate') e.rotation = (e.rotation || 0) + T.deg;
       else if (T.type === 'mirror') e.rotation = 2 * T.axisDeg - (e.rotation || 0);
       break;
+    }
+    case 'HATCH': {
+      const b = e.boundary;
+      if (b.kind === 'circle') [b.cx, b.cy] = T.pt(b.cx, b.cy);
+      else b.points = b.points.map(p => T.pt(p[0], p[1]));
+      hatchDirty(e); break;
     }
   }
   return e;
@@ -926,6 +960,12 @@ function scaleEntities(ents, base, f) {
       case 'LWPOLYLINE': e.points = e.points.map(p => sp(p[0], p[1])); break;
       case 'CIRCLE': case 'ARC': [e.cx, e.cy] = sp(e.cx, e.cy); e.r *= f; break;
       case 'TEXT': [e.x, e.y] = sp(e.x, e.y); e.height *= f; break;
+      case 'HATCH': {
+        const b = e.boundary;
+        if (b.kind === 'circle') { [b.cx, b.cy] = sp(b.cx, b.cy); b.r *= f; }
+        else b.points = b.points.map(p => sp(p[0], p[1]));
+        e.spacing = (e.spacing || 5) * f; hatchDirty(e); break;
+      }
     }
   }
 }
@@ -941,6 +981,12 @@ function stretchEntities(ents, box, dx, dy) {
       case 'LWPOLYLINE': e.points = e.points.map(p => inB(p[0], p[1]) ? [p[0] + dx, p[1] + dy] : p); break;
       case 'CIRCLE': case 'ARC': if (inB(e.cx, e.cy)) { e.cx += dx; e.cy += dy; } break;
       case 'TEXT': if (inB(e.x, e.y)) { e.x += dx; e.y += dy; } break;
+      case 'HATCH': {
+        const b = e.boundary;
+        if (b.kind === 'circle') { if (inB(b.cx, b.cy)) { b.cx += dx; b.cy += dy; hatchDirty(e); } }
+        else { b.points = b.points.map(p => inB(p[0], p[1]) ? [p[0] + dx, p[1] + dy] : p); hatchDirty(e); }
+        break;
+      }
     }
   }
 }
@@ -1724,37 +1770,45 @@ function clickLengthen(w, rawW) {
   draw();
 }
 
-// ====== HATCH (해치) — 닫힌 경계 내부 45° 빗금 채움 ======
-function clickHatch(w, rawW) {
-  const hit = pick(w, rawW);
-  if (!hit || !(hit.type === 'CIRCLE' || (hit.type === 'LWPOLYLINE' && hit.closed))) {
-    logLine('  해치: 원 또는 닫힌 폴리라인(사각형·다각형)을 클릭하세요.', 'warn'); return;
-  }
-  const lines = computeHatch(hit, hatchSpacing, 45);
-  if (!lines.length) { logLine('  해치 생성 실패(간격이 너무 큽니다).', 'warn'); return; }
-  pushUndo();
-  for (const l of lines) addEntity(l);
-  logLine(`  ✔ 해치 ${lines.length}선 (간격 ${hatchSpacing}, 45°)`, 'ok');
-  updateStat(); draw();
+// ====== HATCH (해치) — 단일 객체, 건축 패턴 8종 ======
+const HATCH_PATTERNS = {
+  ansi31: { ko: '사선(일반)' }, ansi37: { ko: '격자 사선' }, steel: { ko: '강재(이중 사선)' },
+  grid: { ko: '격자(타일)' }, brick: { ko: '벽돌(조적)' }, concrete: { ko: '콘크리트' },
+  dots: { ko: '점(모래·미장)' }, solid: { ko: '단색 채움' },
+};
+let hatchPattern = 'ansi31';
+
+function boundaryBBox(b) {
+  if (b.kind === 'circle') return { xmin: b.cx - b.r, xmax: b.cx + b.r, ymin: b.cy - b.r, ymax: b.cy + b.r };
+  const xs = b.points.map(p => p[0]), ys = b.points.map(p => p[1]);
+  return { xmin: Math.min(...xs), xmax: Math.max(...xs), ymin: Math.min(...ys), ymax: Math.max(...ys) };
 }
-function computeHatch(e, sp, angleDeg) {
+function pointInBoundary(b, x, y) {
+  if (b.kind === 'circle') return Math.hypot(x - b.cx, y - b.cy) <= b.r;
+  let inside = false; const p = b.points, n = p.length;
+  for (let i = 0, j = n - 1; i < n; j = i++)
+    if ((p[i][1] > y) !== (p[j][1] > y) && x < (p[j][0] - p[i][0]) * (y - p[i][1]) / (p[j][1] - p[i][1]) + p[i][0]) inside = !inside;
+  return inside;
+}
+// 한 방향 평행선 무리를 경계 내부로 잘라 세그먼트 생성
+function clipFamily(b, sp, angleDeg, phase) {
   const a = angleDeg * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], nv = [-d[1], d[0]];
-  const bb = entityBBox(e); if (!bb) return [];
+  const bb = boundaryBBox(b);
   const corners = [[bb.xmin, bb.ymin], [bb.xmax, bb.ymin], [bb.xmax, bb.ymax], [bb.xmin, bb.ymax]];
   let cmin = Infinity, cmax = -Infinity;
   for (const c of corners) { const v = nv[0] * c[0] + nv[1] * c[1]; if (v < cmin) cmin = v; if (v > cmax) cmax = v; }
   const out = [];
-  for (let c = cmin + sp / 2; c < cmax; c += sp) {
+  for (let c = cmin + sp * (phase === undefined ? 0.5 : phase); c < cmax; c += sp) {
     let hits = [];
-    if (e.type === 'CIRCLE') {
-      const cc = nv[0] * e.cx + nv[1] * e.cy, dist = c - cc;
-      if (Math.abs(dist) < e.r) {
-        const half = Math.sqrt(e.r * e.r - dist * dist);
-        const mx = e.cx + nv[0] * dist, my = e.cy + nv[1] * dist;
+    if (b.kind === 'circle') {
+      const cc = nv[0] * b.cx + nv[1] * b.cy, dist = c - cc;
+      if (Math.abs(dist) < b.r) {
+        const half = Math.sqrt(b.r * b.r - dist * dist);
+        const mx = b.cx + nv[0] * dist, my = b.cy + nv[1] * dist;
         hits = [[mx - d[0] * half, my - d[1] * half], [mx + d[0] * half, my + d[1] * half]];
       }
     } else {
-      const p = e.points, n = p.length;
+      const p = b.points, n = p.length;
       for (let i = 0; i < n; i++) {
         const A = p[i], B = p[(i + 1) % n];
         const fa = nv[0] * A[0] + nv[1] * A[1] - c, fb = nv[0] * B[0] + nv[1] * B[1] - c;
@@ -1765,8 +1819,88 @@ function computeHatch(e, sp, angleDeg) {
       }
       hits.sort((x, y) => (d[0] * x[0] + d[1] * x[1]) - (d[0] * y[0] + d[1] * y[1]));
     }
-    for (let i = 0; i + 1 < hits.length; i += 2)
-      out.push({ type: 'LINE', layer: state.currentLayer, x1: hits[i][0], y1: hits[i][1], x2: hits[i + 1][0], y2: hits[i + 1][1] });
+    for (let i = 0; i + 1 < hits.length; i += 2) out.push([hits[i][0], hits[i][1], hits[i + 1][0], hits[i + 1][1]]);
+  }
+  return out;
+}
+// 패턴별 세그먼트/점 계산
+function computePatternSegs(e) {
+  const b = e.boundary, sp = e.spacing || 5, segs = [], dots = [];
+  const add = (arr) => { for (const s of arr) segs.push(s); };
+  switch (e.pattern) {
+    case 'ansi37': add(clipFamily(b, sp, 45)); add(clipFamily(b, sp, 135)); break;
+    case 'steel': add(clipFamily(b, sp, 45)); add(clipFamily(b, sp, 45, 0.75)); break;
+    case 'grid': add(clipFamily(b, sp, 0)); add(clipFamily(b, sp, 90)); break;
+    case 'brick': {
+      add(clipFamily(b, sp, 0, 0));
+      const bb = boundaryBBox(b); let row = 0;
+      for (let y = Math.floor(bb.ymin / sp) * sp; y < bb.ymax; y += sp, row++) {
+        const off = (row % 2) * sp;
+        for (let x = Math.floor(bb.xmin / (2 * sp)) * 2 * sp + off; x < bb.xmax; x += 2 * sp)
+          if (pointInBoundary(b, x, y) && pointInBoundary(b, x, y + sp) && pointInBoundary(b, x, y + sp / 2))
+            segs.push([x, y, x, y + sp]);
+      }
+      break;
+    }
+    case 'concrete': {
+      add(clipFamily(b, sp * 1.7, 45));
+      const bb = boundaryBBox(b);
+      for (let i = 0; bb.xmin + i * sp < bb.xmax; i++) for (let j = 0; bb.ymin + j * sp < bb.ymax; j++) {
+        const h = Math.abs(Math.sin(i * 127.1 + j * 311.7) * 43758.5453) % 1; // 결정적 의사난수
+        if (h < 0.45) continue;
+        const x = bb.xmin + i * sp + (h * 7.919 % 1) * sp, y = bb.ymin + j * sp + (h * 104.729 % 1) * sp;
+        if (pointInBoundary(b, x, y)) dots.push([x, y]);
+      }
+      break;
+    }
+    case 'dots': {
+      const bb = boundaryBBox(b); let row = 0;
+      for (let y = bb.ymin + sp / 2; y < bb.ymax; y += sp, row++)
+        for (let x = bb.xmin + sp / 2 + (row % 2) * sp / 2; x < bb.xmax; x += sp)
+          if (pointInBoundary(b, x, y)) dots.push([x, y]);
+      break;
+    }
+    case 'solid': break;
+    default: add(clipFamily(b, sp, 45)); // ansi31
+  }
+  return { segs, dots };
+}
+// 캐시(직렬화 제외) — 변형 시 hatchDirty()로 무효화
+function hatchSegments(e) {
+  if (!e._hc) Object.defineProperty(e, '_hc', { value: computePatternSegs(e), configurable: true, writable: true, enumerable: false });
+  return e._hc;
+}
+function hatchDirty(e) { if (e._hc) delete e._hc; }
+
+function clickHatch(w, rawW) {
+  const hit = pick(w, rawW);
+  if (!hit || !(hit.type === 'CIRCLE' || (hit.type === 'LWPOLYLINE' && hit.closed))) {
+    logLine('  해치: 원 또는 닫힌 폴리라인(사각형·다각형)을 클릭하세요.', 'warn'); return;
+  }
+  pushUndo();
+  const boundary = hit.type === 'CIRCLE'
+    ? { kind: 'circle', cx: hit.cx, cy: hit.cy, r: hit.r }
+    : { kind: 'poly', points: hit.points.map(p => [p[0], p[1]]) };
+  const ne = addEntity({ type: 'HATCH', layer: state.currentLayer, pattern: hatchPattern, spacing: hatchSpacing, boundary });
+  state.selection.clear(); state.selection.add(ne.id);
+  logLine(`  ✔ 해치 1개 객체 (${HATCH_PATTERNS[hatchPattern].ko}, 간격 ${hatchSpacing})`, 'ok');
+  updateStat(); renderProps(); draw();
+}
+// 내보내기용: HATCH → 선/점(짧은 선) 분해 목록
+function exportEntities() {
+  const out = [];
+  for (const e of state.entities) {
+    if (e.type !== 'HATCH') { out.push(e); continue; }
+    const hs = e.pattern === 'solid' ? { segs: [], dots: [] } : hatchSegments(e);
+    for (const s of hs.segs) out.push({ type: 'LINE', layer: e.layer, color: e.color, x1: s[0], y1: s[1], x2: s[2], y2: s[3] });
+    const t = (e.spacing || 5) * 0.06;
+    for (const dp of hs.dots) out.push({ type: 'LINE', layer: e.layer, color: e.color, x1: dp[0] - t, y1: dp[1], x2: dp[0] + t, y2: dp[1] });
+    if (e.pattern === 'solid') {
+      const b = e.boundary;
+      out.push(b.kind === 'circle'
+        ? { type: 'CIRCLE', layer: e.layer, color: e.color, cx: b.cx, cy: b.cy, r: b.r }
+        : { type: 'LWPOLYLINE', layer: e.layer, color: e.color, closed: true, points: b.points });
+    }
   }
   return out;
 }
@@ -1961,6 +2095,12 @@ function runCommandInput(raw) {
   const v = raw.trim().toLowerCase();
   if (!v) return; // 빈 Enter
   logLine('명령: ' + v, 'cmd');
+  // 해치 도구 중 패턴명 입력 (예: brick, concrete)
+  if (state.tool === 'hatch' && HATCH_PATTERNS[v]) {
+    hatchPattern = v;
+    setPrompt(`해치: 패턴 ${HATCH_PATTERNS[v].ko}, 간격 ${hatchSpacing}. 경계를 클릭하세요.`);
+    logLine(`  해치 패턴 = ${HATCH_PATTERNS[v].ko}`, 'info'); return;
+  }
   // 진행 중 작도 도구의 좌표/치수 입력을 우선 처리
   if (feedDrawInput(v)) return;
   // 숫자 입력 → 진행 중 명령의 수치 인자
@@ -2275,7 +2415,7 @@ function setTool(t) {
     dimdia: '지름 치수: 원/호 클릭 → 문자 위치 클릭. (⌀값, 연속 기입)',
     break: '끊기: 선/원/호 선택 → 끊기점 두 개 클릭. (사이 구간 제거)',
     lengthen: `길이조정: 증감량 ${lengthenDelta > 0 ? '+' : ''}${lengthenDelta}. 선의 조정할 끝쪽을 클릭하세요. (음수=줄이기)`,
-    hatch: `해치: 간격 ${hatchSpacing}. 원/닫힌 폴리라인을 클릭하세요. (숫자로 간격 변경)`,
+    hatch: `해치: ${HATCH_PATTERNS[hatchPattern].ko}, 간격 ${hatchSpacing}. 경계 클릭. (숫자=간격, 패턴명 입력: ansi31·ansi37·steel·grid·brick·concrete·dots·solid)`,
   };
   setPrompt(hints[t] || '');
   if (t !== 'select') {
@@ -2369,11 +2509,15 @@ function renderProps() {
     CIRCLE: [['cx', '중심X'], ['cy', '중심Y'], ['r', '반지름']],
     ARC: [['cx', '중심X'], ['cy', '중심Y'], ['r', '반지름'], ['startAngle', '시작각'], ['endAngle', '끝각']],
     TEXT: [['x', 'X'], ['y', 'Y'], ['height', '높이'], ['rotation', '회전']],
+    HATCH: [['spacing', '간격']],
   };
   if (geomRows[e.type]) for (const [k, lab] of geomRows[e.type])
     rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-k="${k}" value="${e[k]}"></div>`;
   if (e.type === 'TEXT')
     rows += `<div class="row"><label>내용</label><input type="text" data-k="text" value="${escapeHtml(e.text)}"></div>`;
+  if (e.type === 'HATCH')
+    rows += `<div class="row"><label>패턴</label><select id="pHatch">${Object.keys(HATCH_PATTERNS).map(k =>
+      `<option value="${k}" ${e.pattern === k ? 'selected' : ''}>${HATCH_PATTERNS[k].ko}</option>`).join('')}</select></div>`;
   rows += `<div class="row"><label>색상</label><input type="color" id="pColor" value="${rgbHex(entityColor(e))}">
     <button class="miniBtn" id="pColClear">레이어색</button></div>`;
   rows += `<button class="miniBtn" id="pDel" style="margin-top:6px;">삭제</button>`;
@@ -2384,8 +2528,11 @@ function renderProps() {
       pushUndo();
       const k = inp.dataset.k;
       e[k] = (inp.type === 'number') ? parseFloat(inp.value) : inp.value;
+      if (e.type === 'HATCH') hatchDirty(e);
       draw();
     }));
+  const pHatch = document.getElementById('pHatch');
+  if (pHatch) pHatch.addEventListener('change', () => { pushUndo(); e.pattern = pHatch.value; hatchDirty(e); draw(); logLine(`  해치 패턴 → ${HATCH_PATTERNS[e.pattern].ko}`, 'info'); });
   document.getElementById('pLayer').addEventListener('change', (ev) => { pushUndo(); e.layer = ev.target.value; draw(); });
   document.getElementById('pColor').addEventListener('input', (ev) => { pushUndo(); e.color = ev.target.value; draw(); });
   document.getElementById('pColClear').addEventListener('click', () => { pushUndo(); delete e.color; renderProps(); draw(); });
@@ -2399,7 +2546,7 @@ function deleteSelection() {
   state.selection.clear(); renderProps(); updateStat(); draw();
 }
 
-function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자' })[t] || t; }
+function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자', HATCH: '해치' })[t] || t; }
 function updateStat() { statEl.textContent = `도형 ${state.entities.length}개 · 레이어 ${state.layers.length}개`; }
 
 // ============================================================
@@ -2416,6 +2563,7 @@ function zoomFit(robust) {
       case 'LWPOLYLINE': e.points.forEach(p => ext(p[0], p[1])); break;
       case 'CIRCLE': case 'ARC': ext(e.cx - e.r, e.cy - e.r); ext(e.cx + e.r, e.cy + e.r); break;
       case 'TEXT': ext(e.x, e.y); ext(e.x + e.text.length * e.height * .6, e.y + e.height); break;
+      case 'HATCH': { const bb = boundaryBBox(e.boundary); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
     }
   }
   if (!xs.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
@@ -2428,7 +2576,8 @@ function zoomFit(robust) {
   }
   const w = maxX - minX || 1, h = maxY - minY || 1;
   const pad = 1.2;
-  state.view.scale = Math.min(cv._w / (w * pad), cv._h / (h * pad));
+  if (cv._w > 2 && cv._h > 2) // 창이 0 크기일 때 scale이 0/∞로 깨지는 것 방지
+    state.view.scale = Math.min(cv._w / (w * pad), cv._h / (h * pad));
   state.view.x = (minX + maxX) / 2;
   state.view.y = (minY + maxY) / 2;
   draw();
@@ -2707,7 +2856,7 @@ function buildDXFText() {
 
   // ENTITIES
   g(0, 'SECTION'); g(2, 'ENTITIES');
-  for (const e of state.entities) writeEntity(g, e, H);
+  for (const e of exportEntities()) writeEntity(g, e, H); // HATCH는 선으로 분해되어 포함
   g(0, 'ENDSEC');
   g(0, 'EOF');
 
@@ -2766,7 +2915,7 @@ function buildSVG() {
   const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W.toFixed(3)} ${H.toFixed(3)}" width="${W.toFixed(1)}" height="${H.toFixed(1)}">`];
   out.push(`<rect width="100%" height="100%" fill="white"/>`);
   out.push(`<g fill="none" stroke-width="${sw}">`);
-  for (const e of state.entities) {
+  for (const e of exportEntities()) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const c = entityColor(e) === '#ffffff' ? '#000000' : entityColor(e); // 흰색은 흰배경에서 검정으로
     switch (e.type) {
@@ -2809,7 +2958,7 @@ function savePNG(fname) {
   const X = x => (x - b.minX + margin) * scale;
   const Y = y => (b.maxY - y + margin) * scale;
   o.lineWidth = Math.max(1, (Math.max(b.w, b.h) / 600) * scale);
-  for (const e of state.entities) {
+  for (const e of exportEntities()) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     let c = entityColor(e); if (c === '#ffffff') c = '#000000';
     o.strokeStyle = c; o.fillStyle = c;
@@ -2860,7 +3009,7 @@ function buildPDF() {
     }
     ops.push('S');
   };
-  for (const e of state.entities) {
+  for (const e of exportEntities()) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     setColor(entityColor(e));
     switch (e.type) {
