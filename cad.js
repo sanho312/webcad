@@ -44,6 +44,8 @@ let offsetDist = 10;    // 마지막 사용 오프셋 거리
 let filletRadius = 0;   // 모깎기 반지름
 let chamferDist = 10;   // 모따기 거리
 let polygonSides = 6;   // 다각형 변 개수
+let lengthenDelta = 10; // 길이조정 증감량(±)
+let hatchSpacing = 5;   // 해치 간격
 let lastCommand = '';   // 직전에 실행한 명령(스페이스/Enter로 반복)
 let lastInputWasTouch = false; // 터치 입력 중에는 명령행 자동 포커스(키보드 팝업) 억제
 let osnapEnabled = true;   // 객체 스냅(OSNAP) 사용 여부
@@ -1190,6 +1192,9 @@ function handleClick(w, rawW, ev) {
     case 'dim': clickDim(w); break;
     case 'dist': clickDist(w); break;
     case 'area': clickArea(w, rawW); break;
+    case 'break': clickBreak(w, rawW); break;
+    case 'lengthen': clickLengthen(w, rawW); break;
+    case 'hatch': clickHatch(w, rawW); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -1606,6 +1611,134 @@ function cmdJoin() {
   logLine(`  ✔ 결합: ${sel.length}개 → 폴리라인 ${chains.length}개${closedN ? ` (닫힘 ${closedN})` : ''}`, 'ok');
   updateStat(); renderProps(); draw();
 }
+// ====== BREAK (끊기) — 선/원/호의 두 점 사이 제거 ======
+function clickBreak(w, rawW) {
+  if (!cmdOp || cmdOp.name !== 'break') cmdOp = { name: 'break', step: 'obj' };
+  if (cmdOp.step === 'obj') {
+    const hit = pick(w, rawW);
+    if (!hit || !['LINE', 'CIRCLE', 'ARC'].includes(hit.type)) { logLine('  끊기는 선/원/호만 지원합니다.', 'warn'); return; }
+    cmdOp.target = hit; cmdOp.step = 'p1';
+    state.selection.clear(); state.selection.add(hit.id); renderProps();
+    setPrompt('끊기: 첫 번째 끊기점을 클릭하세요.'); return;
+  }
+  if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('끊기: 두 번째 끊기점을 클릭하세요.'); return; }
+  pushUndo();
+  if (doBreak(cmdOp.target, cmdOp.p1, w)) logLine('  ✔ 끊기', 'ok');
+  cmdOp = null; state.selection.clear(); renderProps(); updateStat();
+  setTool('select');
+}
+function doBreak(e, P1, P2) {
+  if (e.type === 'LINE') {
+    const x1 = e.x1, y1 = e.y1, dx = e.x2 - x1, dy = e.y2 - y1, L2 = dx * dx + dy * dy || 1;
+    let t1 = ((P1.x - x1) * dx + (P1.y - y1) * dy) / L2;
+    let t2 = ((P2.x - x1) * dx + (P2.y - y1) * dy) / L2;
+    t1 = Math.max(0, Math.min(1, t1)); t2 = Math.max(0, Math.min(1, t2));
+    if (t2 < t1) { const t = t1; t1 = t2; t2 = t; }
+    const segs = [];
+    if (t1 > 1e-6) segs.push([0, t1]);
+    if (t2 < 1 - 1e-6) segs.push([t2, 1]);
+    if (!segs.length) { state.entities = state.entities.filter(x => x !== e); return true; } // 전체 제거
+    const P = t => ({ x: x1 + t * dx, y: y1 + t * dy });
+    const a = P(segs[0][0]), b = P(segs[0][1]);
+    e.x1 = a.x; e.y1 = a.y; e.x2 = b.x; e.y2 = b.y;
+    if (segs.length === 2) {
+      const c = P(segs[1][0]), d = P(segs[1][1]);
+      const ne = { type: 'LINE', layer: e.layer, x1: c.x, y1: c.y, x2: d.x, y2: d.y };
+      if (e.color) ne.color = e.color;
+      addEntity(ne);
+    }
+    return true;
+  }
+  if (e.type === 'CIRCLE') { // 첫→둘 반시계 구간 제거 → 나머지 호
+    const a1 = ang(e.cx, e.cy, P1.x, P1.y), a2 = ang(e.cx, e.cy, P2.x, P2.y);
+    if (Math.abs(norm360(a2 - a1)) < 1e-6) { logLine('  두 점이 같습니다.', 'warn'); return false; }
+    e.type = 'ARC'; e.startAngle = a2; e.endAngle = a1;
+    return true;
+  }
+  if (e.type === 'ARC') {
+    let s = e.startAngle, en = e.endAngle; if (en < s) en += 360;
+    const span = en - s;
+    const rel = a => Math.max(0, Math.min(span, norm360(a - s)));
+    let r1 = rel(ang(e.cx, e.cy, P1.x, P1.y)), r2 = rel(ang(e.cx, e.cy, P2.x, P2.y));
+    if (r2 < r1) { const t = r1; r1 = r2; r2 = t; }
+    const segs = [];
+    if (r1 > 0.01) segs.push([0, r1]);
+    if (r2 < span - 0.01) segs.push([r2, span]);
+    if (!segs.length) { state.entities = state.entities.filter(x => x !== e); return true; }
+    e.startAngle = norm360(s + segs[0][0]); e.endAngle = norm360(s + segs[0][1]);
+    if (segs.length === 2) {
+      const ne = { type: 'ARC', layer: e.layer, cx: e.cx, cy: e.cy, r: e.r, startAngle: norm360(s + segs[1][0]), endAngle: norm360(s + segs[1][1]) };
+      if (e.color) ne.color = e.color;
+      addEntity(ne);
+    }
+    return true;
+  }
+  return false;
+}
+
+// ====== LENGTHEN (길이조정) — 클릭한 끝쪽을 ±delta 만큼 ======
+function clickLengthen(w, rawW) {
+  const hit = pick(w, rawW);
+  if (!hit) return;
+  if (hit.type !== 'LINE') { logLine('  길이조정은 선(LINE)만 지원합니다.', 'warn'); return; }
+  const dx = hit.x2 - hit.x1, dy = hit.y2 - hit.y1, L = Math.hypot(dx, dy) || 1;
+  if (L + lengthenDelta <= 1e-6) { logLine('  선 길이보다 크게 줄일 수 없습니다.', 'warn'); return; }
+  pushUndo();
+  const ux = dx / L, uy = dy / L;
+  const d1 = Math.hypot(w.x - hit.x1, w.y - hit.y1), d2 = Math.hypot(w.x - hit.x2, w.y - hit.y2);
+  if (d1 < d2) { hit.x1 -= ux * lengthenDelta; hit.y1 -= uy * lengthenDelta; }
+  else { hit.x2 += ux * lengthenDelta; hit.y2 += uy * lengthenDelta; }
+  logLine(`  ✔ 길이조정 ${lengthenDelta > 0 ? '+' : ''}${lengthenDelta} → 길이 ${fmtNum(L + lengthenDelta)}`, 'ok');
+  draw();
+}
+
+// ====== HATCH (해치) — 닫힌 경계 내부 45° 빗금 채움 ======
+function clickHatch(w, rawW) {
+  const hit = pick(w, rawW);
+  if (!hit || !(hit.type === 'CIRCLE' || (hit.type === 'LWPOLYLINE' && hit.closed))) {
+    logLine('  해치: 원 또는 닫힌 폴리라인(사각형·다각형)을 클릭하세요.', 'warn'); return;
+  }
+  const lines = computeHatch(hit, hatchSpacing, 45);
+  if (!lines.length) { logLine('  해치 생성 실패(간격이 너무 큽니다).', 'warn'); return; }
+  pushUndo();
+  for (const l of lines) addEntity(l);
+  logLine(`  ✔ 해치 ${lines.length}선 (간격 ${hatchSpacing}, 45°)`, 'ok');
+  updateStat(); draw();
+}
+function computeHatch(e, sp, angleDeg) {
+  const a = angleDeg * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], nv = [-d[1], d[0]];
+  const bb = entityBBox(e); if (!bb) return [];
+  const corners = [[bb.xmin, bb.ymin], [bb.xmax, bb.ymin], [bb.xmax, bb.ymax], [bb.xmin, bb.ymax]];
+  let cmin = Infinity, cmax = -Infinity;
+  for (const c of corners) { const v = nv[0] * c[0] + nv[1] * c[1]; if (v < cmin) cmin = v; if (v > cmax) cmax = v; }
+  const out = [];
+  for (let c = cmin + sp / 2; c < cmax; c += sp) {
+    let hits = [];
+    if (e.type === 'CIRCLE') {
+      const cc = nv[0] * e.cx + nv[1] * e.cy, dist = c - cc;
+      if (Math.abs(dist) < e.r) {
+        const half = Math.sqrt(e.r * e.r - dist * dist);
+        const mx = e.cx + nv[0] * dist, my = e.cy + nv[1] * dist;
+        hits = [[mx - d[0] * half, my - d[1] * half], [mx + d[0] * half, my + d[1] * half]];
+      }
+    } else {
+      const p = e.points, n = p.length;
+      for (let i = 0; i < n; i++) {
+        const A = p[i], B = p[(i + 1) % n];
+        const fa = nv[0] * A[0] + nv[1] * A[1] - c, fb = nv[0] * B[0] + nv[1] * B[1] - c;
+        if ((fa > 0 && fb <= 0) || (fa <= 0 && fb > 0)) {
+          const u = fa / (fa - fb);
+          hits.push([A[0] + u * (B[0] - A[0]), A[1] + u * (B[1] - A[1])]);
+        }
+      }
+      hits.sort((x, y) => (d[0] * x[0] + d[1] * x[1]) - (d[0] * y[0] + d[1] * y[1]));
+    }
+    for (let i = 0; i + 1 < hits.length; i += 2)
+      out.push({ type: 'LINE', layer: state.currentLayer, x1: hits[i][0], y1: hits[i][1], x2: hits[i + 1][0], y2: hits[i + 1][1] });
+  }
+  return out;
+}
+
 // 도구 전환 없이 즉시 실행되는 명령들
 const INSTANT_CMDS = {
   explode: cmdExplode,
@@ -1763,6 +1896,7 @@ const TOOL_KO = {
   polygon: '다각형(POLYGON)', ellipse: '타원(ELLIPSE)', chamfer: '모따기(CHAMFER)',
   dim: '치수(DIM)', dist: '거리(DIST)', area: '면적(AREA)',
   explode: '분해(EXPLODE)', join: '결합(JOIN)', zoom: '줌(ZOOM)',
+  break: '끊기(BREAK)', lengthen: '길이조정(LENGTHEN)', hatch: '해치(HATCH)',
 };
 
 const CMD_ALIASES = {
@@ -1784,6 +1918,8 @@ const CMD_ALIASES = {
   dim: 'dim', dli: 'dim', dal: 'dim', dimlinear: 'dim', dimaligned: 'dim',
   zoom: 'zoom', z: 'zoom', u: 'undo', undo: 'undo', redo: 'redo',
   pan: 'pan',
+  break: 'break', br: 'break', lengthen: 'lengthen', len: 'lengthen',
+  hatch: 'hatch', h: 'hatch',
 };
 
 function runCommandInput(raw) {
@@ -1799,6 +1935,8 @@ function runCommandInput(raw) {
     if (state.tool === 'rotate' && cmdOp && cmdOp.step === 'angle') { logLine(`  회전 각도 = ${num}°`, 'info'); applyRotate(num); return; }
     if (state.tool === 'fillet') { filletRadius = Math.abs(num); setPrompt(`모깎기: 반지름 ${filletRadius}. 첫 번째 선을 클릭하세요.`); logLine(`  모깎기 반지름 = ${filletRadius}`, 'info'); return; }
     if (state.tool === 'chamfer') { chamferDist = Math.abs(num); setPrompt(`모따기: 거리 ${chamferDist}. 첫 번째 선을 클릭하세요.`); logLine(`  모따기 거리 = ${chamferDist}`, 'info'); return; }
+    if (state.tool === 'lengthen') { lengthenDelta = num; setPrompt(`길이조정: ${num > 0 ? '+' : ''}${num}. 조정할 선의 끝쪽을 클릭하세요.`); logLine(`  증감 길이 = ${num > 0 ? '+' : ''}${num}`, 'info'); return; }
+    if (state.tool === 'hatch') { hatchSpacing = Math.abs(num) || hatchSpacing; setPrompt(`해치: 간격 ${hatchSpacing}. 원/닫힌 폴리라인을 클릭하세요.`); logLine(`  해치 간격 = ${hatchSpacing}`, 'info'); return; }
     if (state.tool === 'scale' && cmdOp && (cmdOp.step === 'ref' || cmdOp.step === 'factor')) { applyScale(num); return; }
     logLine('  (입력한 숫자를 받을 명령이 없습니다)', 'warn'); return;
   }
@@ -1858,6 +1996,7 @@ function feedDrawInput(v) {
     case 'dim': return feedPointCmd(p, clickDim);
     case 'dist': return feedPointCmd(p, clickDist);
     case 'area': return feedPointCmd(p, (w) => clickArea(w, w));
+    case 'break': return feedPointCmd(p, (w) => clickBreak(w, w));
   }
   return false;
 }
@@ -2097,6 +2236,9 @@ function setTool(t) {
     dim: '치수: 첫 점 → 둘째 점 → 치수선 위치 클릭. (치수 레이어에 생성, 연속 기입)',
     dist: '거리 측정: 두 점을 클릭하세요. (결과는 명령 기록에 표시)',
     area: '면적: 원/닫힌 폴리라인을 클릭하거나, 점들을 찍고 Enter로 계산.',
+    break: '끊기: 선/원/호 선택 → 끊기점 두 개 클릭. (사이 구간 제거)',
+    lengthen: `길이조정: 증감량 ${lengthenDelta > 0 ? '+' : ''}${lengthenDelta}. 선의 조정할 끝쪽을 클릭하세요. (음수=줄이기)`,
+    hatch: `해치: 간격 ${hatchSpacing}. 원/닫힌 폴리라인을 클릭하세요. (숫자로 간격 변경)`,
   };
   setPrompt(hints[t] || '');
   if (t !== 'select') {
@@ -2329,6 +2471,7 @@ function closeSaveAs() { document.getElementById('saveAsDlg').style.display = 'n
 document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
 document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
+document.getElementById('btnZoomFit').addEventListener('click', () => zoomFit());
 document.getElementById('btnOrtho').addEventListener('click', toggleOrtho);
 document.getElementById('btnOsnap').addEventListener('click', toggleOsnap);
 // 토글 버튼 초기 상태 반영 (그리드 표시 ON, 직교 OFF, 객체스냅 ON)
@@ -2413,6 +2556,7 @@ const COMMAND_LIST = [
   { name: 'explode', ko: '분해' }, { name: 'join', ko: '결합' }, { name: 'dim', ko: '치수 기입' },
   { name: 'dist', ko: '거리 측정' }, { name: 'area', ko: '면적' }, { name: 'zoom', ko: '전체보기' },
   { name: 'undo', ko: '실행취소' }, { name: 'redo', ko: '다시실행' },
+  { name: 'break', ko: '끊기' }, { name: 'lengthen', ko: '길이조정' }, { name: 'hatch', ko: '해치' },
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
@@ -2993,6 +3137,8 @@ function currentDimPrompt() {
   if (t === 'chamfer') return '모따기 거리 입력';
   if (t === 'polygon') return draft ? '반지름 입력' : '변 개수 입력';
   if (t === 'ellipse' && draft) return '반지름 rx,ry 입력';
+  if (t === 'lengthen') return '증감 길이(±) 입력';
+  if (t === 'hatch') return '해치 간격 입력';
   return null;
 }
 let _lastDimLabel = '__init__';

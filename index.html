@@ -173,6 +173,7 @@
     <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)">↷ 복구</button>
     <span class="spacer"></span>
     <button class="tbtn" id="btnGrid">그리드</button>
+    <button class="tbtn" id="btnZoomFit" title="전체보기 (F 또는 z 명령)">전체보기</button>
     <button class="tbtn" id="btnOrtho" title="직교 모드 (F8) — 수평·수직 고정">직교</button>
     <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처">객체스냅</button>
     <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
@@ -236,6 +237,12 @@
         <svg viewBox="0 0 24 24"><path d="M9 9L4 4M15 9l5-5M9 15l-5 5M15 15l5 5"/><rect x="9" y="9" width="6" height="6"/></svg>분해</div>
       <div class="tool" data-tool="join" title="결합 (join) — 선택한 선들을 폴리라인으로">
         <svg viewBox="0 0 24 24"><path d="M4 18L10 12M14 12l6-6"/><circle cx="12" cy="12" r="2.4"/></svg>결합</div>
+      <div class="tool" data-tool="break" title="끊기 (break) — 도형의 두 점 사이 제거">
+        <svg viewBox="0 0 24 24"><path d="M3 12h6M15 12h6"/><path d="M10 9l2 3-2 3M14 9l-2 3 2 3" stroke-dasharray="2 2"/></svg>끊기</div>
+      <div class="tool" data-tool="lengthen" title="길이조정 (lengthen) — ±증감량 입력 후 끝쪽 클릭">
+        <svg viewBox="0 0 24 24"><path d="M3 12h12"/><path d="M15 12h6" stroke-dasharray="2 2"/><path d="M18 9l3 3-3 3"/></svg>길이</div>
+      <div class="tool" data-tool="hatch" title="해치 (hatch) — 닫힌 영역 빗금 채우기">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><path d="M4 14L14 4M4 20L20 4M10 20l10-10"/></svg>해치</div>
       <div class="tdiv"></div>
       <div class="tool" data-tool="dist" title="거리 측정 (dist)">
         <svg viewBox="0 0 24 24"><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/><path d="M6.5 17.5L17.5 6.5" stroke-dasharray="3 2"/></svg>거리</div>
