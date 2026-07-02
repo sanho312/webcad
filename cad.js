@@ -283,7 +283,7 @@ function draw() {
     ctx.save();
     const crossing = dragSelect.x2 < dragSelect.x1; // 오→왼 = 크로싱(초록 점선), 왼→오 = 윈도우(파랑 실선)
     if (crossing) { ctx.strokeStyle = '#30d158'; ctx.fillStyle = 'rgba(48,209,88,.12)'; ctx.setLineDash([5, 4]); }
-    else { ctx.strokeStyle = '#2997ff'; ctx.fillStyle = 'rgba(41,151,255,.14)'; ctx.setLineDash([]); }
+    else { ctx.strokeStyle = '#0A84FF'; ctx.fillStyle = 'rgba(41,151,255,.14)'; ctx.setLineDash([]); }
     ctx.lineWidth = 1;
     const a = worldToScreen(dragSelect.x1, dragSelect.y1);
     const b = worldToScreen(dragSelect.x2, dragSelect.y2);
@@ -386,7 +386,7 @@ function drawEntity(e, selected, preview) {
   ctx.save();
   const lw = entityLineWeight(e);
   ctx.lineWidth = selected ? Math.max(2, lw) : lw;
-  ctx.strokeStyle = selected ? '#2997ff' : entityColor(e);
+  ctx.strokeStyle = selected ? '#0A84FF' : entityColor(e);
   ctx.fillStyle = ctx.strokeStyle;
   const dash = entityDash(e);
   if (preview) { ctx.globalAlpha = .8; ctx.setLineDash([5, 4]); }
@@ -471,7 +471,7 @@ function drawEntity(e, selected, preview) {
     case 'INSERT': {
       ctx.restore();
       for (const c of insertChildren(e)) drawEntity(c, false, preview); // 자식은 각자 색/선종류
-      ctx.save(); ctx.strokeStyle = '#2997ff';
+      ctx.save(); ctx.strokeStyle = '#0A84FF';
       if (selected && !preview) { // 삽입점 X 마커 + 경계
         const p = worldToScreen(e.x, e.y);
         ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(p.x - 5, p.y); ctx.lineTo(p.x + 5, p.y); ctx.moveTo(p.x, p.y - 5); ctx.lineTo(p.x, p.y + 5); ctx.stroke();
@@ -484,13 +484,13 @@ function drawEntity(e, selected, preview) {
 
   // 선택 시 그립 표시
   if (selected && !preview) {
-    ctx.setLineDash([]); ctx.fillStyle = '#2997ff';
+    ctx.setLineDash([]); ctx.fillStyle = '#0A84FF';
     for (const g of entityGrips(e)) {
       const s = worldToScreen(g.x, g.y);
       ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
     }
     if (e.type === 'LWPOLYLINE') { // 세그먼트 중점: 속 빈 그립(클릭=정점 추가)
-      ctx.strokeStyle = '#2997ff'; ctx.lineWidth = 1.2;
+      ctx.strokeStyle = '#0A84FF'; ctx.lineWidth = 1.2;
       const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
       for (let i = 0; i < segN; i++) {
         const s = worldToScreen((p[i][0] + p[(i + 1) % n][0]) / 2, (p[i][1] + p[(i + 1) % n][1]) / 2);
@@ -503,7 +503,7 @@ function drawEntity(e, selected, preview) {
 
 function drawDraftPolyline() {
   ctx.save();
-  ctx.strokeStyle = '#2997ff'; ctx.lineWidth = 1.4; ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = '#0A84FF'; ctx.lineWidth = 1.4; ctx.setLineDash([5, 4]);
   ctx.beginPath();
   pts.forEach((p, i) => { const s = worldToScreen(p.x, p.y); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
   const m = worldToScreen(mouseWorld.x, mouseWorld.y);
