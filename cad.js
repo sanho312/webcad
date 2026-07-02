@@ -1398,7 +1398,7 @@ function applyPolarArray(p, center) {
 
 // ====== TRIM (자르기) ======
 function clickTrim(w, rawW) {
-  if (!cmdOp || cmdOp.name !== 'trim') cmdOp = { name: 'trim', phase: 'quick', edges: [] };
+  if (!cmdOp || cmdOp.name !== 'trim') cmdOp = { name: 'trim', phase: 'edges', edges: [] }; // 기본 = 기준선 선택
   // 기준선 선택 단계: 클릭 = 기준 객체 추가/해제(하이라이트)
   if (cmdOp.phase === 'edges') {
     const hit = pick(w, rawW);
@@ -1422,7 +1422,7 @@ function clickTrim(w, rawW) {
 }
 // Space/Enter/우클릭으로 자르기 모드 전환: 빠른 → 기준선 선택 → (확정) 자르기 → 빠른
 function trimSpaceAction() {
-  if (!cmdOp || cmdOp.name !== 'trim') cmdOp = { name: 'trim', phase: 'quick', edges: [] };
+  if (!cmdOp || cmdOp.name !== 'trim') cmdOp = { name: 'trim', phase: 'edges', edges: [] }; // 기본 = 기준선 선택
   if (cmdOp.phase === 'quick') {
     cmdOp.phase = 'edges'; cmdOp.edges = [];
     state.selection.clear(); renderProps();
@@ -1431,18 +1431,18 @@ function trimSpaceAction() {
   } else if (cmdOp.phase === 'edges') {
     if (cmdOp.edges.length) {
       cmdOp.phase = 'cut';
-      setPrompt(`자르기: 기준선 ${cmdOp.edges.length}개에 걸치는 부분을 클릭하세요. (Space=빠른 모드 복귀)`);
+      setPrompt(`자르기: 기준선 ${cmdOp.edges.length}개에 걸치는 부분을 클릭하세요. (Space=기준선 재선택)`);
       logLine(`  ▷ 자르기 시작 — 기준선 ${cmdOp.edges.length}개`, 'info');
     } else {
       cmdOp.phase = 'quick';
-      setPrompt('자르기(빠른): 잘라낼 부분을 클릭하세요. (Space=기준선 모드)');
+      setPrompt('자르기(빠른): 잘라낼 부분을 클릭하세요. 모든 객체가 기준. (Space=기준선 모드)');
       logLine('  ▷ 빠른 모드 (모든 객체 기준)', 'info');
     }
-  } else {
-    cmdOp.phase = 'quick'; cmdOp.edges = [];
+  } else { // cut → 기준선 다시 선택
+    cmdOp.phase = 'edges'; cmdOp.edges = [];
     state.selection.clear(); renderProps();
-    setPrompt('자르기(빠른): 잘라낼 부분을 클릭하세요. (Space=기준선 모드)');
-    logLine('  ▷ 빠른 모드 (모든 객체 기준)', 'info');
+    setPrompt('자르기(기준선): 기준이 될 객체들을 클릭하고 Space로 확정하세요.');
+    logLine('  ▷ 기준선 재선택', 'info');
   }
   draw();
 }
@@ -2450,7 +2450,7 @@ function setTool(t) {
     mirror: '대칭: 도형을 선택하고 대칭축 두 점을 클릭하세요.',
     rotate: '회전: 도형을 선택하고 중심 지정 후, 각도(°) 입력 또는 클릭.',
     array: '배열: 도형을 선택하면 배열 설정 창이 열립니다.',
-    trim: '자르기(빠른): 잘라낼 부분 클릭. Space=기준선 모드(기준 객체 선택→Space→그 기준으로만 자름)',
+    trim: '자르기: 기준 객체들을 클릭하고 Space로 확정 → 걸치는 부분 클릭. (기준 없이 바로 Space=빠른 모드)',
     extend: '연장: 늘릴 선의 끝쪽을 클릭하면 가장 가까운 경계까지 연장됩니다.',
     fillet: `모깎기: 반지름 ${filletRadius}. 첫 번째 선 → 두 번째 선을 클릭하세요. (숫자로 반지름 변경)`,
     scale: '배율: 도형을 선택하고 기준점 → 배율(숫자) 또는 참조 두 점을 지정하세요.',
