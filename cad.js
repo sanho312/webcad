@@ -3564,7 +3564,7 @@ function showHomeScreenHelp() {
   o.id = 'homeHelp';
   o.style.cssText = 'position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:20px;';
   o.innerHTML =
-    '<div style="background:rgba(40,40,42,0.94);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-radius:18px;max-width:360px;padding:24px;color:#f5f5f7;box-shadow:0 8px 30px rgba(0,0,0,0.55);font-family:-apple-system,\'SF Pro Text\',\'Segoe UI\',sans-serif;letter-spacing:-0.01em;">' +
+    '<div style="background:rgba(26,37,64,0.90);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-radius:18px;max-width:360px;padding:24px;color:#f5f5f7;box-shadow:0 8px 30px rgba(0,0,0,0.55);font-family:-apple-system,\'SF Pro Text\',\'Segoe UI\',sans-serif;letter-spacing:-0.01em;">' +
     '<h2 style="margin:0 0 10px;font-size:19px;font-weight:600;letter-spacing:-0.02em;">전체화면으로 쓰는 법</h2>' +
     '<p style="margin:0 0 12px;font-size:13px;color:rgba(235,235,245,0.6);line-height:1.6;">이 브라우저 탭은 전체화면 API를 지원하지 않습니다. 아래처럼 <b style="color:#f5f5f7;">홈 화면에 앱으로 추가</b>하면 주소창·툴바 없이 전체화면으로 실행됩니다.</p>' +
     '<ol style="margin:0 0 4px;padding-left:20px;font-size:13px;line-height:1.9;">' +
@@ -3860,10 +3860,10 @@ async function loadFromHash() {
 function showShareResult(url, copied) {
   const o = document.createElement('div');
   o.style.cssText = 'position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);';
-  o.innerHTML = `<div style="background:rgba(40,40,42,0.94);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-radius:18px;max-width:520px;width:90%;padding:24px;color:#f5f5f7;box-shadow:0 8px 30px rgba(0,0,0,0.55);font-family:-apple-system,'SF Pro Text','Segoe UI',sans-serif;letter-spacing:-0.01em;">
+  o.innerHTML = `<div style="background:rgba(26,37,64,0.90);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-radius:18px;max-width:520px;width:90%;padding:24px;color:#f5f5f7;box-shadow:0 8px 30px rgba(0,0,0,0.55);font-family:-apple-system,'SF Pro Text','Segoe UI',sans-serif;letter-spacing:-0.01em;">
     <h2 style="margin:0 0 10px;font-size:19px;font-weight:600;letter-spacing:-0.02em;">🔗 공유 링크</h2>
     <p style="margin:0 0 10px;font-size:13px;color:rgba(235,235,245,0.6);line-height:1.5;">${copied ? '클립보드에 복사되었습니다. ' : ''}이 링크를 열면 지금 도면이 그대로 보입니다(서버 없이 URL에 저장됨).</p>
-    <textarea readonly style="width:100%;height:90px;background:#272729;color:#f5f5f7;border:none;border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;">${url}</textarea>
+    <textarea readonly style="width:100%;height:90px;background:#1a2540;color:#f5f5f7;border:none;border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;">${url}</textarea>
     <div style="text-align:right;margin-top:14px;"><button id="shCopy" style="background:rgba(255,255,255,0.09);color:#fff;border:none;border-radius:8px;padding:8px 15px;cursor:pointer;margin-right:6px;font-size:14px;">복사</button><button id="shClose" style="background:#0071e3;color:#fff;border:none;border-radius:8px;padding:8px 17px;cursor:pointer;font-size:14px;">닫기</button></div>
   </div>`;
   document.body.appendChild(o);
