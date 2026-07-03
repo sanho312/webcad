@@ -13,6 +13,29 @@
 <link rel="icon" href="icon.svg">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>WebCAD — DXF 편집기</title>
+<script>
+// 오류 진단 배너 — 스크립트 오류가 나면 화면 최상단에 표시(원인 파악용) + 복구 버튼
+(function(){
+  var shown=false;
+  function banner(msg){
+    if(shown) return; shown=true;
+    var d=document.createElement('div');
+    d.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:#c62828;color:#fff;'+
+      'font:13px/1.5 sans-serif;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;';
+    d.innerHTML='<b>오류 발생:</b><span style="word-break:break-all;flex:1;min-width:200px;"></span>'+
+      '<button id="errReload" style="padding:5px 12px;border:none;border-radius:6px;cursor:pointer;">새로고침</button>'+
+      '<button id="errReset" style="padding:5px 12px;border:none;border-radius:6px;cursor:pointer;background:#ffd426;">저장데이터 초기화 후 재시작</button>';
+    d.querySelector('span').textContent=String(msg).slice(0,300);
+    (document.body||document.documentElement).appendChild(d);
+    d.querySelector('#errReload').onclick=function(){location.reload();};
+    d.querySelector('#errReset').onclick=function(){
+      if(confirm('브라우저에 저장된 도면·설정을 모두 지우고 새로 시작할까요?')){try{localStorage.clear();}catch(e){} location.reload();}
+    };
+  }
+  window.addEventListener('error',function(e){ banner((e.message||'script error')+(e.filename?' @'+e.filename.split('/').pop()+':'+e.lineno:'')); });
+  window.addEventListener('unhandledrejection',function(e){ banner('Promise 오류: '+(e.reason&&e.reason.message||e.reason||'')); });
+})();
+</script>
 <style>
   /* ── iOS / iPadOS 26 "Liquid Glass" tokens (dark) ────────────────────
      translucent glass chips w/ specular top-edge highlight; iOS dark
