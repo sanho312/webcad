@@ -13,6 +13,6 @@
 //     "Reset password" 템플릿도 동일하게 {{ .Token }} 포함
 // ============================================================
 window.WEBCAD_AUTH = {
-  url: '',       // 예: 'https://abcdefgh.supabase.co'
-  anonKey: '',   // 예: 'eyJhbGciOi...'
+  url: 'https://crnhardhztigsupwtyjx.supabase.co',
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybmhhcmRoenRpZ3N1cHd0eWp4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5NzkwODIsImV4cCI6MjA5ODU1NTA4Mn0.vvKFOc4Zv7gULUXeuezv_sHTtx94JHMBiGScF28ebBw',
 };

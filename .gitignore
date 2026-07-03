@@ -1,1 +1,4 @@
 .claude/
+.supabase-db-password.txt
+smtp-setup.ps1
+smtp-setup.bat
