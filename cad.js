@@ -62,7 +62,10 @@ let settings = {
     if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.polar = s.polar || 0; settings.aliases = s.aliases || {}; }
   } catch (e) {}
 })();
-function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+  if (window.WEBCAD_API && WEBCAD_API.onSettingsChange) WEBCAD_API.onSettingsChange(); // 클라우드 동기화 훅
+}
 
 let currentFileName = null; // 현재 작업 파일명 (null = 새 파일)
 let currentFileLoc = null;  // 'pc'(실제 파일 핸들) | 'download' | null
@@ -92,7 +95,8 @@ function snapshot() {
     currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks,
   });
 }
-function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; if (typeof autosave === 'function') autosave(); }
+let apiRev = 0; // 변경 카운터 (클라우드 자동저장의 dirty 판단용)
+function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; apiRev++; if (typeof autosave === 'function') autosave(); }
 function restore(snap) {
   const d = JSON.parse(snap);
   state.entities = d.entities; state.layers = d.layers;
@@ -3079,6 +3083,7 @@ function closeArrayDialog() { document.getElementById('arrayDlg').style.display 
 // ============================================================
 function setTool(t) {
   state.tool = t;
+  if (t !== 'select' && t !== 'pan' && window.WEBCAD_API && WEBCAD_API.onUsage) WEBCAD_API.onUsage('tool:' + t);
   draft = null; pts = []; arcState = null; moveOp = null; dragSelect = null;
   cmdOp = null; previewEnts = null; trackPt = null; otrackAlign = null;
   document.querySelectorAll('.tool').forEach(el => el.classList.toggle('active', el.dataset.tool === t));
@@ -3529,6 +3534,7 @@ function doNew() {
   if (state.entities.length && !confirm('현재 도면을 지우고 새로 시작할까요?')) return;
   if (typeof clearLocal === 'function') clearLocal();
   fileHandle = null; setFileName(null, null);
+  if (window.WEBCAD_API && WEBCAD_API.onDocChange) WEBCAD_API.onDocChange(); // 클라우드 연결 해제
   newDrawing();
 }
 document.getElementById('fileInput').addEventListener('change', (ev) => {
@@ -4589,6 +4595,7 @@ function switchDoc(i) {
   curDoc = i;
   applyDoc(docs[i]);
   renderDocTabs();
+  if (window.WEBCAD_API && WEBCAD_API.onDocChange) WEBCAD_API.onDocChange();
   logLine(`▷ 탭 전환: ${currentFileName || '새 파일'}`, 'info');
 }
 function newDocTab() {
@@ -4596,6 +4603,7 @@ function newDocTab() {
   docs.push({});
   curDoc = docs.length - 1;
   applyDoc({}); // 빈 도면
+  if (window.WEBCAD_API && WEBCAD_API.onDocChange) WEBCAD_API.onDocChange();
   state.layers = [
     { name: '0', color: '#ffffff', visible: true },
     { name: '치수', color: '#5dff8f', visible: true },
@@ -4744,6 +4752,54 @@ window.__CADTEST__ = {
   isLocked, reorderSel, selectSimilar, pointsAlongEntity,
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
+};
+
+// ============================================================
+//  공식 외부 API — 클라우드 모듈(cloud.js)이 사용
+// ============================================================
+window.WEBCAD_API = {
+  // 현재 도면 스냅샷 (클라우드 저장용)
+  getDoc: () => ({
+    name: currentFileName,
+    data: { v: 1, entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
+            blocks: state.blocks, nextId: state.nextId, view: state.view, views: state.views },
+  }),
+  // 클라우드 도면 로드
+  setDoc: (name, d) => {
+    applyDoc({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId,
+               blocks: d.blocks, view: d.view, views: d.views, fileName: name || null, fileLoc: 'cloud' });
+    renderDocTabs(); draw();
+  },
+  getName: () => currentFileName,
+  setName: (n) => { setFileName(n, 'cloud'); renderDocTabs(); },
+  getRev: () => apiRev, // 변경 카운터 (dirty 판단)
+  // 축소 썸네일 (JPEG dataURL)
+  thumb: (px) => {
+    try {
+      const k = (px || 240) / Math.max(cv.width || 1, cv.height || 1);
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(cv.width * k)); c.height = Math.max(1, Math.round(cv.height * k));
+      c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.6);
+    } catch (e) { return null; }
+  },
+  // 설정 동기화
+  getSettings: () => JSON.parse(JSON.stringify(settings)),
+  applySettings: (s) => {
+    if (!s) return;
+    settings.units = s.units || settings.units;
+    Object.assign(settings.osnapModes, s.osnapModes || {});
+    if (s.polar !== undefined) settings.polar = s.polar;
+    settings.aliases = s.aliases || settings.aliases;
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+    draw();
+  },
+  // 블록 라이브러리
+  getBlocks: () => state.blocks,
+  addBlock: (name, def) => { state.blocks[name] = def; refreshBlockList(); logLine(`  ✔ 라이브러리에서 블록 "${name}" 가져옴 — 삽입(insert)으로 배치`, 'ok'); },
+  log: (msg, kind) => logLine(msg, kind || 'info'),
+  // cloud.js가 설정하는 훅
+  onUsage: null, onSettingsChange: null, onDocChange: null,
 };
 
 })();

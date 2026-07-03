@@ -292,11 +292,13 @@
       await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js');
       sb = window.supabase.createClient(cfg.url, cfg.anonKey);
     } else sb = mockClient();
+    window.WEBCAD_SB = sb; // 클라우드 모듈(cloud.js)이 같은 클라이언트를 사용
+    const announce = (s) => window.dispatchEvent(new CustomEvent('webcad-auth', { detail: { session: s } }));
     const { data: { session } } = await sb.auth.getSession();
-    setGate(!session); showUser(session);
+    setGate(!session); showUser(session); announce(session);
     sb.auth.onAuthStateChange(async (..._a) => {
       const { data: { session: s2 } } = await sb.auth.getSession();
-      setGate(!s2); showUser(s2);
+      setGate(!s2); showUser(s2); announce(s2);
     });
   }
   init();
