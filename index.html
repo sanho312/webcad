@@ -76,8 +76,8 @@
     -webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     border-radius:var(--radius-pill);padding:5px 11px;font-size:12.5px;cursor:pointer;letter-spacing:-0.01em;
     box-shadow:var(--spec);transition:background .18s ease,color .15s ease,transform .08s ease,box-shadow .18s ease;}
-  #topbar{overflow-x:auto;scrollbar-width:none;}
-  #topbar::-webkit-scrollbar{display:none;}
+  /* 좁은 화면에서는 버튼이 다음 줄로 감김(overflow 스크롤은 드롭다운을 클리핑하므로 금지) */
+  #topbar{flex-wrap:wrap;}
   button.tbtn:hover{background:var(--glass-fill-hi);}
   button.tbtn:active{transform:scale(0.96);}
   button.tbtn.active{background:var(--accent);color:#fff;
@@ -568,7 +568,7 @@
   </div>
 </div>
 
-<script src="cad.js"></script>
+<script src="cad.js?v=20260703a"></script>
 <script>
 // UI 배치: 하단 명령창 접기(화살표) + 좌우 패널 폭 드래그 조절(오토캐드식) — localStorage에 저장
 (() => {
