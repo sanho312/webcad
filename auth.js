@@ -266,19 +266,18 @@
   function showUser(session) {
     const name = session?.user?.user_metadata?.username || (session?.user?.email || '').split('@')[0];
     if (!chip) {
-      chip = document.createElement('div'); chip.id = 'userChipWrap'; chip.className = 'menuWrap';
-      chip.innerHTML = `<button class="tbtn" id="userChip">👤 <span id="userName"></span> ▾</button>
-        <div class="dropdown" id="userMenu"><button class="menuItem" id="miLogout">로그아웃</button></div>`;
-      const topbar = document.getElementById('topbar');
-      topbar.appendChild(chip);
-      chip.querySelector('#userChip').addEventListener('click', (e) => {
-        e.stopPropagation(); chip.querySelector('#userMenu').classList.toggle('open');
+      chip = document.createElement('div'); chip.id = 'userChipWrap';
+      chip.style.cssText = 'display:inline-flex;gap:6px;align-items:center;';
+      chip.innerHTML = `<button class="tbtn" id="userChip" title="로그인된 계정">👤 <span id="userName"></span></button>
+        <button class="tbtn" id="btnLogout" title="로그아웃">로그아웃</button>`;
+      document.getElementById('topbar').appendChild(chip);
+      chip.querySelector('#btnLogout').addEventListener('click', async () => {
+        if (!confirm('로그아웃할까요? (작업물은 이 브라우저에 자동 저장되어 있습니다)')) return;
+        await sb.auth.signOut(); location.reload();
       });
-      document.addEventListener('click', () => chip.querySelector('#userMenu').classList.remove('open'));
-      chip.querySelector('#miLogout').addEventListener('click', async () => { await sb.auth.signOut(); location.reload(); });
     }
     chip.querySelector('#userName').textContent = name;
-    chip.style.display = session ? '' : 'none';
+    chip.style.display = session ? 'inline-flex' : 'none';
   }
   function setGate(open) {
     gate.classList.toggle('hidden', !open);
