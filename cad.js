@@ -3384,8 +3384,12 @@ window.addEventListener('keydown', (ev) => {
   const btn = document.getElementById('btnFile');
   const menu = document.getElementById('fileMenu');
   const toggle = (open) => menu.classList.toggle('open', open === undefined ? !menu.classList.contains('open') : open);
-  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  // pointerdown으로 토글 — 포커스 이동/클릭 합성 실패와 무관하게 항상 동작
+  btn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); toggle(); });
+  btn.addEventListener('click', (e) => { e.stopPropagation(); }); // 같은 탭의 click이 문서 닫힘/재토글을 일으키지 않게
+  document.addEventListener('pointerdown', () => toggle(false));
   document.addEventListener('click', () => toggle(false));
+  menu.addEventListener('pointerdown', (e) => e.stopPropagation()); // 항목 클릭 전에 닫히지 않게
   menu.addEventListener('click', (e) => e.stopPropagation());
   const close = () => toggle(false);
   document.getElementById('miNew').addEventListener('click', () => { close(); doNew(); });
@@ -3428,8 +3432,12 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
   const btn = document.getElementById('btnOpts');
   const menu = document.getElementById('optMenu');
   const toggle = (open) => menu.classList.toggle('open', open === undefined ? !menu.classList.contains('open') : open);
-  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  // pointerdown으로 토글 — 포커스 이동/클릭 합성 실패와 무관하게 항상 동작
+  btn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); toggle(); });
+  btn.addEventListener('click', (e) => { e.stopPropagation(); });
+  document.addEventListener('pointerdown', () => toggle(false));
   document.addEventListener('click', () => toggle(false));
+  menu.addEventListener('pointerdown', (e) => e.stopPropagation());
   menu.addEventListener('click', (e) => e.stopPropagation());
   const dlg = document.getElementById('optionsDlg');
   function openOptions(sec) {
@@ -3690,6 +3698,7 @@ const ALWAYS_FOCUS_CMD = (navigator.maxTouchPoints || 0) === 0;
 if (cmdInputEl && ALWAYS_FOCUS_CMD) {
   const refocus = () => setTimeout(() => {
     if (document.body.classList.contains('authLocked')) return; // 로그인 게이트 열림
+    if (document.querySelector('.dropdown.open')) return;       // 메뉴가 열려 있으면 간섭하지 않음
     // 다른 입력요소(레이어명·옵션·다이얼로그 등)가 포커스를 가져갔으면 뺏지 않음
     const a = document.activeElement;
     if (!a || a === document.body || a.tagName === 'BUTTON' || a.tagName === 'CANVAS')
