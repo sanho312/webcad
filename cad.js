@@ -3350,6 +3350,10 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === 'F8') { ev.preventDefault(); toggleOrtho(); return; }  // 직교 모드(입력창 포커스 중에도 동작)
   if (ev.key === 'F3') { ev.preventDefault(); toggleOsnap(); return; }  // 객체 스냅
   if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  // 글자를 치면 곧장 명령창으로 — Space/Enter 없이 즉시 명령 입력 가능
+  if (cmdInputEl && ev.key.length === 1 && ev.key !== ' ' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    cmdInputEl.focus({ preventScroll: true }); return; // 이 키 입력은 그대로 명령창에 들어감
+  }
   if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
   if (ev.ctrlKey && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); return; }
   if (ev.ctrlKey && ev.key.toLowerCase() === 's') { ev.preventDefault(); saveDXF(); return; }
@@ -3679,10 +3683,39 @@ function moveSuggest(d) {
 function selectSuggestion(name) { cmdInputEl.value = ''; hideSuggest(); runCommandInput(name); }
 
 // 명령행 입력 — Enter/스페이스 = 확정(자동완성 선택), 빈 칸이면 직전 명령 반복
+// 데스크톱(터치 없음)에서는 명령창을 항상 활성화 — 클릭/명령 후에도 바로 타이핑 가능
+// (터치 기기는 가상 키보드가 계속 떠버리므로 제외; 기존 치수-프롬프트 자동 포커스만 사용)
+const ALWAYS_FOCUS_CMD = (navigator.maxTouchPoints || 0) === 0;
+if (cmdInputEl && ALWAYS_FOCUS_CMD) {
+  const refocus = () => setTimeout(() => {
+    // 다른 입력요소(레이어명·옵션·다이얼로그 등)가 포커스를 가져갔으면 뺏지 않음
+    const a = document.activeElement;
+    if (!a || a === document.body || a.tagName === 'BUTTON' || a.tagName === 'CANVAS')
+      cmdInputEl.focus({ preventScroll: true });
+  }, 0);
+  cmdInputEl.addEventListener('blur', refocus);
+  window.addEventListener('mouseup', refocus);
+  setTimeout(() => cmdInputEl.focus({ preventScroll: true }), 0);
+}
 if (cmdInputEl) {
   cmdInputEl.addEventListener('input', () => renderSuggest(cmdInputEl.value));
   cmdInputEl.addEventListener('blur', () => setTimeout(hideSuggest, 150));
   cmdInputEl.addEventListener('keydown', (ev) => {
+    // 입력창이 항상 포커스되므로, 앱 전역 단축키를 여기서도 처리
+    if (ev.ctrlKey) {
+      const k = ev.key.toLowerCase();
+      if (k === 'z') { ev.preventDefault(); ev.stopPropagation(); undo(); return; }
+      if (k === 'y') { ev.preventDefault(); ev.stopPropagation(); redo(); return; }
+      if (k === 's') { ev.preventDefault(); ev.stopPropagation(); saveDXF(); return; }
+      if (cmdInputEl.value === '') { // 텍스트 편집과 겹치지 않을 때만
+        if (k === 'a') { ev.preventDefault(); ev.stopPropagation(); state.entities.forEach(e => state.selection.add(e.id)); renderProps(); draw(); return; }
+        if (k === 'c') { ev.preventDefault(); ev.stopPropagation(); copySelection(); return; }
+        if (k === 'v') { ev.preventDefault(); ev.stopPropagation(); startPaste(); return; }
+      }
+    }
+    if (ev.key === 'Delete' && cmdInputEl.value === '') { // 빈 입력창에서 Delete = 선택 삭제
+      ev.preventDefault(); ev.stopPropagation(); deleteSelection(); return;
+    }
     if (sugMatches.length && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
       ev.preventDefault(); ev.stopPropagation(); moveSuggest(ev.key === 'ArrowDown' ? 1 : -1); return;
     }
