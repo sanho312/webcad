@@ -118,9 +118,12 @@
   const ERR_KO = (m) => {
     if (!m) return '';
     if (/Invalid login credentials/i.test(m)) return '아이디(이메일) 또는 비밀번호가 올바르지 않습니다.';
-    if (/already registered/i.test(m)) return '이미 가입된 이메일입니다.';
-    if (/expired or is invalid/i.test(m)) return '인증번호가 올바르지 않거나 만료되었습니다.';
-    if (/rate limit|security purposes/i.test(m)) return '요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.';
+    if (/Email not confirmed/i.test(m)) return '이메일 인증이 완료되지 않은 계정입니다. 회원가입에서 같은 이메일로 인증번호를 다시 받아 완료해 주세요.';
+    if (/already registered/i.test(m)) return '이미 가입된 이메일입니다. 로그인하거나 비밀번호 재설정을 이용하세요.';
+    if (/expired or is invalid/i.test(m)) return '인증번호가 올바르지 않거나 만료되었습니다. (가장 최근에 온 메일의 번호를 사용하세요)';
+    const sec = m.match(/after (\d+) seconds?/i);
+    if (sec) return `보안을 위해 ${sec[1]}초 후에 다시 시도할 수 있습니다.`;
+    if (/rate limit|security purposes|too many/i.test(m)) return '요청이 잠시 제한되었습니다. 10초쯤 후 다시 시도해 주세요.';
     if (/least 8|password/i.test(m)) return '비밀번호는 8자 이상이어야 합니다.';
     return m;
   };
@@ -181,9 +184,20 @@
     }));
     q('#aResend')?.addEventListener('click', async () => {
       err('');
-      if (verifyCtx.kind === 'signup') await sb.auth.resend({ type: 'signup', email: verifyCtx.email });
-      else await sb.auth.resetPasswordForEmail(verifyCtx.email);
-      err('인증번호를 다시 보냈습니다.'); updateDemoCode();
+      const btn = q('#aResend');
+      let res;
+      if (verifyCtx.kind === 'signup') res = await sb.auth.resend({ type: 'signup', email: verifyCtx.email });
+      else res = await sb.auth.resetPasswordForEmail(verifyCtx.email);
+      if (res && res.error) { err(res.error.message); return; }
+      err('인증번호를 다시 보냈습니다. 메일함(스팸함 포함)을 확인하세요.'); updateDemoCode();
+      // 재전송 쿨다운(서버 제한과 동일하게 잠시 비활성)
+      if (btn) {
+        let left = 12; btn.disabled = true; const orig = btn.textContent;
+        const t = setInterval(() => {
+          left--; btn.textContent = `인증번호 재전송 (${left}초)`;
+          if (left <= 0) { clearInterval(t); btn.disabled = false; btn.textContent = orig; }
+        }, 1000);
+      }
     });
     q('#aGo')?.addEventListener('click', async () => {
       err(''); busy(true);
@@ -209,7 +223,15 @@
           const { data: exists } = await sb.rpc('username_exists', { u: un });
           if (exists) return err('이미 사용 중인 아이디입니다.');
           const { error } = await sb.auth.signUp({ email: em, password: pw, options: { data: { username: un } } });
-          if (error) return err(error.message);
+          if (error) {
+            // 발송 제한에 걸려도 인증 화면으로 넘어가 잠시 후 '재전송'으로 이어갈 수 있게
+            if (/rate limit|security purposes|after \d+ seconds|too many/i.test(error.message)) {
+              verifyCtx = { email: em, kind: 'signup' }; view = 'verify'; render();
+              err(ERR_KO(error.message) + ' 잠시 후 아래 "인증번호 재전송"을 눌러주세요.');
+              return;
+            }
+            return err(error.message);
+          }
           verifyCtx = { email: em, kind: 'signup' }; view = 'verify'; render();
         }
         if (view === 'verify') {
