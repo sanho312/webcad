@@ -157,3 +157,20 @@ iPhone Safari는 웹페이지 요소 전체화면을 지원하지 않습니다. 
 - `index.html` — UI / 레이아웃
 - `cad.js` — 캔버스 렌더링, 편집 로직, DXF 읽기/쓰기 (외부 의존성 없음)
 - `sample.dxf` — 예제 도면 (DXF 열기로 불러와 보세요)
+
+## 로그인 / 회원가입 (이메일 인증)
+`auth-config.js` 에 Supabase 프로젝트의 URL/anon key를 넣으면 로그인 게이트가 활성화됩니다
+(비어 있으면 로그인 없이 기존처럼 동작).
+
+1. https://supabase.com → **New project** 생성 (무료)
+2. **Project Settings → API**: Project URL / anon public key 를 `auth-config.js` 에 붙여넣기
+3. **SQL Editor** 에서 `supabase-setup.sql` 실행 (프로필 테이블 + 아이디 로그인용 함수)
+4. **Authentication → Email Templates**: "Confirm signup"과 "Reset password" 본문에
+   `{{ .Token }}` (6자리 인증번호)이 보이도록 수정. 예: `<h2>{{ .Token }}</h2>`
+5. 커밋/푸시하면 끝. 회원가입 → 이메일 인증번호 입력 → 로그인 흐름이 동작합니다.
+
+- 아이디 또는 이메일 + 비밀번호로 로그인, 비밀번호 재설정(인증번호) 지원.
+- 무료 티어 기본 메일은 시간당 발송 제한이 작으므로, 실사용 시
+  **Authentication → SMTP Settings** 에 커스텀 SMTP(예: Resend 무료) 연결 권장.
+- 서버 없이 UI만 시험: 콘솔에서 `localStorage.setItem('webcad_auth_demo','1')` 후 새로고침
+  (인증번호가 화면에 표시되는 데모 모드).

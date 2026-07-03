@@ -3351,7 +3351,8 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === 'F3') { ev.preventDefault(); toggleOsnap(); return; }  // 객체 스냅
   if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
   // 글자를 치면 곧장 명령창으로 — Space/Enter 없이 즉시 명령 입력 가능
-  if (cmdInputEl && ev.key.length === 1 && ev.key !== ' ' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+  if (cmdInputEl && ev.key.length === 1 && ev.key !== ' ' && !ev.ctrlKey && !ev.metaKey && !ev.altKey
+      && !document.body.classList.contains('authLocked')) {
     cmdInputEl.focus({ preventScroll: true }); return; // 이 키 입력은 그대로 명령창에 들어감
   }
   if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
@@ -3688,6 +3689,7 @@ function selectSuggestion(name) { cmdInputEl.value = ''; hideSuggest(); runComma
 const ALWAYS_FOCUS_CMD = (navigator.maxTouchPoints || 0) === 0;
 if (cmdInputEl && ALWAYS_FOCUS_CMD) {
   const refocus = () => setTimeout(() => {
+    if (document.body.classList.contains('authLocked')) return; // 로그인 게이트 열림
     // 다른 입력요소(레이어명·옵션·다이얼로그 등)가 포커스를 가져갔으면 뺏지 않음
     const a = document.activeElement;
     if (!a || a === document.body || a.tagName === 'BUTTON' || a.tagName === 'CANVAS')
