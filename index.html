@@ -85,8 +85,10 @@
     background:rgba(255,255,255,0.06);color:var(--text);font-size:16px;cursor:pointer;transition:background .15s;}
   .dtabNew:hover{background:rgba(255,255,255,0.12);}
 
-  /* Top bar — translucent fog (HIG global nav) */
-  #topbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;
+  /* Top bar — translucent fog (HIG global nav)
+     position:relative + z-index 필수: backdrop-filter가 상단바를 독립 쌓임층으로 만들기 때문에,
+     명시적으로 올리지 않으면 드롭다운 메뉴가 아래 패널(도구창·캔버스) '뒤'에 그려져 안 보임 */
+  #topbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;position:relative;z-index:60;
     padding:5px calc(10px + env(safe-area-inset-right, 0px)) 5px calc(10px + env(safe-area-inset-left, 0px));
     background:rgba(13,20,38,0.72);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     border-bottom:0.5px solid var(--line);}
