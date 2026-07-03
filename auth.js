@@ -147,8 +147,8 @@
       <button class="authBtn" id="aGo">인증번호 받기</button>
       <button class="authBtn ghost" id="toLogin">로그인으로 돌아가기</button>${demoBadge}`;
     if (view === 'verify') card.innerHTML = `
-      <h1>이메일 인증</h1><p class="sub"><b>${esc(verifyCtx.email)}</b> 로 보낸<br>6자리 인증번호를 입력하세요.</p>
-      <input id="authCode" maxlength="6" inputmode="numeric" placeholder="······">
+      <h1>이메일 인증</h1><p class="sub"><b>${esc(verifyCtx.email)}</b> 로 보낸<br>인증번호를 입력하세요.</p>
+      <input id="authCode" maxlength="10" inputmode="numeric" placeholder="······">
       ${verifyCtx.kind === 'recovery' ? '<label>새 비밀번호 (8자 이상)</label><input id="aPw" type="password" autocomplete="new-password">' : ''}
       <div class="authErr" id="aErr"></div>
       <button class="authBtn" id="aGo">확인</button>
@@ -214,7 +214,7 @@
         }
         if (view === 'verify') {
           const code = q('#authCode').value.trim();
-          if (!/^\d{6}$/.test(code)) return err('6자리 숫자 인증번호를 입력하세요.');
+          if (!/^\d{6,10}$/.test(code)) return err('이메일로 받은 숫자 인증번호를 입력하세요.');
           if (verifyCtx.kind === 'recovery') {
             const pw = q('#aPw').value;
             if (pw.length < 8) return err('새 비밀번호는 8자 이상이어야 합니다.');
