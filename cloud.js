@@ -31,12 +31,15 @@
   .cdIn{flex:1;min-width:0;background:rgba(150,180,255,.10);color:inherit;border:none;border-radius:10px;
     padding:8px 12px;font-size:13.5px;user-select:text;-webkit-user-select:text;}
   .cdIn:focus{outline:none;box-shadow:0 0 0 2px var(--accent,#0A84FF);}
-  .cdGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
-  .cdCard{background:rgba(150,180,255,.07);border-radius:14px;padding:8px;cursor:pointer;transition:background .15s;}
-  .cdCard:hover{background:rgba(150,180,255,.14);}
-  .cdCard img{width:100%;height:84px;object-fit:cover;border-radius:9px;background:#0a1020;display:block;}
-  .cdCard .nm{font-size:12.5px;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .cdCard .sub{font-size:10.5px;color:var(--muted,rgba(210,222,250,.6));margin-top:2px;display:flex;justify-content:space-between;gap:4px;}
+  .cdGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;}
+  .cdCard{background:rgba(150,180,255,.07);border-radius:14px;padding:10px;transition:background .15s;
+    overflow:hidden;display:flex;flex-direction:column;min-width:0;}
+  .cdCard:hover{background:rgba(150,180,255,.12);}
+  .cdCard img,.cdCard .noThumb{width:100%;height:88px;object-fit:cover;border-radius:9px;background:#0a1020;display:block;}
+  .cdCard .nm{font-size:13px;font-weight:590;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cdCard .sub{font-size:10.5px;color:var(--muted,rgba(210,222,250,.6));margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cdCard .acts{display:flex;gap:5px;margin-top:9px;}
+  .cdCard .acts .cdBtn{padding:5px 0;font-size:11.5px;flex:1;text-align:center;border-radius:9px;min-width:0;}
   .cdMuted{color:var(--muted,rgba(210,222,250,.6));font-size:12.5px;line-height:1.6;}
   .cdErr{color:#ff8a80;font-size:12.5px;min-height:16px;margin-top:6px;}
   .cdList{display:flex;flex-direction:column;gap:6px;}
@@ -113,12 +116,12 @@
         if (!data.length) { body.innerHTML = '<div class="cdMuted">저장된 도면이 없습니다.<br>파일 메뉴 → "클라우드에 저장"으로 현재 도면을 올려보세요.</div>'; return; }
         body.innerHTML = '<div class="cdGrid">' + data.map(d => `
           <div class="cdCard" data-id="${d.id}" data-mine="${d.is_mine}" data-name="${esc(d.name)}">
-            ${d.thumb ? `<img src="${d.thumb}">` : '<div style="height:84px;border-radius:9px;background:#0a1020;"></div>'}
+            ${d.thumb ? `<img src="${d.thumb}">` : '<div class="noThumb"></div>'}
             <div class="nm">${d.is_mine ? '' : '👥 '}${esc(d.name)}</div>
-            <div class="sub"><span>${fmtT(d.updated_at)}</span><span>${d.is_mine ? '' : esc(d.owner_name || '') + (d.can_edit ? ' · 편집가능' : ' · 읽기')}</span></div>
-            <div class="cdRow" style="margin:6px 0 0;">
-              <button class="cdBtn pri" data-open style="flex:1">열기</button>
-              ${d.is_mine ? '<button class="cdBtn" data-ren>이름</button><button class="cdBtn danger" data-del>삭제</button>' : ''}
+            <div class="sub">${fmtT(d.updated_at)}${d.is_mine ? '' : ' · ' + esc(d.owner_name || '') + (d.can_edit ? ' · 편집가능' : ' · 읽기전용')}</div>
+            <div class="acts">
+              <button class="cdBtn pri" data-open>열기</button>
+              ${d.is_mine ? '<button class="cdBtn" data-ren>이름변경</button><button class="cdBtn danger" data-del>삭제</button>' : ''}
             </div>
           </div>`).join('') + '</div>';
         body.querySelectorAll('.cdCard').forEach(card => {

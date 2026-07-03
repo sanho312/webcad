@@ -101,29 +101,44 @@ alter table public.announcements enable row level security;
 
 -- ============================================================
 --  RLS 정책
+--  주의: drawings↔drawing_shares 정책이 서로를 직접 참조하면 무한 재귀가
+--  발생하므로, 상호 참조는 security definer 헬퍼 함수로 RLS를 우회한다.
 -- ============================================================
+create or replace function public.is_drawing_owner(d uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+  select exists(select 1 from drawings where id = d and owner = auth.uid());
+$$;
+create or replace function public.is_shared_with_me(d uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+  select exists(select 1 from drawing_shares where drawing_id = d and shared_with = auth.uid());
+$$;
+create or replace function public.can_edit_shared(d uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+  select exists(select 1 from drawing_shares where drawing_id = d and shared_with = auth.uid() and can_edit);
+$$;
+
 -- 도면: 소유자 전체권한 / 공유받은 사람은 읽기(+편집권한 시 수정)
 drop policy if exists "drawings owner all" on public.drawings;
 create policy "drawings owner all" on public.drawings
   using (owner = auth.uid()) with check (owner = auth.uid());
 drop policy if exists "drawings shared read" on public.drawings;
 create policy "drawings shared read" on public.drawings for select
-  using (exists (select 1 from public.drawing_shares s where s.drawing_id = id and s.shared_with = auth.uid()));
+  using (public.is_shared_with_me(id));
 drop policy if exists "drawings shared edit" on public.drawings;
 create policy "drawings shared edit" on public.drawings for update
-  using (exists (select 1 from public.drawing_shares s where s.drawing_id = id and s.shared_with = auth.uid() and s.can_edit));
+  using (public.can_edit_shared(id));
 
 -- 버전: 도면 소유자만
 drop policy if exists "versions owner" on public.drawing_versions;
 create policy "versions owner" on public.drawing_versions
-  using (exists (select 1 from public.drawings d where d.id = drawing_id and d.owner = auth.uid()))
-  with check (exists (select 1 from public.drawings d where d.id = drawing_id and d.owner = auth.uid()));
+  using (public.is_drawing_owner(drawing_id))
+  with check (public.is_drawing_owner(drawing_id));
 
 -- 공유: 도면 소유자가 관리, 공유받은 사람은 자기 항목 조회
 drop policy if exists "shares owner manage" on public.drawing_shares;
 create policy "shares owner manage" on public.drawing_shares
-  using (exists (select 1 from public.drawings d where d.id = drawing_id and d.owner = auth.uid()))
-  with check (exists (select 1 from public.drawings d where d.id = drawing_id and d.owner = auth.uid()));
+  using (public.is_drawing_owner(drawing_id))
+  with check (public.is_drawing_owner(drawing_id));
 drop policy if exists "shares recipient read" on public.drawing_shares;
 create policy "shares recipient read" on public.drawing_shares for select
   using (shared_with = auth.uid());
