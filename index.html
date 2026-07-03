@@ -99,7 +99,7 @@
   #main{display:flex;flex:1 1 auto;min-height:0;}
 
   /* Toolbar — 3열 그리드(모든 도구가 보이도록) */
-  #toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:7px 6px;
+  #toolbar{display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr));gap:3px;padding:7px 6px;
     background:var(--glass-chrome);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     border-right:0.5px solid var(--line);width:158px;flex:0 0 auto;
     overflow-y:auto;overflow-x:hidden;align-content:start;}
@@ -113,20 +113,21 @@
   .tool:active{transform:scale(0.95);}
   .tool.active{background:var(--accent);color:#fff;box-shadow:var(--spec-strong),0 2px 10px rgba(10,132,255,0.4);}
 
-  /* ── 패널 접기/펼치기 ── */
-  #app.hideTop #topbar,#app.hideTop #docTabs{display:none;}
-  #app.hideLeft #toolbar{display:none;}
-  #app.hideRight #side{display:none;}
+  /* ── 하단 명령창 접기 + 좌우 패널 크기조절(오토캐드식) ── */
   #app.hideBottom #console{display:none;}
   .uiToggle{position:absolute;z-index:15;display:flex;align-items:center;justify-content:center;
     background:var(--glass-fill);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     border:none;color:var(--muted);cursor:pointer;box-shadow:var(--spec);font-size:10px;line-height:1;
     transition:background .15s ease,color .15s ease,opacity .2s ease;opacity:.55;}
   .uiToggle:hover{background:var(--glass-fill-hi);color:var(--text);opacity:1;}
-  #tgLeft{left:6px;top:50%;transform:translateY(-50%);width:20px;height:46px;border-radius:var(--radius-pill);}
-  #tgRight{right:6px;top:50%;transform:translateY(-50%);width:20px;height:46px;border-radius:var(--radius-pill);}
-  #tgTop{top:6px;right:34px;width:46px;height:20px;border-radius:var(--radius-pill);}
   #tgBottom{bottom:6px;left:50%;transform:translateX(-50%);width:46px;height:20px;border-radius:var(--radius-pill);}
+  /* 크기조절 핸들 — 패널 안쪽 모서리, 드래그로 폭 조절(더블클릭=기본 폭) */
+  .rz{flex:0 0 6px;cursor:ew-resize;touch-action:none;position:relative;z-index:14;
+    background:transparent;transition:background .15s ease;}
+  .rz::after{content:'';position:absolute;top:50%;transform:translateY(-50%);
+    width:3px;height:44px;border-radius:2px;background:var(--line);left:1.5px;
+    transition:background .15s ease,height .15s ease;}
+  .rz:hover::after,.rz.on::after{background:var(--accent);height:72px;}
 
   /* Canvas */
   #canvasWrap{position:relative;flex:1 1 auto;min-width:0;background:var(--canvas-bg);}
@@ -373,16 +374,14 @@
       <div class="tool" data-tool="area" title="면적 (area) — 도형 클릭 또는 점 지정 후 Enter">
         <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M8 16l3-5 3 3 2-4" /></svg>면적</div>
     </div>
+    <div class="rz" id="rzLeft" title="드래그: 도구막대 폭 조절 · 더블클릭: 기본 폭"></div>
 
     <!-- Canvas -->
     <div id="canvasWrap">
       <canvas id="cv"></canvas>
       <div id="hint">선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요.</div>
       <div id="coords">X: 0.00  Y: 0.00</div>
-      <!-- 패널 접기/펼치기 토글 -->
-      <button class="uiToggle" id="tgLeft" title="도구막대 접기/펼치기">◂</button>
-      <button class="uiToggle" id="tgRight" title="측면 패널 접기/펼치기">▸</button>
-      <button class="uiToggle" id="tgTop" title="상단바 접기/펼치기">▴</button>
+      <!-- 하단 명령창 접기 토글 -->
       <button class="uiToggle" id="tgBottom" title="명령창 접기/펼치기">▾</button>
 
       <!-- 배열 대화상자 -->
@@ -503,6 +502,7 @@
     </div>
 
     <!-- Right side -->
+    <div class="rz" id="rzRight" title="드래그: 측면 패널 폭 조절 · 더블클릭: 기본 폭"></div>
     <div id="side">
       <div class="section">
         <h3>레이어</h3>
@@ -570,31 +570,54 @@
 
 <script src="cad.js"></script>
 <script>
-// 패널 접기/펼치기 (좌 도구막대 / 우 패널 / 상단바 / 하단 명령창) — 상태는 localStorage에 저장
+// UI 배치: 하단 명령창 접기(화살표) + 좌우 패널 폭 드래그 조절(오토캐드식) — localStorage에 저장
 (() => {
   const KEY = 'webcad_ui_v1';
   let st = {};
   try { st = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { st = {}; }
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} };
   const app = document.getElementById('app');
-  const B = { left: document.getElementById('tgLeft'), right: document.getElementById('tgRight'),
-              top: document.getElementById('tgTop'), bottom: document.getElementById('tgBottom') };
-  const GLYPH = {
-    left:  h => h ? '▸' : '◂', right:  h => h ? '◂' : '▸',
-    top:   h => h ? '▾' : '▴', bottom: h => h ? '▴' : '▾',
-  };
-  function apply() {
-    app.classList.toggle('hideLeft', !!st.left);
-    app.classList.toggle('hideRight', !!st.right);
-    app.classList.toggle('hideTop', !!st.top);
+
+  // ── 하단 명령창 접기 ──
+  const tgB = document.getElementById('tgBottom');
+  function applyBottom() {
     app.classList.toggle('hideBottom', !!st.bottom);
-    for (const k in B) B[k].textContent = GLYPH[k](!!st[k]);
+    tgB.textContent = st.bottom ? '▴' : '▾';
   }
-  for (const k in B) B[k].addEventListener('click', () => {
-    st[k] = !st[k];
-    try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {}
-    apply();
-  });
-  apply();
+  tgB.addEventListener('click', () => { st.bottom = !st.bottom; save(); applyBottom(); });
+  applyBottom();
+
+  // ── 좌우 패널 폭 드래그 조절 ──
+  const toolbar = document.getElementById('toolbar');
+  const side = document.getElementById('side');
+  const DEF = { toolbarW: 158, sideW: 216 };
+  const LIM = { toolbar: [44, 320], side: [150, 420] };
+  function applyW() {
+    toolbar.style.width = (st.toolbarW || DEF.toolbarW) + 'px';
+    side.style.width = (st.sideW || DEF.sideW) + 'px';
+  }
+  applyW();
+  function bindResize(handle, calc, key, lim) {
+    let drag = null;
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      drag = true; handle.classList.add('on');
+      handle.setPointerCapture(e.pointerId);
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const w = Math.max(lim[0], Math.min(lim[1], calc(e.clientX)));
+      st[key] = Math.round(w); applyW();
+    });
+    const end = (e) => { if (!drag) return; drag = null; handle.classList.remove('on'); save(); };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+    handle.addEventListener('dblclick', () => { delete st[key]; save(); applyW(); });
+  }
+  bindResize(document.getElementById('rzLeft'),
+    (x) => x - toolbar.getBoundingClientRect().left, 'toolbarW', LIM.toolbar);
+  bindResize(document.getElementById('rzRight'),
+    (x) => side.getBoundingClientRect().right - x, 'sideW', LIM.side);
 })();
 </script>
 </body>
