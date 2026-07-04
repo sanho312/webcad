@@ -2767,6 +2767,7 @@ const INSTANT_CMDS = {
   isolate: cmdIsolate,
   uniso: cmdUniso,
   sum: cmdSum,
+  help: openCmdHelp,
 };
 
 function nearGrip(e, w, tol) {
@@ -2970,6 +2971,7 @@ const CMD_ALIASES = {
   isolate: 'isolate', iso: 'isolate', uniso: 'uniso', unisolate: 'uniso',
   sum: 'sum', xline: 'xline', xl: 'xline',
   breakpt: 'breakpt', bp: 'breakpt',
+  help: 'help', '?': 'help',
 };
 
 function runCommandInput(raw) {
@@ -3871,12 +3873,142 @@ document.getElementById('gridSize').addEventListener('change', (e) => { state.gr
 // ============================================================
 //  명령어 자동완성 (라이노식 미리보기 + 클릭 선택)
 // ============================================================
+// ============================================================
+//  명령어 도움말 (❓ 명령어 버튼 / help / ?)
+// ============================================================
+const CMD_HELP = [
+  { c: '그리기', items: [
+    ['line', '선', '점을 연속 클릭해 이어 그림. 좌표(x,y / @dx,dy / @거리<각도) 입력 가능'],
+    ['pline', '폴리라인', '여러 점을 하나의 연결선으로. 빈 Enter로 완료'],
+    ['rect', '사각형', '두 코너 클릭(또는 크기 w,h 입력) — 닫힌 폴리라인'],
+    ['circle', '원', '중심 클릭 → 반지름 입력(또는 클릭)'],
+    ['arc', '호', '시작 → 끝 → 통과점 3점'],
+    ['polygon', '정다각형', '변 개수 입력 → 중심 → 반지름'],
+    ['ellipse', '타원', '중심 → 코너 클릭 또는 rx,ry 입력'],
+    ['text', '문자', '위치 클릭 → 내용 입력. 기존 문자는 더블클릭으로 수정'],
+    ['hatch', '해치', '패턴명/간격 입력 후 경계(원·닫힌 폴리라인) 클릭. 8종 패턴'],
+    ['block', '블록 정의', '선택한 도형들을 하나의 블록으로 묶음 (즉시 실행)'],
+    ['insert', '블록 삽입', '우측 블록 목록에서 선택 후 배치 (배율·회전 지정)'],
+    ['xline', '구성선', '두 점 → 사실상 무한한 보조선 (기준선·자르기 기준)'],
+    ['frame', '도곽', '배치점 → 용지·축척 입력 → 외곽+테두리+표제란 자동 생성'],
+    ['revcloud', '구름마크', '두 코너 → 검토 표시용 구름 모양 (연속 기입)'],
+    ['centerline', '중심선', '원/호 클릭 → 십자 중심선 (일점쇄선 레이어)'],
+    ['leader', '지시선', '화살표 지점 → 문자 위치 → 문구 입력'],
+  ]},
+  { c: '편집', items: [
+    ['move', '이동', '선택 → 기준점 → 이동점 (좌표·거리 입력 가능)'],
+    ['copy', '복사', '선택 → 기준점 → 붙일 위치 반복 클릭'],
+    ['erase', '지우기', '클릭한 도형 삭제 (= Delete 키)'],
+    ['offset', '오프셋', '거리 입력 → 도형 클릭 → 방향 클릭 (평행 복사)'],
+    ['mirror', '대칭', '선택 → 대칭축 두 점 클릭'],
+    ['rotate', '회전', '선택 → 중심 클릭 → 각도 입력/클릭'],
+    ['scale', '배율', '선택 → 기준점 → 배율 숫자(또는 참조 두 점)'],
+    ['array', '배열', '선택 → 설정창 (직사각 행·열 / 원형 개수·각도)'],
+    ['stretch', '신축', '걸침 영역 두 코너 → 기준점 → 이동점 (걸친 끝점만 이동)'],
+    ['align', '정렬', '선택 → 원본 2점 → 목표 2점 (이동+회전, 배율 선택)'],
+    ['trim', '자르기', '기준선들 클릭 → Space → 잘라낼 부분 클릭 (바로 Space=빠른 모드)'],
+    ['extend', '연장', '늘릴 선의 끝쪽 클릭 → 가까운 경계까지 연장'],
+    ['fillet', '모깎기', '반지름 입력 → 두 선 클릭 (0이면 직각 코너)'],
+    ['chamfer', '모따기', '거리 입력 → 두 선 클릭'],
+    ['break', '끊기', '대상 → 두 점 클릭 → 사이 구간 제거'],
+    ['breakpt', '한 점 끊기', '대상 → 한 점 클릭 → 그 지점에서 둘로 분리'],
+    ['lengthen', '길이조정', '증감량(±) 입력 → 선의 끝쪽 클릭'],
+    ['explode', '분해', '폴리라인·블록을 낱개 도형으로 (즉시 실행)'],
+    ['join', '결합', '맞닿은 선들을 폴리라인으로 (즉시 실행)'],
+    ['matchprop', '속성 일치', '원본 클릭 → 대상들 클릭 (레이어·색·선종류 복사)'],
+    ['front', '맨 앞으로', '선택 도형의 그리기 순서를 맨 앞으로 (즉시 실행)'],
+    ['back', '맨 뒤로', '선택 도형을 맨 뒤로 (즉시 실행)'],
+    ['similar', '유사 선택', '같은 종류+레이어 도형 전부 선택 (즉시 실행)'],
+  ]},
+  { c: '치수·주석', items: [
+    ['dim', '선형 치수', '두 점 → 치수선 위치 → 이후 클릭만으로 연속(체인) 기입'],
+    ['dimrad', '반지름 치수', '원/호 클릭 → 문자 위치 (R값)'],
+    ['dimdia', '지름 치수', '원/호 클릭 → 문자 위치 (⌀값)'],
+    ['dimang', '각도 치수', '두 선 클릭 → 호 위치 (사이 각도)'],
+  ]},
+  { c: '측정·정보', items: [
+    ['dist', '거리', '두 점 클릭 → 거리·ΔX·ΔY·각도 표시'],
+    ['area', '면적', '도형 클릭 또는 점 지정 후 Enter → 면적·둘레'],
+    ['sum', '합계', '선택 도형들의 총 길이·총 면적 (자재 산출, 즉시 실행)'],
+    ['divide', '등분', '개수 입력 → 대상 클릭 → 등분점 ✕ 표식'],
+    ['measure', '간격 표식', '간격 입력 → 대상 클릭 → 일정 간격 ✕ 표식'],
+  ]},
+  { c: '화면·표시', items: [
+    ['zoom', '전체보기', '모든 도형이 보이도록 화면 맞춤 (즉시 실행)'],
+    ['zp', '이전 뷰', '직전 화면으로 되돌아가기 (즉시 실행)'],
+    ['pan', '화면 이동', '드래그로 화면 이동 (마우스 휠 드래그와 동일)'],
+    ['vs 이름', '뷰 저장', '현재 화면을 이름으로 저장 (예: vs 평면)'],
+    ['vg 이름', '뷰 이동', '저장한 화면으로 이동'],
+    ['vl', '뷰 목록', '저장된 뷰 이름들 표시'],
+    ['isolate', '레이어 격리', '선택 도형의 레이어만 표시, 나머지 숨김 (즉시 실행)'],
+    ['uniso', '격리 해제', '모든 레이어 표시 (즉시 실행)'],
+  ]},
+  { c: '기타', items: [
+    ['undo', '실행취소', 'Ctrl+Z와 동일'],
+    ['redo', '다시실행', 'Ctrl+Y와 동일'],
+    ['select', '선택 도구', '클릭/박스 선택으로 복귀 (= Esc)'],
+    ['help', '명령어 목록', '이 창 열기 (? 도 가능)'],
+  ]},
+  { c: '키보드', items: [
+    ['Space/Enter', '확정·반복', '입력 확정 / 빈 칸에서 직전 명령 반복'],
+    ['Esc', '취소', '명령 취소, 선택 해제'],
+    ['Delete', '삭제', '선택 도형 삭제'],
+    ['Ctrl+Z / Y', '취소/복구', '실행취소 / 다시실행'],
+    ['Ctrl+S', '저장', '클라우드 도면이면 클라우드로, 아니면 DXF 저장'],
+    ['Ctrl+A / C / V', '전체·복사·붙여넣기', '전체 선택 / 복사 / 고스트 미리보기 배치'],
+    ['F3 / F8', '스냅/직교', '객체 스냅 켬끔 / 직교 모드 켬끔'],
+    ['문자 더블클릭', '문자 수정', '문자 내용 바로 편집'],
+  ]},
+];
+function openCmdHelp() {
+  const dlg = document.getElementById('helpDlg');
+  if (!dlg) return;
+  renderCmdHelp('');
+  const s = document.getElementById('helpSearch');
+  s.value = '';
+  dlg.style.display = 'flex';
+  setTimeout(() => s.focus(), 50);
+}
+function renderCmdHelp(q) {
+  // 별칭 역조회: 도구명 → 짧은 별칭들
+  const rev = {};
+  for (const [a, t] of Object.entries(CMD_ALIASES)) { if (a === t) continue; (rev[t] = rev[t] || []).push(a); }
+  q = (q || '').trim().toLowerCase();
+  const html = CMD_HELP.map(sec => {
+    const rows = sec.items.filter(([n, ko, d]) => {
+      if (!q) return true;
+      const al = (rev[n] || []).join(' ');
+      return (n + ' ' + ko + ' ' + d + ' ' + al).toLowerCase().includes(q);
+    }).map(([n, ko, d]) => {
+      const al = (rev[n] || []).join(', ');
+      return `<div style="display:grid;grid-template-columns:105px 62px 1fr;gap:8px;padding:4px 6px;border-radius:7px;align-items:baseline;" class="helpRow">
+        <span style="font-family:var(--mono);color:var(--accent-text);">${escapeHtml(n)}</span>
+        <span style="font-family:var(--mono);color:var(--muted);font-size:11px;">${escapeHtml(al)}</span>
+        <span><b style="font-weight:590;">${escapeHtml(ko)}</b> — <span style="color:var(--muted);">${escapeHtml(d)}</span></span>
+      </div>`;
+    }).join('');
+    if (!rows) return '';
+    return `<div style="margin:8px 0 2px;font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--accent-text);text-transform:uppercase;">${sec.c}</div>` + rows;
+  }).join('');
+  document.getElementById('helpList').innerHTML = html || '<div style="color:var(--muted);padding:12px;">검색 결과가 없습니다.</div>';
+}
+(function bindCmdHelp() {
+  const dlg = document.getElementById('helpDlg');
+  if (!dlg) return;
+  document.getElementById('btnCmdHelp').addEventListener('click', openCmdHelp);
+  document.getElementById('helpClose').addEventListener('click', () => dlg.style.display = 'none');
+  dlg.addEventListener('pointerdown', (e) => { if (e.target === dlg) dlg.style.display = 'none'; e.stopPropagation(); });
+  document.getElementById('helpSearch').addEventListener('input', (e) => renderCmdHelp(e.target.value));
+  document.getElementById('helpSearch').addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') dlg.style.display = 'none'; });
+})();
+
 const COMMAND_LIST = [
   { name: 'centerline', ko: '중심선' }, { name: 'revcloud', ko: '구름마크' },
   { name: 'frame', ko: '도곽(표제란)' }, { name: 'align', ko: '정렬' },
   { name: 'isolate', ko: '레이어 격리' }, { name: 'uniso', ko: '격리 해제' },
   { name: 'sum', ko: '길이·면적 합계' }, { name: 'xline', ko: '구성선' },
   { name: 'breakpt', ko: '한 점 끊기' },
+  { name: 'help', ko: '명령어 목록(?)' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },

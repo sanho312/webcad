@@ -323,6 +323,7 @@
     <button class="tbtn" id="btnZoomFit" title="전체보기 (F 또는 z 명령)">전체보기</button>
     <button class="tbtn" id="btnOrtho" title="직교 모드 (F8) — 수평·수직 고정">직교</button>
     <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처">객체스냅</button>
+    <button class="tbtn" id="btnCmdHelp" title="전체 명령어 목록 (help 또는 ? 입력)">❓ 명령어</button>
     <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
     <input type="file" id="fileInput" accept=".dxf" style="display:none">
     <input type="file" id="imgInput" accept="image/*" style="display:none">
@@ -412,6 +413,16 @@
       <div id="coords">X: 0.00  Y: 0.00</div>
       <!-- 하단 명령 '기록' 접기 토글 (입력창은 항상 유지) -->
       <button class="uiToggle" id="tgBottom" title="명령 기록 접기/펼치기">▾</button>
+
+      <!-- 명령어 목록 -->
+      <div id="helpDlg" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:20;">
+        <div class="dlgBox" style="width:620px;max-width:94vw;max-height:84%;display:flex;flex-direction:column;">
+          <h2 style="display:flex;align-items:center;gap:10px;">❓ 전체 명령어
+            <input type="text" id="helpSearch" placeholder="검색 (예: 자르기, trim)" style="flex:1;font-size:13px;">
+            <button class="miniBtn" id="helpClose">닫기</button></h2>
+          <div id="helpList" style="flex:1;overflow-y:auto;font-size:12.5px;line-height:1.55;"></div>
+        </div>
+      </div>
 
       <!-- 배열 대화상자 -->
       <div id="arrayDlg">
@@ -606,7 +617,7 @@
   </div>
 </div>
 
-<script src="cad.js?v=20260704c"></script>
+<script src="cad.js?v=20260704d"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=6"></script>
 <script src="cloud.js?v=4"></script>
