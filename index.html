@@ -257,7 +257,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   /* Right panel */
   #side{width:216px;flex:0 0 auto;background:var(--glass-chrome);
     -webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);border-left:0.5px solid var(--line);
-    display:flex;flex-direction:column;overflow:hidden;}
+    display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;} /* 짧은 화면에선 패널 전체 스크롤 */
   .section{border-bottom:0.5px solid var(--line);}
   .section h3{margin:0;padding:6px 12px;font-size:10.5px;font-weight:600;text-transform:uppercase;
     letter-spacing:.6px;color:var(--muted);background:transparent;}
@@ -272,7 +272,10 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     background:none;padding:0;cursor:pointer;}
 
   /* Layers */
-  #layerList{display:flex;flex-direction:column;gap:2px;}
+  /* 레이어 목록: 일정 높이 이상이면 내부 스크롤 (아래 그리기 설정·속성 패널이 밀려나지 않게) */
+  #layerList{display:flex;flex-direction:column;gap:2px;max-height:min(300px,34vh);overflow-y:auto;
+    overscroll-behavior:contain;padding-right:2px;}
+  #blockList{max-height:min(200px,24vh);overflow-y:auto;overscroll-behavior:contain;}
   .layer{display:flex;flex-direction:column;gap:3px;padding:6px 8px;border-radius:var(--radius);
     font-size:13px;cursor:pointer;transition:background .12s ease;}
   .layer:hover{background:rgba(255,255,255,0.05);}
