@@ -2240,7 +2240,7 @@ function open3D() {
     ov.innerHTML = `
       <button class="tbtn" id="b3Quad" title="사분할 뷰 ↔ 단일 뷰 (뷰포트 더블클릭과 동일)"
         style="position:absolute;top:8px;right:8px;z-index:3;">4분할</button>
-      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:grab;"></canvas>`;
+      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>`;
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
     v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
@@ -2585,6 +2585,11 @@ function shadeColor(hex, k) {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * k), g = Math.round(parseInt(hex.slice(3, 5), 16) * k), b = Math.round(parseInt(hex.slice(5, 7), 16) * k);
   return `rgb(${Math.min(255, r)},${Math.min(255, g)},${Math.min(255, b)})`;
 }
+// 3D 커서 — 평면(setTool)과 동일 규칙: select=기본, pan=손, 그 외 도구=십자
+function cursor3D() {
+  if (v3 && v3.wallMode) return 'crosshair';
+  return (state.tool === 'select') ? 'default' : (state.tool === 'pan') ? 'grab' : 'crosshair';
+}
 // 검볼 이동 적용: X/Y=평면 이동, Z=BIM 기준 높이(base/top/eave) 이동
 function gumMove(ent, ax, d) {
   if (ax.vz) {
@@ -2765,7 +2770,7 @@ function bind3D(ov, cv3) {
         else pick3D(e, drag.shift);
       } else if (drag.mode === 'box') render3D(); // 박스 흔적 지우기
     }
-    drag = null; cv3.style.cursor = v3.wallMode ? 'crosshair' : 'grab';
+    drag = null; cv3.style.cursor = cursor3D();
     saveV3Layout();
   };
   cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
@@ -2802,7 +2807,7 @@ function bind3D(ov, cv3) {
   }, { passive: true });
   const setWallMode = (on) => {
     v3.wallMode = on; v3.wallP1 = null; v3.wallCur = null;
-    cv3.style.cursor = on ? 'crosshair' : 'grab';
+    cv3.style.cursor = cursor3D();
     if (on) logLine(`  ▷ 3D 벽 그리기: 바닥면(현재 층 레벨)을 클릭해 벽의 시작·끝점을 찍으세요 — 연속 그리기, Esc=종료`, 'info');
     render3D();
   };
@@ -4574,6 +4579,7 @@ function setTool(t) {
   cmdOp = null; previewEnts = null; trackPt = null; otrackAlign = null;
   document.querySelectorAll('.tool').forEach(el => el.classList.toggle('active', el.dataset.tool === t));
   cv.style.cursor = (t === 'select') ? 'default' : (t === 'pan') ? 'grab' : 'crosshair';
+  const b3c = document.getElementById('b3cv'); if (b3c) b3c.style.cursor = typeof cursor3D === 'function' ? cursor3D() : cv.style.cursor; // 3D 캔버스도 동일 규칙
   const hints = {
     select: '선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그(왼→오 윈도우 / 오→왼 크로싱)하세요.',
     pan: '화면 이동(손 도구): 빈 화면을 드래그하면 화면이 이동합니다. 선택하려면 "선택" 도구로 바꾸세요.',
