@@ -2240,7 +2240,7 @@ function open3D() {
     ov.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--glass-chrome);border-bottom:0.5px solid var(--line);position:relative;z-index:2;flex-wrap:wrap;">
         <b style="font-size:13px;">3D 작업 뷰</b>
-        <span style="font-size:11.5px;color:var(--muted);">클릭=선택(입체·밑그림 모두, 속성에서 편집·벽 지정) · 그립 드래그=높이 · 드래그=회전 · 휠=줌 · Shift+드래그=이동 · Del=삭제</span>
+        <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 검볼 축 드래그=이동(축 클릭=수치 입력) · 그립=높이 · 드래그=회전 · 휠=줌 · Shift+드래그=화면 이동 · Del=삭제</span>
         <span style="flex:1"></span>
         <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
         <button class="tbtn" id="b3Top">위에서</button>
@@ -2393,7 +2393,7 @@ function render3D() {
   v3.faces = faces; // 클릭 선택용
   // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (거의 수직 뷰에서는 높이 방향이 화면에 안 보여 숨김)
   v3.grip = null;
-  if (state.selection.size === 1 && Math.cos(v3.pitch) >= 0.15) {
+  if (state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
     const sid = [...state.selection][0];
     const ent = state.entities.find(en => en.id === sid);
     if (ent && ent.bim && (ent.bim.kind === 'wall' || ent.bim.kind === 'column' || ent.bim.kind === 'stair')) {
@@ -2405,8 +2405,8 @@ function render3D() {
         const dzRef = v3.fit / 10;
         const p0 = proj3D(wx, wy, topS.z1);
         const pUp = proj3D(wx, wy, topS.z1 + dzRef);
-        const pxPerMm = (p0[1] - pUp[1]) / dzRef; // 월드 +z 1mm당 화면 위쪽 픽셀
-        if (pxPerMm > 0.005) {
+        const pxPerMm = (p0[1] - pUp[1]) / dzRef; // 월드 +z 1mm당 화면 위쪽 픽셀 (뒤집힌 뷰에선 음수 — 부호 그대로 사용)
+        if (Math.abs(pxPerMm) > 0.005) {
           v3.grip = { x: p0[0], y: p0[1], eid: sid, pxPerMm };
           const dpr = devicePixelRatio || 1;
           c.strokeStyle = '#0A84FF'; c.fillStyle = '#0A84FF'; c.lineWidth = 2 * dpr;
@@ -2420,6 +2420,45 @@ function render3D() {
       }
     }
   }
+  // 검볼 — 선택 1개의 이동 핸들 (X/Y/Z 축 화살표: 드래그=이동, 클릭=수치 입력)
+  v3.gum = null;
+  if (state.selection.size === 1) {
+    const sid = [...state.selection][0];
+    const ent = state.entities.find(en => en.id === sid);
+    if (ent && (ent.bim || ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(ent.type))) {
+      const bb = entityBBox(ent);
+      let gx = (bb.xmin + bb.xmax) / 2, gy = (bb.ymin + bb.ymax) / 2;
+      let gz = (state.levels[ent.lv || 0] || { elev: 0 }).elev;
+      const parts = v3.solids.filter(s => s.eid === sid);
+      if (parts.length) { let zm = 1e18, zM = -1e18; for (const s of parts) { zm = Math.min(zm, s.z0); zM = Math.max(zM, s.zt ? Math.max(...s.zt) : s.z1); } gz = (zm + zM) / 2; }
+      const L = v3.fit / 7;
+      const zOk = ent.bim && ent.bim.kind !== 'opening'; // Z 이동은 BIM 요소만 (base/top/eave)
+      const AXES = zOk
+        ? [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158'], ['z', 0, 0, 1, '#0A84FF']]
+        : [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158']];
+      const g0 = proj3D(gx, gy, gz);
+      const dpr = devicePixelRatio || 1;
+      v3.gum = { eid: sid, axes: [] };
+      for (const [name, vx, vy, vz, color] of AXES) {
+        const g1 = proj3D(gx + vx * L, gy + vy * L, gz + vz * L);
+        const ddx = g1[0] - g0[0], ddy = g1[1] - g0[1], len = Math.hypot(ddx, ddy);
+        if (len < 6) continue; // 화면과 거의 수직인 축은 생략
+        const ux = ddx / len, uy = ddy / len;
+        v3.gum.axes.push({ name, p0: [g0[0], g0[1]], p1: [g1[0], g1[1]], ux, uy, pxPerMm: len / L, vx, vy, vz });
+        c.strokeStyle = color; c.fillStyle = color; c.lineWidth = 2.5 * dpr; c.globalAlpha = 0.95;
+        c.beginPath(); c.moveTo(g0[0], g0[1]); c.lineTo(g1[0], g1[1]); c.stroke();
+        c.beginPath();
+        c.moveTo(g1[0], g1[1]);
+        c.lineTo(g1[0] - ux * 9 * dpr - uy * 4.5 * dpr, g1[1] - uy * 9 * dpr + ux * 4.5 * dpr);
+        c.lineTo(g1[0] - ux * 9 * dpr + uy * 4.5 * dpr, g1[1] - uy * 9 * dpr - ux * 4.5 * dpr);
+        c.closePath(); c.fill();
+        c.font = `${11 * dpr}px -apple-system,system-ui,sans-serif`;
+        c.fillText(name.toUpperCase(), g1[0] + ux * 8 * dpr + 2, g1[1] + uy * 8 * dpr + 2);
+      }
+      c.beginPath(); c.fillStyle = '#ffd60a'; c.globalAlpha = 0.95; c.arc(g0[0], g0[1], 4 * dpr, 0, Math.PI * 2); c.fill();
+      c.globalAlpha = 1;
+    }
+  }
   if (window.__BIM3D_DEBUG) {
     window.__BIM3D_STATS = { solids: v3.solids.length, faces: faces.length };
     window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D };
@@ -2428,6 +2467,15 @@ function render3D() {
 function shadeColor(hex, k) {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * k), g = Math.round(parseInt(hex.slice(3, 5), 16) * k), b = Math.round(parseInt(hex.slice(5, 7), 16) * k);
   return `rgb(${Math.min(255, r)},${Math.min(255, g)},${Math.min(255, b)})`;
+}
+// 검볼 이동 적용: X/Y=평면 이동, Z=BIM 기준 높이(base/top/eave) 이동
+function gumMove(ent, ax, d) {
+  if (ax.vz) {
+    const b = ent.bim; if (!b) return;
+    if (b.kind === 'slab') b.top += d;
+    else if (b.kind === 'roof') b.eave += d;
+    else b.base = (b.base || 0) + d;
+  } else translateEntity(ent, ax.vx * d, ax.vy * d);
 }
 function bind3D(ov, cv3) {
   let drag = null;
@@ -2449,12 +2497,48 @@ function bind3D(ov, cv3) {
         }
       }
     }
+    // 검볼 축 히트 → 이동 드래그(1mm 스냅) / 클릭 = 수치 입력
+    if (v3.gum && e.button === 0 && !e.shiftKey) {
+      const r2 = cv3.getBoundingClientRect();
+      const kx2 = r2.width ? cv3.width / r2.width : 1, ky2 = r2.height ? cv3.height / r2.height : 1;
+      const px2 = (e.clientX - r2.left) * kx2, py2 = (e.clientY - r2.top) * ky2;
+      const tol2 = 10 * (devicePixelRatio || 1);
+      let hitAx = null;
+      for (const a of v3.gum.axes) {
+        const ddx = a.p1[0] - a.p0[0], ddy = a.p1[1] - a.p0[1], L2 = ddx * ddx + ddy * ddy;
+        const t = L2 ? Math.max(0, Math.min(1, ((px2 - a.p0[0]) * ddx + (py2 - a.p0[1]) * ddy) / L2)) : 0;
+        if (Math.hypot(px2 - (a.p0[0] + ddx * t), py2 - (a.p0[1] + ddy * t)) <= tol2) { hitAx = a; break; }
+      }
+      if (hitAx) {
+        const ent = state.entities.find(en => en.id === v3.gum.eid);
+        if (ent) {
+          drag = { mode: 'gum', ent, ax: hitAx, x0: e.clientX, y0: e.clientY, kx: kx2, ky: ky2, applied: 0, pushed: false, moved: 0 };
+          try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
+          cv3.style.cursor = 'move';
+          return;
+        }
+      }
+    }
     drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: 0, shift: e.shiftKey,
       mode: (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit' };
     try { cv3.setPointerCapture(e.pointerId); } catch (_) {} cv3.style.cursor = 'grabbing';
   });
   cv3.addEventListener('pointermove', (e) => {
     if (!drag) return;
+    if (drag.mode === 'gum') {
+      const dxc = (e.clientX - drag.x0) * drag.kx, dyc = (e.clientY - drag.y0) * drag.ky;
+      drag.moved = Math.max(drag.moved, Math.abs(dxc) + Math.abs(dyc));
+      const s = dxc * drag.ax.ux + dyc * drag.ax.uy;   // 축 화면방향으로의 이동량(px)
+      const want = Math.round(s / drag.ax.pxPerMm);     // 월드 mm (1mm 스냅)
+      const delta = want - drag.applied;
+      if (delta) {
+        if (!drag.pushed) { pushUndo(); drag.pushed = true; }
+        gumMove(drag.ent, drag.ax, delta);
+        drag.applied = want;
+        v3.solids = bimSolids(); render3D();
+      }
+      return;
+    }
     if (drag.mode === 'lift') {
       const dyc = (e.clientY - drag.y0) * drag.py2cv;         // 화면 아래(+)로 이동한 캔버스 픽셀
       let nh = drag.h0 - dyc / drag.pxPerMm;                  // 위로 끌면 높이 증가
@@ -2470,8 +2554,8 @@ function bind3D(ov, cv3) {
     drag.moved += Math.abs(dx) + Math.abs(dy);
     drag.x = e.clientX; drag.y = e.clientY;
     if (drag.mode === 'orbit') {
-      v3.yaw -= dx * 0.008;
-      v3.pitch = Math.max(0.05, Math.min(1.55, v3.pitch + dy * 0.006));
+      v3.yaw += dx * 0.008;                 // 드래그 방향 = 모델 회전 방향 (라이노식)
+      v3.pitch += dy * 0.006;               // 각도 제한 없음 — 아래에서도 볼 수 있음
     } else {
       const k = Math.min(v3.cv.width, v3.cv.height) / (v3.fit * 1.4) * v3.zoom;
       v3.panX += dx * (devicePixelRatio || 1) / k;
@@ -2480,7 +2564,18 @@ function bind3D(ov, cv3) {
     render3D();
   });
   const end = (e) => {
-    if (drag && drag.mode === 'lift') {
+    if (drag && drag.mode === 'gum') {
+      if (drag.moved < 4 && e && e.type === 'pointerup') { // 축 클릭 = 수치 입력 (라이노식)
+        const v = parseFloat(prompt(`${drag.ax.name.toUpperCase()}축 이동 거리 (mm, +방향/-방향):`, '0'));
+        if (isFinite(v) && v) {
+          if (!drag.pushed) { pushUndo(); drag.pushed = true; }
+          gumMove(drag.ent, drag.ax, Math.round(v));
+          v3.solids = bimSolids();
+        }
+      }
+      if (drag.pushed) logLine(`  ✔ ${drag.ax.name.toUpperCase()}축 이동 완료`, 'ok');
+      renderProps(); render3D();
+    } else if (drag && drag.mode === 'lift') {
       if (drag.pushed) { renderProps(); logLine(`  ✔ 높이 조절: ${drag.h0} → ${drag.ent.bim.h}`, 'ok'); }
     } else if (drag && e && e.type === 'pointerup' && drag.moved < 4) pick3D(e, drag.shift); // 클릭 = 선택
     drag = null; cv3.style.cursor = 'grab';
