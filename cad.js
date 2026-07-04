@@ -2341,7 +2341,7 @@ function render3D() {
   for (const e of state.entities) {
     if (e.bim) continue; // BIM 요소는 아래에서 솔리드로 그려짐
     const l = getLayer(e.layer); if (l && !l.visible) continue;
-    const z = (state.levels[e.lv || 0] || { elev: 0 }).elev;
+    const z = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0); // zo = 검볼 Z로 띄운 3D 표시 높이
     let path = null, closed = false;
     if (e.type === 'LINE') {
       path = [proj3D(e.x1, e.y1, z), proj3D(e.x2, e.y2, z)];
@@ -2442,14 +2442,12 @@ function render3D() {
     if (ent && (ent.bim || ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(ent.type))) {
       const bb = entityBBox(ent);
       let gx = (bb.xmin + bb.xmax) / 2, gy = (bb.ymin + bb.ymax) / 2;
-      let gz = (state.levels[ent.lv || 0] || { elev: 0 }).elev;
+      let gz = (state.levels[ent.lv || 0] || { elev: 0 }).elev + (ent.zo || 0);
       const parts = v3.solids.filter(s => s.eid === sid);
       if (parts.length) { let zm = 1e18, zM = -1e18; for (const s of parts) { zm = Math.min(zm, s.z0); zM = Math.max(zM, s.zt ? Math.max(...s.zt) : s.z1); } gz = (zm + zM) / 2; }
       const L = v3.fit / 7;
-      const zOk = ent.bim && ent.bim.kind !== 'opening'; // Z 이동은 BIM 요소만 (base/top/eave)
-      const AXES = zOk
-        ? [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158'], ['z', 0, 0, 1, '#0A84FF']]
-        : [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158']];
+      // Z축: 모든 객체 — 일반 도형=3D 표시 높이(zo), 문·창=씰, 벽·기둥·계단=base, 슬래브=top, 지붕=처마
+      const AXES = [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158'], ['z', 0, 0, 1, '#0A84FF']];
       const g0 = proj3D(gx, gy, gz);
       const dpr = devicePixelRatio || 1;
       v3.gum = { eid: sid, axes: [] };
@@ -2498,8 +2496,10 @@ function shadeColor(hex, k) {
 // 검볼 이동 적용: X/Y=평면 이동, Z=BIM 기준 높이(base/top/eave) 이동
 function gumMove(ent, ax, d) {
   if (ax.vz) {
-    const b = ent.bim; if (!b) return;
-    if (b.kind === 'slab') b.top += d;
+    const b = ent.bim;
+    if (!b) { ent.zo = (ent.zo || 0) + d; return; } // 일반 도형: 3D 표시 높이(층 레벨 + 오프셋)
+    if (b.kind === 'opening') b.sill = (b.sill || 0) + d; // 문·창: 씰 높이
+    else if (b.kind === 'slab') b.top += d;
     else if (b.kind === 'roof') b.eave += d;
     else b.base = (b.base || 0) + d;
   } else translateEntity(ent, ax.vx * d, ax.vy * d);
