@@ -2240,7 +2240,7 @@ function open3D() {
     ov.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--glass-chrome);border-bottom:0.5px solid var(--line);position:relative;z-index:2;flex-wrap:wrap;">
         <b style="font-size:13px;">3D 작업 뷰</b>
-        <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 검볼 축 드래그=이동(축 클릭=수치 입력) · 그립=높이 · 드래그=회전 · 휠=줌 · Shift+드래그=화면 이동 · Del=삭제</span>
+        <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 좌드래그=박스 선택(→포함/←걸침) · 우드래그=회전 · Shift/휠버튼 드래그=화면 이동 · 휠=줌 · 검볼=이동 · 그립=높이 · Del=삭제</span>
         <span style="flex:1"></span>
         <button class="tbtn" id="b3Wall" title="3D에서 직접 벽 그리기 — 바닥면 클릭 2점, 연속 그리기, Esc 종료">벽 그리기</button>
         <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
@@ -2549,9 +2549,27 @@ function bind3D(ov, cv3) {
         }
       }
     }
-    drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: 0, shift: e.shiftKey,
-      mode: (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit' };
-    try { cv3.setPointerCapture(e.pointerId); } catch (_) {} cv3.style.cursor = 'grabbing';
+    // 벽 그리기 모드: 좌클릭은 점 찍기 전용 (박스 선택 없음)
+    if (v3.wallMode && e.button === 0 && !e.shiftKey) {
+      drag = { mode: 'wallpt', x: e.clientX, y: e.clientY, moved: 0 };
+      try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
+      return;
+    }
+    // 평면과 동일한 규약: 좌드래그=박스 선택 · 우드래그=회전 · Shift/휠버튼=화면 이동 · 터치=회전
+    const isTouch = e.pointerType === 'touch';
+    const mode = (e.button === 1 || (e.shiftKey && e.button === 0)) ? 'pan'
+      : (e.button === 2) ? 'orbit'
+      : isTouch ? 'orbit' : 'box';
+    drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: 0, shift: e.shiftKey, mode };
+    if (mode === 'box') {
+      const rb = cv3.getBoundingClientRect();
+      const kx = rb.width ? cv3.width / rb.width : 1, ky = rb.height ? cv3.height / rb.height : 1;
+      drag.kx = kx; drag.ky = ky;
+      drag.bx0 = (e.clientX - rb.left) * kx; drag.by0 = (e.clientY - rb.top) * ky;
+      drag.bx1 = drag.bx0; drag.by1 = drag.by0;
+    }
+    try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
+    cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
     if (!drag && v3.wallMode && v3.wallP1) { // 벽 미리보기(러버밴드)
@@ -2591,6 +2609,22 @@ function bind3D(ov, cv3) {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     drag.moved += Math.abs(dx) + Math.abs(dy);
     drag.x = e.clientX; drag.y = e.clientY;
+    if (drag.mode === 'wallpt') return;
+    if (drag.mode === 'box') { // 선택 박스 러버밴드
+      drag.bx1 += dx * drag.kx; drag.by1 += dy * drag.ky;
+      render3D();
+      const c = v3.ctx, crossing = drag.bx1 < drag.bx0;
+      c.save();
+      c.strokeStyle = crossing ? '#30d158' : '#0A84FF';
+      c.fillStyle = crossing ? 'rgba(48,209,88,.08)' : 'rgba(10,132,255,.08)';
+      c.setLineDash(crossing ? [5, 4] : []);
+      c.lineWidth = 1.5;
+      const rx = Math.min(drag.bx0, drag.bx1), ry = Math.min(drag.by0, drag.by1);
+      c.fillRect(rx, ry, Math.abs(drag.bx1 - drag.bx0), Math.abs(drag.by1 - drag.by0));
+      c.strokeRect(rx, ry, Math.abs(drag.bx1 - drag.bx0), Math.abs(drag.by1 - drag.by0));
+      c.restore();
+      return;
+    }
     if (drag.mode === 'orbit') {
       v3.yaw += dx * 0.008;                 // 드래그 방향 = 모델 회전 방향 (라이노식)
       v3.pitch += dy * 0.006;               // 각도 제한 없음 — 아래에서도 볼 수 있음
@@ -2615,10 +2649,13 @@ function bind3D(ov, cv3) {
       renderProps(); render3D();
     } else if (drag && drag.mode === 'lift') {
       if (drag.pushed) { renderProps(); logLine(`  ✔ 높이 조절: ${drag.h0} → ${drag.ent.bim.h}`, 'ok'); }
-    } else if (drag && e && e.type === 'pointerup' && drag.moved < 4) {
-      if (v3.wallMode) wall3DClick(e); else pick3D(e, drag.shift); // 클릭 = 벽 점 찍기 / 선택
+    } else if (drag && e && e.type === 'pointerup') {
+      if (drag.mode === 'box' && drag.moved >= 4) applyBox3D(drag);
+      else if (drag.moved < 4 && (e.button === 0 || e.pointerType === 'touch')) {
+        if (v3.wallMode) wall3DClick(e); else pick3D(e, drag.shift); // 클릭 = 벽 점 찍기 / 선택
+      } else if (drag.mode === 'box') render3D(); // 박스 흔적 지우기
     }
-    drag = null; cv3.style.cursor = 'grab';
+    drag = null; cv3.style.cursor = v3.wallMode ? 'crosshair' : 'grab';
   };
   cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
   cv3.addEventListener('wheel', (e) => {
@@ -2692,6 +2729,27 @@ function wall3DClick(e) {
   v3.solids = bimSolids();
   logLine(`  ✔ 벽 생성 (${ln.x1},${ln.y1}) → (${ln.x2},${ln.y2}) · 길이 ${Math.round(Math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1))} — 평면에도 동시 반영`, 'ok');
   render3D();
+}
+// 3D 박스 선택 — 좌→우: 완전 포함(윈도우), 우→좌: 걸침(크로싱, 투영 bbox 겹침)
+function applyBox3D(d) {
+  const x0 = Math.min(d.bx0, d.bx1), x1 = Math.max(d.bx0, d.bx1);
+  const y0 = Math.min(d.by0, d.by1), y1 = Math.max(d.by0, d.by1);
+  if (x1 - x0 < 2 && y1 - y0 < 2) { render3D(); return; }
+  const crossing = d.bx1 < d.bx0;
+  const pts = new Map();
+  const add = (eid, p) => { let a = pts.get(eid); if (!a) { a = []; pts.set(eid, a); } a.push(p); };
+  for (const f of (v3.faces || [])) if (f.eid != null) for (const p of f.pts) add(f.eid, p);
+  for (const u of (v3.under || [])) for (const p of u.path) add(u.eid, p);
+  state.selection.clear();
+  for (const [eid, arr] of pts) {
+    if (crossing) {
+      let xm = 1e18, xM = -1e18, ym = 1e18, yM = -1e18;
+      for (const p of arr) { xm = Math.min(xm, p[0]); xM = Math.max(xM, p[0]); ym = Math.min(ym, p[1]); yM = Math.max(yM, p[1]); }
+      if (xM >= x0 && xm <= x1 && yM >= y0 && ym <= y1) state.selection.add(eid);
+    } else if (arr.every(p => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)) state.selection.add(eid);
+  }
+  renderProps(); render3D();
+  logLine(`  ▷ 3D 박스 선택: ${state.selection.size}개 (${crossing ? '걸침' : '포함'})`, 'info');
 }
 // 3D 클릭 선택: 가장 앞(depth 최소) 면의 원본 엔티티
 function pick3D(e, additive) {
