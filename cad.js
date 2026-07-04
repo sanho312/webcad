@@ -2270,6 +2270,14 @@ function open3D() {
   v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
   v3.zoom = 1; v3.panX = 0; v3.panY = 0;
   for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
+  try { // 저장된 뷰 레이아웃 복원 (분할 여부·활성 뷰·뷰 방향)
+    const ly = JSON.parse(localStorage.getItem('webcad_v3_layout') || 'null');
+    if (ly && Array.isArray(ly.views) && ly.views.length === 4) {
+      ly.views.forEach((w, i) => { if (isFinite(w.yaw)) { v3.views[i].yaw = w.yaw; v3.views[i].pitch = w.pitch; } });
+      v3.quad = !!ly.quad;
+      v3.act = (ly.act >= 0 && ly.act < 4) ? ly.act : 1;
+    }
+  } catch (_) {}
   loadVp(v3.act);
   if (!v3.fit || !isFinite(v3.fit)) v3.fit = 10000;
   size3D(); render3D();
@@ -2322,11 +2330,12 @@ function unproj3D(px, py, ze) {
   const vp = v3.vp || { x: 0, y: 0, w: v3.cv.width, h: v3.cv.height };
   const k = Math.min(vp.w, vp.h) / (v3.fit * 1.4) * v3.zoom;
   const sp = Math.sin(v3.pitch), cp = Math.cos(v3.pitch);
-  if (Math.abs(sp) < 0.2) return null; // 거의 수평 시점 — 바닥면 클릭 불가
   const sx = (px - vp.x - vp.w / 2) / k - v3.panX;
   const sy = (vp.y + vp.h / 2 - py) / k - v3.panY;
   const dz = ze - v3.cz;
-  const x1 = sx, y1 = (sy - dz * cp) / sp;
+  // 거의 수평 시점(정면·우측면): 바닥면과 시선이 평행 → 모델 중심을 지나는 수직면에 투영
+  // (화면 가로 = 해당 방향의 평면 좌표, 깊이는 모델 중심 고정 — 입면 보면서 위치 잡기용)
+  const x1 = sx, y1 = Math.abs(sp) < 0.2 ? 0 : (sy - dz * cp) / sp;
   const cs = Math.cos(v3.yaw), sn = Math.sin(v3.yaw);
   return [x1 * cs + y1 * sn + v3.cx, -x1 * sn + y1 * cs + v3.cy];
 }
@@ -2339,6 +2348,15 @@ function vpRect(i) {
           { x: 0, y: h2, w: w2, h: H - h2 }, { x: w2, y: h2, w: W - w2, h: H - h2 }][i];
 }
 function loadVp(i) { const w = v3.views[i]; v3.yaw = w.yaw; v3.pitch = w.pitch; v3.zoom = w.zoom; v3.panX = w.panX; v3.panY = w.panY; }
+// 뷰 레이아웃(분할 여부·활성 뷰·각 뷰 방향) 저장/복원 — 줌·팬은 열 때마다 모델에 맞춤
+function saveV3Layout() {
+  try {
+    localStorage.setItem('webcad_v3_layout', JSON.stringify({
+      quad: v3.quad, act: v3.act,
+      views: v3.views.map(w => ({ yaw: w.yaw, pitch: w.pitch })),
+    }));
+  } catch (_) {}
+}
 function saveVp() { const w = v3.views[v3.act]; w.yaw = v3.yaw; w.pitch = v3.pitch; w.zoom = v3.zoom; w.panX = v3.panX; w.panY = v3.panY; }
 function vpAt(px, py) {
   if (!v3.quad) return v3.act;
@@ -2712,6 +2730,7 @@ function bind3D(ov, cv3) {
       } else if (drag.mode === 'box') render3D(); // 박스 흔적 지우기
     }
     drag = null; cv3.style.cursor = v3.wallMode ? 'crosshair' : 'grab';
+    saveV3Layout();
   };
   cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
   cv3.addEventListener('wheel', (e) => {
@@ -2733,7 +2752,7 @@ function bind3D(ov, cv3) {
     const pyv = (e.clientY - rv.top) * (rv.height ? cv3.height / rv.height : 1);
     if (v3.quad) { v3.act = vpAt(pxv, pyv); loadVp(v3.act); v3.quad = false; }
     else v3.quad = true;
-    render3D();
+    render3D(); saveV3Layout();
   });
   cv3.addEventListener('contextmenu', (e) => e.preventDefault());
   // 터치: 핀치 줌
@@ -2760,7 +2779,7 @@ function bind3D(ov, cv3) {
     ov.querySelector('#b3Roof').textContent = '지붕:' + (v3.roof === 'ghost' ? '투명' : v3.roof === 'hide' ? '숨김' : '보임');
     render3D();
   });
-  ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); });
+  ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); saveV3Layout(); });
   ov.querySelector('#b3Close').addEventListener('click', close3D);
   ov.querySelector('#b3Iso').addEventListener('click', () => { v3.yaw = -0.6; v3.pitch = 0.85; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
   ov.querySelector('#b3Top').addEventListener('click', () => { v3.yaw = 0; v3.pitch = 1.55; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
@@ -2786,14 +2805,32 @@ function close3D() {
   if (d) d.addEventListener('click', () => open3D());
   if (p) p.addEventListener('click', close3D);
 })();
+// 3D 스냅: 클릭 지점 근처(화면 12px)의 끝점·중간점으로 흡착 (OSNAP 토글 존중)
+function snap3D(px, py, w) {
+  if (!osnapEnabled) return w;
+  let best = null, bestD = 12 * (devicePixelRatio || 1);
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    const z = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
+    let cands = [];
+    try { cands = entityEndpoints(e).concat(entityMidpoints(e)); } catch (_) { continue; }
+    for (const p of cands) {
+      if (!p || !isFinite(p.x)) continue;
+      const s = proj3D(p.x, p.y, z);
+      const d = Math.hypot(s[0] - px, s[1] - py);
+      if (d < bestD) { bestD = d; best = { x: p.x, y: p.y }; }
+    }
+  }
+  return best || w;
+}
 // 평면 도구를 3D에서 사용: 클릭을 현재 층 바닥면으로 언프로젝션해 기존 도구 파이프라인(handleClick)에 전달
 function tool3DClick(e) {
   const r = v3.cv.getBoundingClientRect();
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   const u = unproj3D(px, py, lvElev());
-  if (!u) { logLine('  이 뷰는 바닥면과 거의 평행해 클릭 작도가 어렵습니다 — 평면/아이소 뷰를 쓰거나 명령창에 좌표를 입력하세요.', 'warn'); return; }
-  const w = { x: Math.round(u[0]), y: Math.round(u[1]) };
+  if (!u) return;
+  const w = snap3D(px, py, { x: Math.round(u[0]), y: Math.round(u[1]) });
   handleClick(w, w, e);
   v3.solids = bimSolids(); render3D();
 }
@@ -2803,8 +2840,9 @@ function wall3DClick(e) {
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   const w = unproj3D(px, py, lvElev());
-  if (!w) { logLine('  시점이 너무 수평이라 바닥면을 클릭할 수 없습니다 — 화면을 조금 기울여 주세요.', 'warn'); return; }
-  const pt = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
+  if (!w) return;
+  const sn = snap3D(px, py, null);
+  const pt = sn ? [sn.x, sn.y] : [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
   if (!v3.wallP1) { v3.wallP1 = pt; v3.wallCur = pt; render3D(); return; }
   if (Math.hypot(pt[0] - v3.wallP1[0], pt[1] - v3.wallP1[1]) < 10) return; // 같은 점
   pushUndo();
