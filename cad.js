@@ -1570,6 +1570,8 @@ function handleClick(w, rawW, ev) {
     case 'breakpt': clickBreakpt(w, rawW); break;
     case 'door': clickOpening(w, rawW, 'door'); break;
     case 'window': clickOpening(w, rawW, 'window'); break;
+    case 'section': clickSection(w, false); break;
+    case 'elevation': clickSection(w, true); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -2329,6 +2331,108 @@ function bind3D(ov, cv3) {
 function close3D() {
   const ov = document.getElementById('bim3d');
   if (ov) ov.style.display = 'none';
+}
+
+// ============================================================
+//  BIM 3·4단계 — 단면(section)/입면(elevation) 자동 추출
+//  절단선(수직 평면) ∩ 기둥체 = 사각형이라는 성질을 이용해
+//  새 문서 탭에 2D 단면/입면 도면을 생성한다.
+// ============================================================
+// 무한선(p1, 방향 u) ∩ 다각형 → 선 위 파라미터 s의 내부 구간들
+function lineClipPoly(p1, u, poly) {
+  const cross = [];
+  const n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const a = poly[i], b = poly[(i + 1) % n];
+    const rx = b[0] - a[0], ry = b[1] - a[1];
+    // p1 + s*u = a + t*(b-a) 연립
+    const det2 = u.x * (-ry) + rx * u.y;
+    if (Math.abs(det2) < 1e-12) continue;
+    const s = ((a[0] - p1.x) * (-ry) + rx * (a[1] - p1.y)) / det2;
+    const t2 = (u.x * (a[1] - p1.y) - u.y * (a[0] - p1.x)) / det2;
+    if (t2 >= 0 && t2 < 1) cross.push(s);
+  }
+  cross.sort((x, y) => x - y);
+  const iv = [];
+  for (let i = 0; i + 1 < cross.length; i += 2) iv.push([cross[i], cross[i + 1]]);
+  return iv;
+}
+let secCount = 0, elevCount = 0;
+function clickSection(w, isElev) {
+  const name = isElev ? 'elevation' : 'section';
+  if (!cmdOp || cmdOp.name !== name) cmdOp = { name, step: 'p1' };
+  if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt((isElev ? '입면' : '단면') + ': 선의 끝 점을 클릭하세요.'); return; }
+  if (cmdOp.step === 'p2') {
+    if (Math.hypot(w.x - cmdOp.p1.x, w.y - cmdOp.p1.y) < 1e-6) return;
+    cmdOp.p2 = w; cmdOp.step = 'dir';
+    setPrompt((isElev ? '입면' : '단면') + ': 바라볼 방향(선의 어느 쪽인지)을 클릭하세요.'); return;
+  }
+  // dir 단계
+  const p1 = cmdOp.p1, p2 = cmdOp.p2;
+  const L = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  const u = { x: (p2.x - p1.x) / L, y: (p2.y - p1.y) / L };
+  let nrm = { x: -u.y, y: u.x };
+  const side = (w.x - p1.x) * nrm.x + (w.y - p1.y) * nrm.y;
+  if (side < 0) nrm = { x: u.y, y: -u.x };
+  const depth = bimAskNum('투영 깊이 (mm — 이 거리 안의 요소를 뒤 배경으로 표시):', 20000);
+  if (depth == null) { cmdOp = { name, step: 'p1' }; return; }
+  genSectionView(p1, u, nrm, L, depth, isElev);
+  cmdOp = { name, step: 'p1' }; previewEnts = null;
+  setPrompt((isElev ? '입면' : '단면') + ': 첫 점을 클릭하세요. (연속, Esc 종료)');
+}
+function genSectionView(p1, u, nrm, lineLen, depth, isElev) {
+  const solids = bimSolids();
+  if (!solids.length) { logLine('  BIM 요소가 없습니다 — 먼저 wall/slab/column을 지정하세요.', 'warn'); return; }
+  const label = isElev ? `입면-${++elevCount}` : `단면-${++secCount}`;
+  const cuts = [], projs = [];
+  let smin = 1e18, smax = -1e18, zmin = 0, zmax = -1e18;
+  for (const s of solids) {
+    const dvals = s.poly.map(v => (v[0] - p1.x) * nrm.x + (v[1] - p1.y) * nrm.y);
+    const svals = s.poly.map(v => (v[0] - p1.x) * u.x + (v[1] - p1.y) * u.y);
+    const dmin = Math.min(...dvals), dmax = Math.max(...dvals);
+    zmin = Math.min(zmin, s.z0); zmax = Math.max(zmax, s.z1);
+    if (!isElev && dmin < -1e-6 && dmax > 1e-6) {
+      // 절단됨: 선과 풋프린트의 교차 구간 → 사각형
+      for (const [s0, s1] of lineClipPoly(p1, u, s.poly)) {
+        cuts.push({ s0, s1, z0: s.z0, z1: s.z1, glass: s.glass });
+        smin = Math.min(smin, s0); smax = Math.max(smax, s1);
+      }
+    } else if (dmin > 1e-6 && dmin <= depth) {
+      // 앞쪽(바라보는 방향)에 있음 → 투영
+      const ps0 = Math.min(...svals), ps1 = Math.max(...svals);
+      projs.push({ s0: ps0, s1: ps1, z0: s.z0, z1: s.z1, glass: s.glass, d: dmin });
+      smin = Math.min(smin, ps0); smax = Math.max(smax, ps1);
+    }
+  }
+  if (!cuts.length && !projs.length) {
+    logLine('  이 위치에서는 절단/투영되는 BIM 요소가 없습니다. 선 위치와 방향을 확인하세요.', 'warn'); return;
+  }
+  // ── 새 탭에 도면 생성 ──
+  newDocTab();
+  ensureLayer('투영', '#8a94a8');
+  ensureLayer('절단', '#e8e2d6');
+  ensureLayer('유리', '#7ec8ff');
+  // 지반선
+  addEntity({ type: 'LINE', layer: '투영', linetype: 'center', x1: smin - 500, y1: 0, x2: smax + 500, y2: 0 });
+  // 투영(먼 것부터 그려 순서 유지)
+  projs.sort((a, b) => b.d - a.d);
+  for (const p of projs) {
+    addEntity({ type: 'LWPOLYLINE', layer: p.glass ? '유리' : '투영', closed: true,
+      points: [[p.s0, p.z0], [p.s1, p.z0], [p.s1, p.z1], [p.s0, p.z1]] });
+  }
+  // 절단(외곽 + 해치)
+  for (const c of cuts) {
+    const pts = [[c.s0, c.z0], [c.s1, c.z0], [c.s1, c.z1], [c.s0, c.z1]];
+    addEntity({ type: 'LWPOLYLINE', layer: '절단', closed: true, points: pts, lineweight: 50 });
+    if (!c.glass) addEntity({ type: 'HATCH', layer: '절단', pattern: 'ansi31',
+      spacing: Math.max(60, (c.s1 - c.s0) / 3), boundary: { kind: 'poly', points: pts } });
+  }
+  // 라벨
+  addEntity({ type: 'TEXT', layer: '투영', x: smin, y: zmax + 400, height: 300, text: label + (isElev ? '' : ' (절단 해치 = 잘린 부분)'), rotation: 0 });
+  setFileName(label, null);
+  renderDocTabs(); renderLayers(); updateStat(); zoomFit();
+  logLine(`  ✔ ${label} 생성 — 절단 ${cuts.length}개 · 투영 ${projs.length}개 (새 탭, 치수·수정·DXF 저장 가능)`, 'ok');
+  if (window.WEBCAD_API && WEBCAD_API.onUsage) WEBCAD_API.onUsage(isElev ? 'elevation' : 'section');
 }
 
 // ====== 도형 길이/면적 헬퍼 ======
@@ -3341,6 +3445,8 @@ const CMD_ALIASES = {
   wall: 'wall', slab: 'slab', column: 'column', col: 'column',
   door: 'door', window: 'window', win: 'window', bimclear: 'bimclear',
   '3d': 'view3d', view3d: 'view3d',
+  section: 'section', sec: 'section',
+  elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
 
 function runCommandInput(raw) {
@@ -3443,6 +3549,8 @@ function feedDrawInput(v) {
     case 'align': return feedPointCmd(p, (w) => clickAlign(w, w));
     case 'xline': return feedPointCmd(p, clickXline);
     case 'breakpt': return feedPointCmd(p, (w) => clickBreakpt(w, w));
+    case 'section': return feedPointCmd(p, (w) => clickSection(w, false));
+    case 'elevation': return feedPointCmd(p, (w) => clickSection(w, true));
     case 'text': return feedPointCmd(p, (w) => { const t = prompt('문자 입력:', ''); if (t) { pushUndo(); addEntity({ type: 'TEXT', x: w.x, y: w.y, height: state.textHeight, text: t, rotation: 0 }); updateStat(); } });
     case 'dist': return feedPointCmd(p, clickDist);
     case 'area': return feedPointCmd(p, (w) => clickArea(w, w));
@@ -3722,6 +3830,8 @@ function setTool(t) {
     xline: '구성선: 지나는 점 → 방향 점을 클릭하면 아주 긴 보조선이 그려집니다.',
     breakpt: '한 점 끊기: 선/원/호 클릭 → 끊을 지점을 클릭하면 그 점에서 둘로 나뉩니다.',
     door: '문: 벽(wall 지정된 선)에서 문 중심 위치를 클릭하세요. (이후 폭 입력)',
+    section: '단면: 절단선의 첫 점을 클릭하세요. (선 → 바라볼 방향 순)',
+    elevation: '입면: 기준선의 첫 점을 클릭하세요. (건물 바깥에 긋고 → 건물 쪽 클릭)',
     window: '창: 벽(wall 지정된 선)에서 창 중심 위치를 클릭하세요. (이후 폭 입력)',
   };
   setPrompt(hints[t] || '');
@@ -4357,6 +4467,8 @@ const CMD_HELP = [
     ['window', '창 배치', '벽 선을 클릭한 위치에 창 개구부 생성 (폭·씰 기본값)'],
     ['bimclear', 'BIM 해제', '선택 도형의 BIM 속성 제거'],
     ['3d', '3D 뷰', '벽·슬래브·기둥·개구부를 입체로 표시 — 드래그 회전, 휠 줌, Shift+드래그 이동'],
+    ['section', '단면 추출', '절단선 두 점 → 방향 클릭 → 새 탭에 단면도 자동 생성(절단 해치+후방 투영)'],
+    ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
   ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
@@ -4428,6 +4540,7 @@ const COMMAND_LIST = [
   { name: 'column', ko: 'BIM 기둥' }, { name: 'door', ko: 'BIM 문' },
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
+  { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
