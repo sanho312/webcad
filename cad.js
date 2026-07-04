@@ -4798,6 +4798,30 @@ window.WEBCAD_API = {
   getBlocks: () => state.blocks,
   addBlock: (name, def) => { state.blocks[name] = def; refreshBlockList(); logLine(`  ✔ 라이브러리에서 블록 "${name}" 가져옴 — 삽입(insert)으로 배치`, 'ok'); },
   log: (msg, kind) => logLine(msg, kind || 'info'),
+  // ── 실시간 공동편집용 ──
+  // 원격 변경 적용 (undo 스택에 넣지 않음 — 내 실행취소가 상대 작업을 되돌리지 않게)
+  applyRemote: (ups, dels, blocks, layers) => {
+    const byId = new Map(state.entities.map(e => [e.id, e]));
+    for (const e of (ups || [])) {
+      const ex = byId.get(e.id);
+      if (ex) {
+        for (const k of Object.keys(ex)) delete ex[k];
+        Object.assign(ex, e);
+        if (ex.type === 'HATCH') hatchDirty(ex);
+      } else state.entities.push(e);
+      if (e.id >= state.nextId) state.nextId = e.id + 1 + Math.floor(Math.random() * 50);
+    }
+    if (dels && dels.length) {
+      const s = new Set(dels);
+      state.entities = state.entities.filter(e => !s.has(e.id));
+      for (const id of s) state.selection.delete(id);
+    }
+    if (blocks) { state.blocks = blocks; refreshBlockList(); }
+    if (layers) { state.layers = layers; renderLayers(); }
+    updateStat(); renderProps(); draw();
+  },
+  // 세션 참가 시 id 충돌 회피 (두 사용자가 같은 nextId로 동시에 생성하는 것 방지)
+  jitterNextId: () => { state.nextId += 1000 + Math.floor(Math.random() * 9000); },
   // cloud.js가 설정하는 훅
   onUsage: null, onSettingsChange: null, onDocChange: null,
 };

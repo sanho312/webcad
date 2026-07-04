@@ -100,11 +100,20 @@
         p_id: cloudId, p_name: name, p_data: doc.data, p_thumb: API.thumb(240),
       });
       if (error) throw error;
+      const isNew = !cloudId;
       cloudId = data; lastSavedRev = API.getRev();
       API.setName(name || doc.name);
       if (!silent) API.log(`  ☁ 클라우드에 저장됨: "${name || doc.name}"`, 'ok');
+      if (isNew) joinRealtime(cloudId, true); // 저장 즉시 실시간 세션 시작(공유 상대가 열면 동기화)
       usage('cloud_save');
-    } catch (e) { API.log('  ☁ 저장 실패: ' + koErr(e), 'warn'); }
+    } catch (e) {
+      API.log('  ☁ 저장 실패: ' + koErr(e), 'warn');
+      if (/plan_limit/.test((e && e.message) || '')) {
+        // 무료 한도 도달 → 프로 문의로 유도
+        openFeedback();
+        setTimeout(() => { const t = document.getElementById('fbMsg'); if (t && !t.value) t.value = '[프로 플랜 문의] 도면 한도를 늘리고 싶습니다.'; }, 50);
+      }
+    }
   }
 
   async function openDrawingList() {
@@ -115,7 +124,7 @@
         const body = o.querySelector('.cdBody');
         if (!data.length) { body.innerHTML = '<div class="cdMuted">저장된 도면이 없습니다.<br>파일 메뉴 → "클라우드에 저장"으로 현재 도면을 올려보세요.</div>'; return; }
         body.innerHTML = '<div class="cdGrid">' + data.map(d => `
-          <div class="cdCard" data-id="${d.id}" data-mine="${d.is_mine}" data-name="${esc(d.name)}">
+          <div class="cdCard" data-id="${d.id}" data-mine="${d.is_mine}" data-canedit="${d.can_edit}" data-name="${esc(d.name)}">
             ${d.thumb ? `<img src="${d.thumb}">` : '<div class="noThumb"></div>'}
             <div class="nm">${d.is_mine ? '' : '👥 '}${esc(d.name)}</div>
             <div class="sub">${fmtT(d.updated_at)}${d.is_mine ? '' : ' · ' + esc(d.owner_name || '') + (d.can_edit ? ' · 편집가능' : ' · 읽기전용')}</div>
@@ -134,6 +143,8 @@
               cloudId = id; lastSavedRev = API.getRev();
               closeDlg(); API.log(`  ☁ 도면 열기: "${row.name}"${mine ? '' : ' (공유받음)'}`, 'ok');
               usage('cloud_open');
+              joinRealtime(id, card.dataset.canedit === 'true'); // 실시간 세션 참가
+              if (card.dataset.canedit !== 'true') API.log('  👁 읽기 전용 — 상대의 변경이 실시간으로 보이지만 내 수정은 전송/저장되지 않습니다.', 'info');
             } catch (e) { dErr(koErr(e)); }
           });
           card.querySelector('[data-ren]')?.addEventListener('click', async () => {
@@ -340,13 +351,80 @@
     } catch (e) {}
   }
 
+  // ---------- 실시간 공동편집 (같은 클라우드 도면을 연 사용자끼리 동기화) ----------
+  const clientId = Math.random().toString(36).slice(2, 10);
+  let rtChan = null, rtLast = null, rtRev = -1, rtCanEdit = false;
+  let rtBlocksHash = '', rtLayersHash = '';
+  const hash = (o) => { try { return JSON.stringify(o); } catch (e) { return ''; } };
+  function rtSnapshot() {
+    const m = new Map();
+    for (const e of API.getDoc().data.entities) m.set(e.id, JSON.stringify(e));
+    return m;
+  }
+  function rtChip(text) {
+    let c = document.getElementById('rtChip');
+    if (!text) { if (c) c.style.display = 'none'; return; }
+    if (!c) {
+      c = document.createElement('span'); c.id = 'rtChip'; c.className = 'tbtn';
+      c.style.cssText = 'cursor:default;background:rgba(48,209,88,.16);';
+      document.getElementById('topbar').appendChild(c);
+    }
+    c.style.display = ''; c.textContent = text;
+  }
+  function joinRealtime(id, canEdit) {
+    leaveRealtime();
+    if (!sb.channel) return; // 구버전/스텁 환경 보호
+    rtCanEdit = canEdit;
+    API.jitterNextId(); // id 충돌 회피
+    rtLast = rtSnapshot(); rtRev = API.getRev();
+    rtBlocksHash = hash(API.getBlocks()); rtLayersHash = hash(API.getDoc().data.layers);
+    const uname = (user.user_metadata && user.user_metadata.username) || '사용자';
+    rtChan = sb.channel('drawing:' + id, { config: { broadcast: { self: false }, presence: { key: clientId } } });
+    rtChan.on('broadcast', { event: 'ops' }, ({ payload }) => {
+      if (!payload || payload.c === clientId) return;
+      API.applyRemote(payload.ups, payload.dels, payload.blocks, payload.layers);
+      // 원격 반영분이 다시 방송되지 않도록 기준 스냅샷 갱신
+      rtLast = rtSnapshot(); rtRev = API.getRev();
+      if (payload.blocks) rtBlocksHash = hash(API.getBlocks());
+      if (payload.layers) rtLayersHash = hash(API.getDoc().data.layers);
+    });
+    rtChan.on('presence', { event: 'sync' }, () => {
+      const stt = rtChan.presenceState();
+      const names = Object.values(stt).flat().map(p => p.u).filter(Boolean);
+      rtChip(names.length > 1 ? `🟢 실시간 ${names.length}명: ${names.join(', ')}` : '🟢 실시간 대기 중');
+    });
+    rtChan.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') { try { await rtChan.track({ u: uname }); } catch (e) {} }
+    });
+    usage('realtime_join');
+  }
+  function leaveRealtime() {
+    if (rtChan) { try { sb.removeChannel(rtChan); } catch (e) {} rtChan = null; }
+    rtChip(null);
+  }
+  // 변경 감시 → 엔티티 단위 diff 방송 (편집 권한 있을 때만 송신)
+  setInterval(() => {
+    if (!rtChan || !rtCanEdit || API.getRev() === rtRev) return;
+    rtRev = API.getRev();
+    const cur = rtSnapshot();
+    const ups = [], dels = [];
+    for (const [id, s] of cur) if (rtLast.get(id) !== s) ups.push(JSON.parse(s));
+    for (const id of rtLast.keys()) if (!cur.has(id)) dels.push(id);
+    rtLast = cur;
+    const payload = { c: clientId, ups, dels };
+    const bh = hash(API.getBlocks()); if (bh !== rtBlocksHash) { rtBlocksHash = bh; payload.blocks = API.getBlocks(); }
+    const lh = hash(API.getDoc().data.layers); if (lh !== rtLayersHash) { rtLayersHash = lh; payload.layers = API.getDoc().data.layers; }
+    if (ups.length || dels.length || payload.blocks || payload.layers)
+      try { rtChan.send({ type: 'broadcast', event: 'ops', payload }); } catch (e) {}
+  }, 700);
+
   // ---------- 자동 클라우드 저장 (클라우드 도면이 열려 있고 변경된 경우, 2분마다) ----------
   setInterval(() => {
     if (user && cloudId && API.getRev() !== lastSavedRev) saveToCloud(true);
   }, 120000);
 
   // ---------- 도면 전환 시 클라우드 연결 해제 ----------
-  API.onDocChange = () => { cloudId = null; lastSavedRev = -1; };
+  API.onDocChange = () => { cloudId = null; lastSavedRev = -1; leaveRealtime(); };
 
   // ---------- 메뉴 통합 ----------
   function addMenuItem(menuId, html, fn) {
