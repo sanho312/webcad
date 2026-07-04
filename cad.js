@@ -2242,6 +2242,7 @@ function open3D() {
         <b style="font-size:13px;">3D 작업 뷰</b>
         <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 검볼 축 드래그=이동(축 클릭=수치 입력) · 그립=높이 · 드래그=회전 · 휠=줌 · Shift+드래그=화면 이동 · Del=삭제</span>
         <span style="flex:1"></span>
+        <button class="tbtn" id="b3Wall" title="3D에서 직접 벽 그리기 — 바닥면 클릭 2점, 연속 그리기, Esc 종료">벽 그리기</button>
         <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
         <button class="tbtn" id="b3Top">위에서</button>
         <button class="tbtn" id="b3Iso">아이소</button>
@@ -2306,6 +2307,19 @@ function proj3D(x, y, z) {
   const W = v3.cv.width, H = v3.cv.height;
   const k = Math.min(W, H) / (v3.fit * 1.4) * v3.zoom;
   return [W / 2 + (sx + v3.panX) * k, H / 2 - (sy + v3.panY) * k, depth];
+}
+// 화면 캔버스 px → 월드 (z=ze 평면 위의 점) — proj3D의 역변환
+function unproj3D(px, py, ze) {
+  const W = v3.cv.width, H = v3.cv.height;
+  const k = Math.min(W, H) / (v3.fit * 1.4) * v3.zoom;
+  const sp = Math.sin(v3.pitch), cp = Math.cos(v3.pitch);
+  if (Math.abs(sp) < 0.2) return null; // 거의 수평 시점 — 바닥면 클릭 불가
+  const sx = (px - W / 2) / k - v3.panX;
+  const sy = (H / 2 - py) / k - v3.panY;
+  const dz = ze - v3.cz;
+  const x1 = sx, y1 = (sy - dz * cp) / sp;
+  const cs = Math.cos(v3.yaw), sn = Math.sin(v3.yaw);
+  return [x1 * cs + y1 * sn + v3.cx, -x1 * sn + y1 * cs + v3.cy];
 }
 function render3D() {
   const c = v3.ctx, W = v3.cv.width, H = v3.cv.height;
@@ -2459,9 +2473,22 @@ function render3D() {
       c.globalAlpha = 1;
     }
   }
+  // 3D 벽 그리기 미리보기 (러버밴드 + 시작점 표시)
+  if (v3.wallMode && v3.wallP1) {
+    const ze = lvElev(), dpr = devicePixelRatio || 1;
+    const a = proj3D(v3.wallP1[0], v3.wallP1[1], ze);
+    c.fillStyle = '#ff9f0a'; c.beginPath(); c.arc(a[0], a[1], 4 * dpr, 0, Math.PI * 2); c.fill();
+    if (v3.wallCur && (v3.wallCur[0] !== v3.wallP1[0] || v3.wallCur[1] !== v3.wallP1[1])) {
+      const b = proj3D(v3.wallCur[0], v3.wallCur[1], ze);
+      c.strokeStyle = '#ff9f0a'; c.lineWidth = 2 * dpr; c.setLineDash([6 * dpr, 4 * dpr]);
+      c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); c.setLineDash([]);
+      c.font = `${11 * dpr}px -apple-system,system-ui,sans-serif`; c.fillStyle = '#ff9f0a';
+      c.fillText(`${Math.round(Math.hypot(v3.wallCur[0] - v3.wallP1[0], v3.wallCur[1] - v3.wallP1[1]))}`, (a[0] + b[0]) / 2 + 6, (a[1] + b[1]) / 2 - 6);
+    }
+  }
   if (window.__BIM3D_DEBUG) {
     window.__BIM3D_STATS = { solids: v3.solids.length, faces: faces.length };
-    window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D };
+    window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D, unproj3D, wall3DClick };
   }
 }
 function shadeColor(hex, k) {
@@ -2503,11 +2530,14 @@ function bind3D(ov, cv3) {
       const kx2 = r2.width ? cv3.width / r2.width : 1, ky2 = r2.height ? cv3.height / r2.height : 1;
       const px2 = (e.clientX - r2.left) * kx2, py2 = (e.clientY - r2.top) * ky2;
       const tol2 = 10 * (devicePixelRatio || 1);
-      let hitAx = null;
+      // 원점 부근은 세 축이 겹치므로 "허용치 안 첫 번째"가 아니라 "가장 가까운 축"을 선택
+      // (이전 로직은 Z 화살표 아래쪽을 잡아도 X/Y가 먼저 걸려 수평 이동되는 버그)
+      let hitAx = null, hitD = tol2;
       for (const a of v3.gum.axes) {
         const ddx = a.p1[0] - a.p0[0], ddy = a.p1[1] - a.p0[1], L2 = ddx * ddx + ddy * ddy;
         const t = L2 ? Math.max(0, Math.min(1, ((px2 - a.p0[0]) * ddx + (py2 - a.p0[1]) * ddy) / L2)) : 0;
-        if (Math.hypot(px2 - (a.p0[0] + ddx * t), py2 - (a.p0[1] + ddy * t)) <= tol2) { hitAx = a; break; }
+        const d = Math.hypot(px2 - (a.p0[0] + ddx * t), py2 - (a.p0[1] + ddy * t));
+        if (d <= hitD) { hitD = d; hitAx = a; }
       }
       if (hitAx) {
         const ent = state.entities.find(en => en.id === v3.gum.eid);
@@ -2524,6 +2554,14 @@ function bind3D(ov, cv3) {
     try { cv3.setPointerCapture(e.pointerId); } catch (_) {} cv3.style.cursor = 'grabbing';
   });
   cv3.addEventListener('pointermove', (e) => {
+    if (!drag && v3.wallMode && v3.wallP1) { // 벽 미리보기(러버밴드)
+      const r3 = cv3.getBoundingClientRect();
+      const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
+      const py3 = (e.clientY - r3.top) * (r3.height ? cv3.height / r3.height : 1);
+      const w = unproj3D(px3, py3, lvElev());
+      if (w) { v3.wallCur = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10]; render3D(); }
+      return;
+    }
     if (!drag) return;
     if (drag.mode === 'gum') {
       const dxc = (e.clientX - drag.x0) * drag.kx, dyc = (e.clientY - drag.y0) * drag.ky;
@@ -2577,7 +2615,9 @@ function bind3D(ov, cv3) {
       renderProps(); render3D();
     } else if (drag && drag.mode === 'lift') {
       if (drag.pushed) { renderProps(); logLine(`  ✔ 높이 조절: ${drag.h0} → ${drag.ent.bim.h}`, 'ok'); }
-    } else if (drag && e && e.type === 'pointerup' && drag.moved < 4) pick3D(e, drag.shift); // 클릭 = 선택
+    } else if (drag && e && e.type === 'pointerup' && drag.moved < 4) {
+      if (v3.wallMode) wall3DClick(e); else pick3D(e, drag.shift); // 클릭 = 벽 점 찍기 / 선택
+    }
     drag = null; cv3.style.cursor = 'grab';
   };
   cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
@@ -2596,6 +2636,16 @@ function bind3D(ov, cv3) {
       v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; render3D();
     }
   }, { passive: true });
+  const wallBtn = ov.querySelector('#b3Wall');
+  const setWallMode = (on) => {
+    v3.wallMode = on; v3.wallP1 = null; v3.wallCur = null;
+    wallBtn.style.background = on ? 'var(--accent)' : ''; wallBtn.style.color = on ? '#fff' : '';
+    cv3.style.cursor = on ? 'crosshair' : 'grab';
+    if (on) logLine(`  ▷ 3D 벽 그리기: 바닥면(현재 층 레벨)을 클릭해 벽의 시작·끝점을 찍으세요 — 연속 그리기, Esc=종료 (높이 ${settings.bim.wallH}·두께 ${settings.bim.wallT}는 그린 뒤 속성에서 수정)`, 'info');
+    render3D();
+  };
+  wallBtn.addEventListener('click', () => setWallMode(!v3.wallMode));
+  v3.setWallMode = setWallMode;
   ov.querySelector('#b3Roof').addEventListener('click', () => {
     v3.roof = (!v3.roof || v3.roof === 'show') ? 'ghost' : v3.roof === 'ghost' ? 'hide' : 'show';
     ov.querySelector('#b3Roof').textContent = '지붕:' + (v3.roof === 'ghost' ? '투명' : v3.roof === 'hide' ? '숨김' : '보임');
@@ -2608,13 +2658,15 @@ function bind3D(ov, cv3) {
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
-    if (state.selection.size) { state.selection.clear(); renderProps(); render3D(); } // 1차: 선택 해제
+    if (v3.wallMode) { setWallMode(false); }                                          // 0차: 벽 그리기 종료
+    else if (state.selection.size) { state.selection.clear(); renderProps(); render3D(); } // 1차: 선택 해제
     else close3D();                                                                  // 2차: 평면으로
   }, true);
 }
 function close3D() {
   const ov = document.getElementById('bim3d');
   if (ov) ov.style.display = 'none';
+  if (v3 && v3.wallMode && v3.setWallMode) v3.setWallMode(false);
   stopLive3D(); syncViewSeg(false); draw();
 }
 // 상단 뷰 세그먼트(평면/3D) — 항상 바인딩 (3D를 아직 안 열었어도 동작)
@@ -2623,6 +2675,24 @@ function close3D() {
   if (d) d.addEventListener('click', () => open3D());
   if (p) p.addEventListener('click', close3D);
 })();
+// 3D 벽 그리기: 클릭 → 층 바닥면에 언프로젝션 → 2점째에 벽(LINE+bim) 생성, 연속 체인
+function wall3DClick(e) {
+  const r = v3.cv.getBoundingClientRect();
+  const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
+  const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
+  const w = unproj3D(px, py, lvElev());
+  if (!w) { logLine('  시점이 너무 수평이라 바닥면을 클릭할 수 없습니다 — 화면을 조금 기울여 주세요.', 'warn'); return; }
+  const pt = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
+  if (!v3.wallP1) { v3.wallP1 = pt; v3.wallCur = pt; render3D(); return; }
+  if (Math.hypot(pt[0] - v3.wallP1[0], pt[1] - v3.wallP1[1]) < 10) return; // 같은 점
+  pushUndo();
+  const ln = addEntity({ type: 'LINE', x1: v3.wallP1[0], y1: v3.wallP1[1], x2: pt[0], y2: pt[1] });
+  ln.bim = { kind: 'wall', h: settings.bim.wallH, t: settings.bim.wallT, base: lvElev() };
+  v3.wallP1 = pt; // 연속 그리기: 끝점이 다음 시작점
+  v3.solids = bimSolids();
+  logLine(`  ✔ 벽 생성 (${ln.x1},${ln.y1}) → (${ln.x2},${ln.y2}) · 길이 ${Math.round(Math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1))} — 평면에도 동시 반영`, 'ok');
+  render3D();
+}
 // 3D 클릭 선택: 가장 앞(depth 최소) 면의 원본 엔티티
 function pick3D(e, additive) {
   if (!v3 || !v3.faces) return;
