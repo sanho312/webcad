@@ -140,6 +140,7 @@
               const { data: row, error: e2 } = await sb.from('drawings').select('name,data').eq('id', id).single();
               if (e2) throw e2;
               API.setDoc(row.name, row.data);
+              if (API.zoomFit) API.zoomFit(); // 기기 화면 크기에 맞게 전체보기
               cloudId = id; lastSavedRev = API.getRev();
               closeDlg(); API.log(`  ☁ 도면 열기: "${row.name}"${mine ? '' : ' (공유받음)'}`, 'ok');
               usage('cloud_open');
@@ -417,6 +418,34 @@
     if (ups.length || dels.length || payload.blocks || payload.layers)
       try { rtChan.send({ type: 'broadcast', event: 'ops', payload }); } catch (e) {}
   }, 700);
+
+  // ---------- Ctrl+S: 클라우드 도면이면 클라우드에 저장 ----------
+  window.addEventListener('keydown', (ev) => {
+    if (ev.ctrlKey && ev.key.toLowerCase() === 's' && user && cloudId) {
+      ev.preventDefault(); ev.stopPropagation();
+      saveToCloud(false);
+      API.log('  (DXF 파일로 내보내려면 파일 메뉴 → 저장(DXF))', 'info');
+    }
+  }, true);
+
+  // ---------- 창 숨김/전환 시 미저장분 즉시 저장 ----------
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && user && cloudId && API.getRev() !== lastSavedRev) saveToCloud(true);
+  });
+
+  // ---------- 미저장 표시(●) — 파일명 옆 ----------
+  setInterval(() => {
+    const fn = document.getElementById('fileName');
+    if (!fn) return;
+    let dot = document.getElementById('dirtyDot');
+    const dirty = user && cloudId && API.getRev() !== lastSavedRev;
+    if (dirty && !dot) {
+      dot = document.createElement('span'); dot.id = 'dirtyDot';
+      dot.textContent = ' ●'; dot.title = '클라우드에 저장되지 않은 변경 (Ctrl+S)';
+      dot.style.cssText = 'color:#ffd426;font-size:11px;';
+      fn.appendChild(dot);
+    } else if (!dirty && dot) dot.remove();
+  }, 2000);
 
   // ---------- 자동 클라우드 저장 (클라우드 도면이 열려 있고 변경된 경우, 2분마다) ----------
   setInterval(() => {

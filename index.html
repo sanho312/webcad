@@ -311,6 +311,7 @@
         <div class="menuSep"></div>
         <button class="menuItem" id="moShortcut">⌨ 명령 단축키…</button>
         <button class="menuItem" id="moOsnap">🧲 객체 스냅 설정…</button>
+        <button class="menuItem" id="moDim">📐 치수 설정…</button>
         <button class="menuItem" id="moUnits">📏 단위 설정…</button>
       </div>
     </div>
@@ -495,6 +496,15 @@
       <div id="optionsDlg">
         <div class="dlgBox" style="width:380px;max-height:82%;overflow-y:auto;">
           <h2>옵션</h2>
+          <div class="optSec" id="secDim"><h4>📐 치수</h4>
+            <div class="dlgRow"><label style="flex:0 0 110px;">문자 높이</label>
+              <input type="number" id="optDimTxt" step="any" min="0" style="flex:1"></div>
+            <div class="optHint" style="margin-top:-4px;">0 = 그리기 설정의 문자 높이를 따름</div>
+            <div class="dlgRow"><label style="flex:0 0 110px;">소수 자릿수</label>
+              <select id="optDimDec" style="flex:1"><option value="0">0 (정수)</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></div>
+            <label class="optChk"><input type="checkbox" id="optDimSuffix"> 치수 문자에 단위 표시 (예: 100mm)</label>
+            <div class="optHint">거리·면적 결과의 자릿수에도 적용됩니다. 기존 치수는 유지되고 새 치수부터 반영됩니다.</div>
+          </div>
           <div class="optSec" id="secUnits"><h4>📏 단위</h4>
             <select id="optUnits" style="width:100%">
               <option value="mm">밀리미터 (mm)</option>
@@ -596,10 +606,10 @@
   </div>
 </div>
 
-<script src="cad.js?v=20260704a"></script>
+<script src="cad.js?v=20260704b"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=6"></script>
-<script src="cloud.js?v=3"></script>
+<script src="cloud.js?v=4"></script>
 <script>
 // UI 배치: 하단 명령창 접기(화살표) + 좌우 패널 폭 드래그 조절(오토캐드식) — localStorage에 저장
 (() => {

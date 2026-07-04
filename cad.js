@@ -54,12 +54,13 @@ let settings = {
   units: 'mm',
   osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
+  dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
-    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.polar = s.polar || 0; settings.aliases = s.aliases || {}; }
+    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.polar = s.polar || 0; settings.aliases = s.aliases || {}; Object.assign(settings.dim, s.dim || {}); }
   } catch (e) {}
 })();
 function saveSettings() {
@@ -853,7 +854,11 @@ function polyPerimeter(ptsArr, closed) {
   for (let i = 0; i < (closed ? n : n - 1); i++) { const a = ptsArr[i], b = ptsArr[(i + 1) % n]; s += Math.hypot(b[0] - a[0], b[1] - a[1]); }
   return s;
 }
-function fmtNum(n) { return (+n.toFixed(2)).toString(); }
+function fmtNum(n) { const d = (settings.dim && settings.dim.dec != null) ? settings.dim.dec : 2; return (+n.toFixed(d)).toString(); }
+// 치수 문자용: 값 + (옵션) 단위 접미
+function dimVal(n) { return fmtNum(n) + ((settings.dim && settings.dim.suffix) ? settings.units : ''); }
+// 치수 문자 높이: 치수 설정이 있으면 그 값, 없으면 그리기 설정의 문자 높이
+function dimTH() { return (settings.dim && settings.dim.txt > 0) ? settings.dim.txt : state.textHeight; }
 
 function T_translate(dx, dy) { return { type: 'translate', pt: (x, y) => [x + dx, y + dy] }; }
 function T_rotate(cx, cy, deg) {
@@ -1544,6 +1549,8 @@ function handleClick(w, rawW, ev) {
     case 'divide': clickDivide(w, rawW); break;
     case 'measure': clickMeasure(w, rawW); break;
     case 'leader': clickLeader(w); break;
+    case 'centerline': clickCenterline(w, rawW); break;
+    case 'revcloud': clickRevcloud(w); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -1905,7 +1912,7 @@ function computeDimension(p1, p2, pos) {
   let nx = -uy, ny = ux;
   let h = (pos.x - p1.x) * nx + (pos.y - p1.y) * ny;
   if (h < 0) { nx = -nx; ny = -ny; h = -h; }
-  const th = state.textHeight, ext = th * 0.4, gap = th * 0.25, s = Math.min(th * 0.6, L / 4);
+  const th = dimTH(), ext = th * 0.4, gap = th * 0.25, s = Math.min(th * 0.6, L / 4);
   const ents = [];
   const ln = (x1, y1, x2, y2) => ents.push({ type: 'LINE', layer: '치수', x1, y1, x2, y2 });
   const d1 = { x: p1.x + nx * h, y: p1.y + ny * h }, d2 = { x: p2.x + nx * h, y: p2.y + ny * h };
@@ -1918,7 +1925,7 @@ function computeDimension(p1, p2, pos) {
   ln(d2.x, d2.y, d2.x - ux * s + nx * s * 0.35, d2.y - uy * s + ny * s * 0.35);
   ln(d2.x, d2.y, d2.x - ux * s - nx * s * 0.35, d2.y - uy * s - ny * s * 0.35);
   // 문자 (읽기 방향 유지: 90°~270°는 뒤집기)
-  const txt = fmtNum(L);
+  const txt = dimVal(L);
   let rot = Math.atan2(uy, ux) * 180 / Math.PI;
   let tux = ux, tuy = uy;
   const rn = ((rot % 360) + 360) % 360;
@@ -1948,15 +1955,66 @@ function clickDimCircle(w, rawW, dia) {
   const ln = (x1, y1, x2, y2) => addEntity({ type: 'LINE', layer: '치수', x1, y1, x2, y2 });
   ln(sx, sy, w.x, w.y); // 지시선
   // 원 가장자리 화살표(V) — 지시선 방향
-  const th = state.textHeight, s = th * 0.5;
+  const th = dimTH(), s = th * 0.5;
   const ux = Math.cos(a), uy = Math.sin(a), nx = -uy, ny = ux;
   ln(ex, ey, ex - ux * s + nx * s * 0.35, ey - uy * s + ny * s * 0.35);
   ln(ex, ey, ex - ux * s - nx * s * 0.35, ey - uy * s - ny * s * 0.35);
-  const txt = (dia ? '⌀' : 'R') + fmtNum(dia ? e.r * 2 : e.r);
+  const txt = (dia ? '⌀' : 'R') + dimVal(dia ? e.r * 2 : e.r);
   addEntity({ type: 'TEXT', layer: '치수', x: w.x + th * 0.3, y: w.y - th * 0.3, height: th, text: txt, rotation: 0 });
   logLine(`  ✔ ${dia ? '지름' : '반지름'} 치수 ${txt}`, 'ok');
   cmdOp = { name, step: 'obj' }; updateStat();
   setPrompt('치수: 원/호를 클릭하세요. (연속 기입, Esc 종료)');
+}
+
+// ====== CENTERLINE (중심선) — 원/호 클릭 → 십자 중심선 ======
+function clickCenterline(w, rawW) {
+  const hit = pick(w, rawW);
+  if (!hit || (hit.type !== 'CIRCLE' && hit.type !== 'ARC')) { logLine('  중심선: 원 또는 호를 클릭하세요.', 'warn'); return; }
+  pushUndo();
+  const lay = ensureLayer('중심선', '#ffd65d');
+  if (!lay.linetype) lay.linetype = 'center'; // 일점쇄선
+  const L = hit.r * 1.15 + dimTH() * 0.5; // 원 밖으로 살짝 연장
+  addEntity({ type: 'LINE', layer: '중심선', x1: hit.cx - L, y1: hit.cy, x2: hit.cx + L, y2: hit.cy });
+  addEntity({ type: 'LINE', layer: '중심선', x1: hit.cx, y1: hit.cy - L, x2: hit.cx, y2: hit.cy + L });
+  logLine('  ✔ 중심선', 'ok'); renderLayers(); updateStat();
+}
+
+// ====== REVCLOUD (구름마크) — 두 코너 → 사각 둘레를 바깥으로 볼록한 호들로 ======
+function clickRevcloud(w) {
+  if (!cmdOp || cmdOp.name !== 'revcloud') cmdOp = { name: 'revcloud', step: 'p1' };
+  if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('구름마크: 반대 코너를 클릭하세요.'); return; }
+  const ents = computeRevcloud(cmdOp.p1, w);
+  if (!ents.length) { logLine('  영역이 너무 작습니다.', 'warn'); return; }
+  pushUndo();
+  for (const e of ents) addEntity(e);
+  logLine(`  ✔ 구름마크 (호 ${ents.length}개)`, 'ok');
+  cmdOp = { name: 'revcloud', step: 'p1' }; previewEnts = null; updateStat();
+  setPrompt('구름마크: 첫 코너를 클릭하세요. (연속, Esc 종료)');
+}
+function computeRevcloud(p1, p2) {
+  const xmin = Math.min(p1.x, p2.x), xmax = Math.max(p1.x, p2.x);
+  const ymin = Math.min(p1.y, p2.y), ymax = Math.max(p1.y, p2.y);
+  const wR = xmax - xmin, hR = ymax - ymin;
+  if (wR < 1e-6 || hR < 1e-6) return [];
+  const seg = Math.max(Math.min(wR, hR) / 2.5, Math.max(wR, hR) / 12); // 호 하나의 현 길이
+  const ents = [];
+  // 시계방향 순회(위→오른쪽→아래→왼쪽). 호는 끝→시작 각도로 만들어 바깥으로 볼록하게.
+  const corners = [[xmin, ymax], [xmax, ymax], [xmax, ymin], [xmin, ymin], [xmin, ymax]];
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = corners[i], [bx, by] = corners[i + 1];
+    const elen = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.round(elen / seg)), s = elen / n;
+    const ux = (bx - ax) / elen, uy = (by - ay) / elen;
+    for (let k = 0; k < n; k++) {
+      const sx = ax + ux * s * k, sy = ay + uy * s * k;
+      const ex2 = ax + ux * s * (k + 1), ey2 = ay + uy * s * (k + 1);
+      const cx = (sx + ex2) / 2, cy = (sy + ey2) / 2, r = s / 2;
+      const aS = Math.atan2(sy - cy, sx - cx) * 180 / Math.PI;
+      const aE = Math.atan2(ey2 - cy, ex2 - cx) * 180 / Math.PI;
+      // CCW(start→end) 호는 진행방향 오른쪽으로 볼록 → 끝→시작 순서로 바깥(왼쪽) 볼록
+      ents.push({ type: 'ARC', layer: state.currentLayer, cx, cy, r, startAngle: norm360(aE), endAngle: norm360(aS) });
+    }
+  }
+  return ents;
 }
 
 // ====== LEADER (지시선) — 화살표 → 문자 위치 → 문구 ======
@@ -1968,7 +2026,7 @@ function clickLeader(w) {
   if (txt === null) { cmdOp = { name: 'leader', step: 'p1' }; setPrompt('지시선: 화살표 지점을 클릭하세요.'); return; }
   pushUndo();
   ensureLayer('치수', '#5dff8f');
-  const th = state.textHeight, dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const th = dimTH(), dx = p2.x - p1.x, dy = p2.y - p1.y;
   const dir = dx >= 0 ? 1 : -1, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
   const ln = (x1, y1, x2, y2) => addEntity({ type: 'LINE', layer: '치수', x1, y1, x2, y2 });
   ln(p1.x, p1.y, p2.x, p2.y);                       // 지시선
@@ -2018,7 +2076,7 @@ function computeAngularDim(l1, l2, pos) {
   const sweep = norm360(a2 - a1);
   ensureLayer('치수', '#5dff8f');
   const list = [{ type: 'ARC', layer: '치수', cx: C[0], cy: C[1], r, startAngle: norm360(a1), endAngle: norm360(a2) }];
-  const th = state.textHeight, s = Math.min(th * 0.6, r * sweep * Math.PI / 180 / 4);
+  const th = dimTH(), s = Math.min(th * 0.6, r * sweep * Math.PI / 180 / 4);
   const arrow = (deg, dir) => { // 호 끝 화살표(접선 방향)
     const a = deg * Math.PI / 180, px = C[0] + r * Math.cos(a), py = C[1] + r * Math.sin(a);
     const tx = -Math.sin(a) * dir, ty = Math.cos(a) * dir, nx2 = Math.cos(a), ny2 = Math.sin(a);
@@ -2757,6 +2815,8 @@ const CMD_ALIASES = {
   leader: 'leader', le: 'leader', ld: 'leader',
   front: 'front', fr: 'front', back: 'back', bk: 'back',
   similar: 'similar', ss: 'similar',
+  centerline: 'centerline', cl: 'centerline',
+  revcloud: 'revcloud', rc: 'revcloud',
 };
 
 function runCommandInput(raw) {
@@ -2854,6 +2914,7 @@ function feedDrawInput(v) {
     case 'ellipse': return feedEllipse(p);
     case 'dim': return feedPointCmd(p, clickDim);
     case 'leader': return feedPointCmd(p, clickLeader);
+    case 'revcloud': return feedPointCmd(p, clickRevcloud);
     case 'text': return feedPointCmd(p, (w) => { const t = prompt('문자 입력:', ''); if (t) { pushUndo(); addEntity({ type: 'TEXT', x: w.x, y: w.y, height: state.textHeight, text: t, rotation: 0 }); updateStat(); } });
     case 'dist': return feedPointCmd(p, clickDist);
     case 'area': return feedPointCmd(p, (w) => clickArea(w, w));
@@ -3126,6 +3187,8 @@ function setTool(t) {
     break: '끊기: 선/원/호 선택 → 끊기점 두 개 클릭. (사이 구간 제거)',
     lengthen: `길이조정: 증감량 ${lengthenDelta > 0 ? '+' : ''}${lengthenDelta}. 선의 조정할 끝쪽을 클릭하세요. (음수=줄이기)`,
     hatch: `해치: ${HATCH_PATTERNS[hatchPattern].ko}, 간격 ${hatchSpacing}. 경계 클릭. (숫자=간격, 패턴명 입력: ansi31·ansi37·steel·grid·brick·concrete·dots·solid)`,
+    centerline: '중심선: 원/호를 클릭하면 십자 중심선이 그려집니다. (중심선 레이어, 일점쇄선)',
+    revcloud: '구름마크: 영역의 첫 코너 → 반대 코너를 클릭하세요. (도면 검토 표시)',
   };
   setPrompt(hints[t] || '');
   if (t !== 'select') {
@@ -3450,6 +3513,9 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     // 현재값 채우기
     document.getElementById('optUnits').value = settings.units;
     document.getElementById('optPolar').value = String(settings.polar || 0);
+    document.getElementById('optDimTxt').value = settings.dim.txt || 0;
+    document.getElementById('optDimDec').value = String(settings.dim.dec != null ? settings.dim.dec : 2);
+    document.getElementById('optDimSuffix').checked = !!settings.dim.suffix;
     for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest', 'intersection'])
       document.getElementById('os_' + k).checked = !!settings.osnapModes[k];
     // 단축키 목록 (도구명 → 현재 사용자 별칭 역조회)
@@ -3465,11 +3531,15 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
   document.getElementById('moShortcut').addEventListener('click', () => openOptions('secShortcut'));
   document.getElementById('moOsnap').addEventListener('click', () => openOptions('secOsnap'));
   document.getElementById('moUnits').addEventListener('click', () => openOptions('secUnits'));
+  document.getElementById('moDim').addEventListener('click', () => openOptions('secDim'));
   document.getElementById('optCancel').addEventListener('click', () => dlg.style.display = 'none');
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.style.display = 'none'; });
   document.getElementById('optSave').addEventListener('click', () => {
     settings.units = document.getElementById('optUnits').value;
     settings.polar = parseInt(document.getElementById('optPolar').value, 10) || 0;
+    settings.dim.txt = Math.max(0, parseFloat(document.getElementById('optDimTxt').value) || 0);
+    settings.dim.dec = parseInt(document.getElementById('optDimDec').value, 10);
+    settings.dim.suffix = document.getElementById('optDimSuffix').checked;
     for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest', 'intersection'])
       settings.osnapModes[k] = document.getElementById('os_' + k).checked;
     const aliases = {};
@@ -3641,6 +3711,7 @@ document.getElementById('gridSize').addEventListener('change', (e) => { state.gr
 //  명령어 자동완성 (라이노식 미리보기 + 클릭 선택)
 // ============================================================
 const COMMAND_LIST = [
+  { name: 'centerline', ko: '중심선' }, { name: 'revcloud', ko: '구름마크' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -4791,9 +4862,11 @@ window.WEBCAD_API = {
     Object.assign(settings.osnapModes, s.osnapModes || {});
     if (s.polar !== undefined) settings.polar = s.polar;
     settings.aliases = s.aliases || settings.aliases;
+    Object.assign(settings.dim, s.dim || {});
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
     draw();
   },
+  zoomFit: () => zoomFit(true),
   // 블록 라이브러리
   getBlocks: () => state.blocks,
   addBlock: (name, def) => { state.blocks[name] = def; refreshBlockList(); logLine(`  ✔ 라이브러리에서 블록 "${name}" 가져옴 — 삽입(insert)으로 배치`, 'ok'); },
