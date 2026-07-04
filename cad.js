@@ -2632,6 +2632,8 @@ function renderScene(isActive) {
     c.strokeStyle = '#2ee6a6'; c.lineWidth = 1.8 * dpr3; c.setLineDash([]);
     if (sm.kind === 'midpoint') {
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
+    } else if (sm.kind === 'center') {
+      c.beginPath(); c.arc(sp3[0], sp3[1], rr, 0, Math.PI * 2); c.stroke();
     } else {
       c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
     }
@@ -2984,12 +2986,27 @@ function snap3D(px, py, w) {
       try { eps = entityEndpoints(e); mps = entityMidpoints(e); } catch (_) { continue; }
       cands = eps.map(p => ({ x: p.x, y: p.y, z: zb, kind: 'endpoint' }))
         .concat(mps.map(p => ({ x: p.x, y: p.y, z: zb, kind: 'midpoint' })));
+      if (e.type === 'CIRCLE' || e.type === 'ARC') cands.push({ x: e.cx, y: e.cy, z: zb, kind: 'center' }); // 중심 스냅
     }
     for (const p of cands) {
       if (!p || !isFinite(p.x)) continue;
+      if (settings.osnapModes && settings.osnapModes[p.kind] === false) continue; // 2D와 동일한 종류별 토글 존중
       const s = proj3D(p.x, p.y, p.z);
       const d = Math.hypot(s[0] - px, s[1] - py);
       if (d < bestD) { bestD = d; best = { x: p.x, y: p.y, z: p.z, kind: p.kind }; }
+    }
+  }
+  // 입체(BIM 솔리드) 모서리 꼭짓점 — 벽 상·하단 코너 등 3D 지오메트리에도 스냅
+  if (!settings.osnapModes || settings.osnapModes.endpoint !== false) {
+    for (const s of (v3.solids || [])) {
+      const zt = s.zt || s.poly.map(() => s.z1);
+      for (let i = 0; i < s.poly.length; i++) {
+        for (const zz of [s.z0, zt[i]]) {
+          const sp = proj3D(s.poly[i][0], s.poly[i][1], zz);
+          const d = Math.hypot(sp[0] - px, sp[1] - py);
+          if (d < bestD) { bestD = d; best = { x: s.poly[i][0], y: s.poly[i][1], z: zz, kind: 'endpoint' }; }
+        }
+      }
     }
   }
   return best || w;
