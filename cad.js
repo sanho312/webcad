@@ -2566,8 +2566,8 @@ function renderScene(isActive) {
       c.globalAlpha = 1;
     }
   }
-  // 작도 가선 — 평면의 draft/pts/previewEnts를 층 바닥면에 투영 (활성 뷰에서만)
-  if (isActive && (draft || pts.length || previewEnts)) {
+  // 작도 가선 — 평면의 draft/pts/previewEnts를 층 바닥면에 투영 (모든 뷰포트에 표시)
+  if (draft || pts.length || previewEnts) {
     const zw = lvElev(), dg = devicePixelRatio || 1;
     const pathOf = (e) => {
       if (e.type === 'LINE') return { p: [proj3D(e.x1, e.y1, zw), proj3D(e.x2, e.y2, zw)], cl: false };
@@ -2592,8 +2592,22 @@ function renderScene(isActive) {
     }
     if (previewEnts) for (const e of previewEnts) strokeGhost(pathOf(e));
   }
-  // 3D 벽 그리기 미리보기 (활성 뷰에서만)
-  if (isActive && v3.wallMode && v3.wallP1) {
+  // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각)
+  if (v3.snapHit && (v3.wallMode || state.tool !== 'select')) {
+    const sm = v3.snapHit, dpr3 = devicePixelRatio || 1;
+    const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : lvElev());
+    const rr = 7 * dpr3;
+    c.save();
+    c.strokeStyle = '#2ee6a6'; c.lineWidth = 1.8 * dpr3; c.setLineDash([]);
+    if (sm.kind === 'midpoint') {
+      c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
+    } else {
+      c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
+    }
+    c.restore();
+  }
+  // 3D 벽 그리기 미리보기 (모든 뷰포트에 표시)
+  if (v3.wallMode && v3.wallP1) {
     const ze = lvElev(), dpr = devicePixelRatio || 1;
     const a = proj3D(v3.wallP1[0], v3.wallP1[1], ze);
     c.fillStyle = '#ff9f0a'; c.beginPath(); c.arc(a[0], a[1], 4 * dpr, 0, Math.PI * 2); c.fill();
@@ -2715,9 +2729,12 @@ function bind3D(ov, cv3) {
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
       const py3 = (e.clientY - r3.top) * (r3.height ? cv3.height / r3.height : 1);
+      const vi3 = vpAt(px3, py3); // 사분할: 커서가 있는 뷰포트 기준으로 스냅·가선 계산
+      if (vi3 !== v3.act) { v3.act = vi3; loadVp(vi3); v3.vp = vpRect(vi3); }
       const w = unproj3D(px3, py3, lvElev());
       if (w) {
         const sn = snap3D(px3, py3, null);
+        v3.snapHit = sn || null; // 스냅 마커 표시용
         const cur = sn || { x: Math.round(w[0]), y: Math.round(w[1]) };
         v3.toolCur = cur;
         if (v3.wallMode && v3.wallP1) v3.wallCur = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
@@ -2729,7 +2746,7 @@ function bind3D(ov, cv3) {
       }
       return;
     }
-    if (!drag) return;
+    if (!drag) { if (v3.snapHit) { v3.snapHit = null; render3D(); } return; }
     if (drag.mode === 'gum') {
       const dxc = (e.clientX - drag.x0) * drag.kx, dyc = (e.clientY - drag.y0) * drag.ky;
       drag.moved = Math.max(drag.moved, Math.abs(dxc) + Math.abs(dyc));
@@ -2879,17 +2896,18 @@ function close3D() {
 // 3D 스냅: 클릭 지점 근처(화면 12px)의 끝점·중간점으로 흡착 (OSNAP 토글 존중)
 function snap3D(px, py, w) {
   if (!osnapEnabled) return w;
-  let best = null, bestD = 12 * (devicePixelRatio || 1);
+  let best = null, bestD = 14 * (devicePixelRatio || 1);
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const z = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
-    let cands = [];
-    try { cands = entityEndpoints(e).concat(entityMidpoints(e)); } catch (_) { continue; }
-    for (const p of cands) {
+    let eps = [], mps = [];
+    try { eps = entityEndpoints(e); mps = entityMidpoints(e); } catch (_) { continue; }
+    for (let i = 0; i < eps.length + mps.length; i++) {
+      const p = i < eps.length ? eps[i] : mps[i - eps.length];
       if (!p || !isFinite(p.x)) continue;
       const s = proj3D(p.x, p.y, z);
       const d = Math.hypot(s[0] - px, s[1] - py);
-      if (d < bestD) { bestD = d; best = { x: p.x, y: p.y }; }
+      if (d < bestD) { bestD = d; best = { x: p.x, y: p.y, kind: i < eps.length ? 'endpoint' : 'midpoint', z }; }
     }
   }
   return best || w;
