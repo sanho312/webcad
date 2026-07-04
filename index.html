@@ -350,6 +350,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <span id="viewSeg" style="display:inline-flex;gap:2px;background:var(--glass-fill);border-radius:980px;padding:2px;box-shadow:var(--spec);">
       <button class="tbtn" id="vwPlan" style="box-shadow:none;background:var(--accent);color:#fff;">평면</button>
       <button class="tbtn" id="vw3d" style="box-shadow:none;background:transparent;">3D</button>
+      <button class="tbtn" id="vwQuad" title="3D 사분할 뷰 ↔ 단일 뷰" style="box-shadow:none;background:transparent;">4분할</button>
     </span>
     <span id="fileName" title="현재 작업 파일">새 파일</span>
     <span class="spacer"></span>
@@ -655,7 +656,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260705f"></script>
+<script src="cad.js?v=20260705g"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>

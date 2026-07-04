@@ -2238,8 +2238,6 @@ function open3D() {
     ov.id = 'bim3d';
     ov.style.cssText = 'position:absolute;inset:0;z-index:18;background:var(--bg);display:flex;flex-direction:column;';
     ov.innerHTML = `
-      <button class="tbtn" id="b3Quad" title="사분할 뷰 ↔ 단일 뷰 (뷰포트 더블클릭과 동일)"
-        style="position:absolute;top:8px;right:8px;z-index:3;">4분할</button>
       <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>`;
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
@@ -2414,6 +2412,8 @@ function render3D() {
   }
   loadVp(v3.act); v3.vp = vpRect(v3.act);
   v3.faces = v3.views[v3.act]._faces; v3.under = v3.views[v3.act]._under;
+  const qb = document.getElementById('vwQuad');
+  if (qb) { qb.style.background = v3.quad ? 'var(--accent)' : 'transparent'; qb.style.color = v3.quad ? '#fff' : ''; }
   if (window.__BIM3D_DEBUG) {
     window.__BIM3D_STATS = { solids: v3.solids.length, faces: v3.faces.length };
     window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D, unproj3D, wall3DClick, vpAt, loadVp, vpRect };
@@ -2566,6 +2566,32 @@ function renderScene(isActive) {
       c.globalAlpha = 1;
     }
   }
+  // 작도 가선 — 평면의 draft/pts/previewEnts를 층 바닥면에 투영 (활성 뷰에서만)
+  if (isActive && (draft || pts.length || previewEnts)) {
+    const zw = lvElev(), dg = devicePixelRatio || 1;
+    const pathOf = (e) => {
+      if (e.type === 'LINE') return { p: [proj3D(e.x1, e.y1, zw), proj3D(e.x2, e.y2, zw)], cl: false };
+      if (e.type === 'LWPOLYLINE' && e.points && e.points.length) return { p: e.points.map(q => proj3D(q[0], q[1], zw)), cl: !!e.closed };
+      if (e.type === 'CIRCLE') { const p = []; for (let i = 0; i <= 32; i++) { const t = i / 32 * Math.PI * 2; p.push(proj3D(e.cx + e.r * Math.cos(t), e.cy + e.r * Math.sin(t), zw)); } return { p, cl: false }; }
+      if (e.type === 'ARC') { let s0 = e.startAngle, e0 = e.endAngle; if (e0 < s0) e0 += 360; const st = Math.max(8, Math.ceil((e0 - s0) / 10)); const p = []; for (let i = 0; i <= st; i++) { const a = (s0 + (e0 - s0) * i / st) * Math.PI / 180; p.push(proj3D(e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a), zw)); } return { p, cl: false }; }
+      return null;
+    };
+    const strokeGhost = (r) => {
+      if (!r || r.p.length < 2) return;
+      c.strokeStyle = '#ffd60a'; c.lineWidth = 1.5 * dg; c.globalAlpha = 0.9;
+      c.setLineDash([6 * dg, 4 * dg]);
+      c.beginPath(); r.p.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]));
+      if (r.cl) c.closePath();
+      c.stroke(); c.setLineDash([]); c.globalAlpha = 1;
+    };
+    if (draft) strokeGhost(pathOf(draft));
+    if (pts.length) {
+      const pp = pts.map(q => proj3D(q.x, q.y, zw));
+      if (v3.toolCur) pp.push(proj3D(v3.toolCur.x, v3.toolCur.y, zw));
+      strokeGhost({ p: pp, cl: false });
+    }
+    if (previewEnts) for (const e of previewEnts) strokeGhost(pathOf(e));
+  }
   // 3D 벽 그리기 미리보기 (활성 뷰에서만)
   if (isActive && v3.wallMode && v3.wallP1) {
     const ze = lvElev(), dpr = devicePixelRatio || 1;
@@ -2685,12 +2711,22 @@ function bind3D(ov, cv3) {
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
-    if (!drag && v3.wallMode && v3.wallP1) { // 벽 미리보기(러버밴드)
+    if (!drag && (v3.wallMode || state.tool !== 'select')) { // 작도 가선 추적 — 평면과 동일한 미리보기
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
       const py3 = (e.clientY - r3.top) * (r3.height ? cv3.height / r3.height : 1);
       const w = unproj3D(px3, py3, lvElev());
-      if (w) { v3.wallCur = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10]; render3D(); }
+      if (w) {
+        const sn = snap3D(px3, py3, null);
+        const cur = sn || { x: Math.round(w[0]), y: Math.round(w[1]) };
+        v3.toolCur = cur;
+        if (v3.wallMode && v3.wallP1) v3.wallCur = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
+        mouseWorld = { x: cur.x, y: cur.y };  // 2D 파이프라인의 러버밴드 로직 재사용
+        updateDraft();
+        const co = document.getElementById('coords');
+        if (co) co.textContent = `X: ${cur.x.toFixed(2)}  Y: ${cur.y.toFixed(2)}`;
+        render3D();
+      }
       return;
     }
     if (!drag) return;
@@ -2812,7 +2848,6 @@ function bind3D(ov, cv3) {
     render3D();
   };
   v3.setWallMode = setWallMode;
-  ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); saveV3Layout(); });
   window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
@@ -2834,6 +2869,12 @@ function close3D() {
   const d = document.getElementById('vw3d'), p = document.getElementById('vwPlan');
   if (d) d.addEventListener('click', () => open3D());
   if (p) p.addEventListener('click', close3D);
+  const q = document.getElementById('vwQuad');
+  if (q) q.addEventListener('click', () => {
+    const ov = document.getElementById('bim3d');
+    if (!ov || ov.style.display === 'none') { open3D(); if (v3) { v3.quad = true; render3D(); saveV3Layout(); } }
+    else { v3.quad = !v3.quad; render3D(); saveV3Layout(); }
+  });
 })();
 // 3D 스냅: 클릭 지점 근처(화면 12px)의 끝점·중간점으로 흡착 (OSNAP 토글 존중)
 function snap3D(px, py, w) {
