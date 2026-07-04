@@ -2238,16 +2238,8 @@ function open3D() {
     ov.id = 'bim3d';
     ov.style.cssText = 'position:absolute;inset:0;z-index:18;background:var(--bg);display:flex;flex-direction:column;';
     ov.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--glass-chrome);border-bottom:0.5px solid var(--line);position:relative;z-index:2;flex-wrap:wrap;">
-        <b style="font-size:13px;">3D 작업 뷰</b>
-        <span style="font-size:11.5px;color:var(--muted);">평면 명령어 그대로 사용 가능(클릭=바닥면 작도) · 좌드래그=박스 선택 · 우드래그=회전 · Shift=이동 · 휠=줌 · 뷰포트 더블클릭=최대화 · Del=삭제</span>
-        <span style="flex:1"></span>
-        <button class="tbtn" id="b3Wall" title="3D에서 직접 벽 그리기 — 바닥면 클릭 2점, 연속 그리기, Esc 종료">벽 그리기</button>
-        <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
-        <button class="tbtn" id="b3Quad" title="사분할 뷰 ↔ 단일 뷰 (뷰포트 더블클릭과 동일)">4분할</button>
-        <button class="tbtn" id="b3Top">위에서</button>
-        <button class="tbtn" id="b3Iso">아이소</button>
-      </div>
+      <button class="tbtn" id="b3Quad" title="사분할 뷰 ↔ 단일 뷰 (뷰포트 더블클릭과 동일)"
+        style="position:absolute;top:8px;right:8px;z-index:3;">4분할</button>
       <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:grab;"></canvas>`;
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
@@ -2263,11 +2255,8 @@ function open3D() {
   }
   ov.style.display = 'flex';
   v3.solids = solids;
-  // 모델 중심·초기 줌
-  let xmin = 1e18, xmax = -1e18, ymin = 1e18, ymax = -1e18, zmax = 0;
-  for (const s of solids) { for (const [x, y] of s.poly) { xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); } zmax = Math.max(zmax, s.zt ? Math.max(...s.zt) : (s.z1 || 0)); } // 경사 지붕은 zt만 있음 — NaN 방지
-  v3.cx = (xmin + xmax) / 2; v3.cy = (ymin + ymax) / 2; v3.cz = zmax / 2;
-  v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
+  fit3D(); // 모델 중심·초기 줌 (솔리드 + 밑그림 도형 포함)
+  v3.refitPending = !isFinite(v3.hasContent) || !v3.hasContent; // 빈 모델로 열림 → 첫 도형에 자동 맞춤
   v3.zoom = 1; v3.panX = 0; v3.panY = 0;
   for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
   try { // 저장된 뷰 레이아웃 복원 (분할 여부·활성 뷰·뷰 방향·입면 종류)
@@ -2292,6 +2281,24 @@ function open3D() {
   usage3d();
 }
 // 뷰 세그먼트(평면/3D) 표시 동기화
+// 3D 화면 맞춤: 솔리드 + 비 BIM 도형 전체 bbox → 중심·스케일 재계산 (전체보기와 연동)
+function fit3D() {
+  let xmin = 1e18, xmax = -1e18, ymin = 1e18, ymax = -1e18, zmax = 0, has = 0;
+  for (const s of v3.solids) {
+    for (const [x, y] of s.poly) { xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); }
+    zmax = Math.max(zmax, s.zt ? Math.max(...s.zt) : (s.z1 || 0)); has++;
+  }
+  for (const e of state.entities) {
+    if (e.bim) continue;
+    if (!['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(e.type)) continue;
+    try { const b = entityBBox(e); xmin = Math.min(xmin, b.xmin); xmax = Math.max(xmax, b.xmax); ymin = Math.min(ymin, b.ymin); ymax = Math.max(ymax, b.ymax); has++; } catch (_) {}
+  }
+  v3.hasContent = has > 0;
+  if (!has) { v3.cx = 0; v3.cy = 0; v3.cz = 0; v3.fit = 10000; return; } // 빈 모델: 10m 기준
+  v3.cx = (xmin + xmax) / 2; v3.cy = (ymin + ymax) / 2; v3.cz = zmax / 2;
+  v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
+  if (!isFinite(v3.fit)) v3.fit = 10000;
+}
 function syncViewSeg(is3d) {
   const p = document.getElementById('vwPlan'), d = document.getElementById('vw3d');
   if (!p || !d) return;
@@ -2309,7 +2316,9 @@ function startLive3D() {
     const selNow = [...state.selection].join(',');
     if (apiRev !== live3dRev || selNow !== live3dSel) {
       live3dRev = apiRev; live3dSel = selNow;
-      v3.solids = bimSolids(); render3D();
+      v3.solids = bimSolids();
+      if (v3.refitPending) { fit3D(); if (v3.hasContent) v3.refitPending = false; } // 빈 모델 → 첫 도형에 화면 맞춤
+      render3D();
     }
   }, 300);
 }
@@ -2791,29 +2800,14 @@ function bind3D(ov, cv3) {
       v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; render3D();
     }
   }, { passive: true });
-  const wallBtn = ov.querySelector('#b3Wall');
   const setWallMode = (on) => {
     v3.wallMode = on; v3.wallP1 = null; v3.wallCur = null;
-    wallBtn.style.background = on ? 'var(--accent)' : ''; wallBtn.style.color = on ? '#fff' : '';
     cv3.style.cursor = on ? 'crosshair' : 'grab';
-    if (on) logLine(`  ▷ 3D 벽 그리기: 바닥면(현재 층 레벨)을 클릭해 벽의 시작·끝점을 찍으세요 — 연속 그리기, Esc=종료 (높이 ${settings.bim.wallH}·두께 ${settings.bim.wallT}는 그린 뒤 속성에서 수정)`, 'info');
+    if (on) logLine(`  ▷ 3D 벽 그리기: 바닥면(현재 층 레벨)을 클릭해 벽의 시작·끝점을 찍으세요 — 연속 그리기, Esc=종료`, 'info');
     render3D();
   };
-  wallBtn.addEventListener('click', () => setWallMode(!v3.wallMode));
   v3.setWallMode = setWallMode;
-  ov.querySelector('#b3Roof').addEventListener('click', () => {
-    v3.roof = (!v3.roof || v3.roof === 'show') ? 'ghost' : v3.roof === 'ghost' ? 'hide' : 'show';
-    ov.querySelector('#b3Roof').textContent = '지붕:' + (v3.roof === 'ghost' ? '투명' : v3.roof === 'hide' ? '숨김' : '보임');
-    render3D();
-  });
   ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); saveV3Layout(); });
-  // 프리셋은 자유 회전 뷰(아이소)에만 적용 — 고정 투영 뷰(평면·입면)를 훼손하지 않음
-  const isoPreset = (yaw, pitch) => {
-    if (v3.views[v3.act].fixed) { v3.act = 1; loadVp(1); }
-    v3.yaw = yaw; v3.pitch = pitch; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); saveV3Layout();
-  };
-  ov.querySelector('#b3Iso').addEventListener('click', () => isoPreset(-0.6, 0.85));
-  ov.querySelector('#b3Top').addEventListener('click', () => isoPreset(0, 1.55));
   window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
@@ -4020,6 +4014,12 @@ const INSTANT_CMDS = {
   stair: cmdStairTag,
   bimclear: cmdBimClear,
   view3d: open3D,
+  roofview: () => {
+    if (!v3 || !document.getElementById('bim3d')) { logLine('  3D 뷰에서 사용하는 명령입니다.', 'warn'); return; }
+    v3.roof = (!v3.roof || v3.roof === 'show') ? 'ghost' : v3.roof === 'ghost' ? 'hide' : 'show';
+    render3D();
+    logLine(`  ▷ 지붕 표시: ${v3.roof === 'ghost' ? '투명' : v3.roof === 'hide' ? '숨김' : '보임'}`, 'info');
+  },
   level: cmdLevelInfo,
   roof: cmdRoofTag,
 };
@@ -4230,6 +4230,7 @@ const CMD_ALIASES = {
   wall: 'wall', slab: 'slab', column: 'column', col: 'column',
   door: 'door', window: 'window', win: 'window', bimclear: 'bimclear',
   '3d': 'view3d', view3d: 'view3d',
+  roofview: 'roofview', rview: 'roofview',
   level: 'level', lv: 'level',
   roof: 'roof',
   stair: 'stair', '계단': 'stair',
@@ -4848,6 +4849,14 @@ function zoomPrev() {
   state.view = v; draw(); logLine('  ✔ 이전 뷰', 'info');
 }
 function zoomFit(robust) {
+  { const ov3 = document.getElementById('bim3d');
+    if (ov3 && ov3.style.display !== 'none' && v3) { // 3D 열림: 3D 화면 맞춤
+      v3.solids = bimSolids(); fit3D();
+      v3.zoom = 1; v3.panX = 0; v3.panY = 0;
+      for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
+      loadVp(v3.act); render3D();
+      return;
+    } }
   pushViewPrev();
   if (!state.entities.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
   const xs = [], ys = [];
