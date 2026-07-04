@@ -226,6 +226,19 @@ function tests(){
   group('이전 뷰(zoom previous)');
   { reset(); S0.view={x:0,y:0,scale:1}; C.pushViewPrev(); S0.view={x:50,y:50,scale:4};
     C.zoomPrev(); ok(S0.view.x===0&&S0.view.scale===1,'zp: 직전 뷰로 복귀'); }
+
+  group('BIM 계단 — stairSolids');
+  { const st={type:'LINE',x1:0,y1:0,x2:4000,y2:0,bim:{kind:'stair',w:1200,h:3000,riser:180,base:0}};
+    const ss=C.stairSolids(st);
+    eqi(ss.length,17,'3000/180 → 17단');
+    eq(ss[0].z1,3000/17,'첫 단 z1 = h/n',0.01);
+    eq(ss[16].z1,3000,'막 단 z1 = 총높이',0.01);
+    ok(ss.every(s=>s.z0===0),'모든 단 z0 = base');
+    const p=ss[0].poly;
+    eq(Math.hypot(p[3][0]-p[0][0],p[3][1]-p[0][1]),1200,'단 폭 = 1200',0.01);
+    eq(Math.hypot(p[1][0]-p[0][0],p[1][1]-p[0][1]),4000/17,'디딤 깊이 = L/n',0.01); }
+  { const st={type:'LINE',x1:0,y1:0,x2:0,y2:0,bim:{kind:'stair',w:1200,h:3000,riser:180}};
+    eqi(C.stairSolids(st).length,0,'길이 0 선 → 솔리드 없음'); }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });

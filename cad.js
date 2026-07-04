@@ -58,7 +58,7 @@ let settings = {
   osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
-  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200 }, // BIM 기본값(mm)
+  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180 }, // BIM 기본값(mm)
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
@@ -2119,6 +2119,34 @@ function drawBimOverlay(e) {
     if (e.type === 'CIRCLE') { const c = worldToScreen(e.cx, e.cy); ctx.arc(c.x, c.y, e.r * sc, 0, Math.PI * 2); }
     else { e.points.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); ctx.closePath(); }
     ctx.fill();
+  } else if (k === 'stair' && e.type === 'LINE') {
+    const b = e.bim, w = b.w || 1200;
+    const a = worldToScreen(e.x1, e.y1), q = worldToScreen(e.x2, e.y2);
+    const dx = q.x - a.x, dy = q.y - a.y, Ls = Math.hypot(dx, dy) || 1;
+    const ux = dx / Ls, uy = dy / Ls, nx = -uy * w * sc / 2, ny = ux * w * sc / 2;
+    ctx.strokeStyle = entityColor(e); ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath(); // 외곽
+    ctx.moveTo(a.x + nx, a.y + ny); ctx.lineTo(q.x + nx, q.y + ny);
+    ctx.lineTo(q.x - nx, q.y - ny); ctx.lineTo(a.x - nx, a.y - ny); ctx.closePath(); ctx.stroke();
+    const n = Math.max(1, Math.ceil((b.h || 3000) / (b.riser || 180)));
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath(); // 디딤판 선
+    for (let i = 1; i < n; i++) {
+      const px = a.x + ux * Ls * i / n, py = a.y + uy * Ls * i / n;
+      ctx.moveTo(px + nx, py + ny); ctx.lineTo(px - nx, py - ny);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 0.9; // 진행(UP) 화살표
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(q.x, q.y);
+    ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - ux * 10 - uy * 5, q.y - uy * 10 + ux * 5);
+    ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - ux * 10 + uy * 5, q.y - uy * 10 - ux * 5);
+    ctx.stroke();
+    if (Ls > 40) {
+      ctx.font = '10px -apple-system,system-ui,sans-serif'; ctx.fillStyle = entityColor(e);
+      ctx.fillText('UP', q.x - ux * 18 + 4, q.y - uy * 18 - 4);
+    }
   } else if (k === 'column') {
     ctx.globalAlpha = 0.22; ctx.fillStyle = entityColor(e);
     ctx.beginPath();
@@ -2146,6 +2174,8 @@ function bimSolids() {
       solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: '#9aa2af', eid: e.id });
     } else if (e.bim.kind === 'roof' && e.type === 'LWPOLYLINE') {
       for (const s of roofSolids(e)) { s.eid = e.id; solids.push(s); }
+    } else if (e.bim.kind === 'stair' && e.type === 'LINE') {
+      for (const s of stairSolids(e)) { s.eid = e.id; solids.push(s); }
     } else if (e.bim.kind === 'column') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
       solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: '#8fa3c8', eid: e.id });
@@ -2328,7 +2358,7 @@ function render3D() {
   if (state.selection.size === 1 && Math.cos(v3.pitch) >= 0.15) {
     const sid = [...state.selection][0];
     const ent = state.entities.find(en => en.id === sid);
-    if (ent && ent.bim && (ent.bim.kind === 'wall' || ent.bim.kind === 'column')) {
+    if (ent && ent.bim && (ent.bim.kind === 'wall' || ent.bim.kind === 'column' || ent.bim.kind === 'stair')) {
       const parts = v3.solids.filter(s => s.eid === sid && !s.zt);
       if (parts.length) {
         const topS = parts.reduce((a, b) => (b.z1 > a.z1 ? b : a));
@@ -2669,6 +2699,35 @@ function entityArea2(e) {
 }
 
 // ====== ROOF — 지붕 지정 (사각 풋프린트: 박공/외쪽/평) ======
+// 계단: LINE = 진행선(시작=아래, 끝=위). 단수 n = ceil(h/최대단높이), 단별 수직 프리즘.
+function cmdStairTag() {
+  const sel = selectedEntities().filter(e => e.type === 'LINE');
+  if (!sel.length) { logLine('  계단: 진행 방향 선(시작=아랫단, 끝=윗단)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const w = bimAskNum('계단 폭 (mm):', settings.bim.stairW); if (w == null) return;
+  const h = bimAskNum('총 높이 (오르는 높이, mm):', 3000); if (h == null) return;
+  const riser = bimAskNum('최대 단높이 (mm):', settings.bim.stairRiser); if (riser == null) return;
+  settings.bim.stairW = w; settings.bim.stairRiser = riser; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'stair', w, h, riser, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
+  const n = Math.max(1, Math.ceil(h / riser));
+  logLine(`  ✔ 계단 지정 ${sel.length}개 — ${n}단 (단높이 ${(h / n).toFixed(0)}, 폭 ${w}) · 선 방향이 올라가는 방향`, 'ok');
+  renderProps(); draw();
+}
+function stairSolids(e) {
+  const b = e.bim, base = b.base || 0, h = b.h || 0, w = b.w || 1200;
+  const L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+  if (L < 1e-6 || h <= 0) return [];
+  const n = Math.max(1, Math.ceil(h / (b.riser || 180)));
+  const ux = (e.x2 - e.x1) / L, uy = (e.y2 - e.y1) / L;
+  const nx = -uy * w / 2, ny = ux * w / 2;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const s0 = L * i / n, s1 = L * (i + 1) / n;
+    const ax = e.x1 + ux * s0, ay = e.y1 + uy * s0, bx = e.x1 + ux * s1, by = e.y1 + uy * s1;
+    out.push({ poly: [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]], z0: base, z1: base + h * (i + 1) / n, color: '#b9b2a6' });
+  }
+  return out;
+}
 function cmdRoofTag() {
   const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed);
   if (!sel.length) { logLine('  지붕: 닫힌 폴리라인(지붕 외곽)을 선택한 뒤 실행하세요.', 'warn'); return; }
@@ -3522,6 +3581,7 @@ const INSTANT_CMDS = {
   wall: cmdWallTag,
   slab: cmdSlabTag,
   column: cmdColumnTag,
+  stair: cmdStairTag,
   bimclear: cmdBimClear,
   view3d: open3D,
   level: cmdLevelInfo,
@@ -3736,6 +3796,7 @@ const CMD_ALIASES = {
   '3d': 'view3d', view3d: 'view3d',
   level: 'level', lv: 'level',
   roof: 'roof',
+  stair: 'stair', '계단': 'stair',
   section: 'section', sec: 'section',
   elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
@@ -4280,9 +4341,11 @@ function renderProps() {
     slab: [['t', '두께'], ['top', '상단(top)']],
     column: [['h', '높이'], ['base', '하단(base)']],
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
+    stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
+    roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   if (e.bim) {
-    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
+    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
     rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">BIM</label><span style="font-weight:590;">${kindKo}</span></div>`;
     for (const [k, lab] of (BIM_FIELDS[e.bim.kind] || []))
       rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-bk="${k}" value="${e.bim[k] != null ? e.bim[k] : 0}"></div>`;
@@ -4762,6 +4825,7 @@ const CMD_HELP = [
     ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
     ['level', '층(다층)', '그리기 설정 패널에서 층 전환/추가 — 새 도형은 현재 층에 생성, 다른 층은 흐리게 표시, BIM 높이 자동 반영'],
     ['roof', '지붕 지정', '닫힌 폴리라인 선택 후 → 박공/외쪽/평 + 처마 높이 + 상승 높이 — 3D 경사면·단면 사다리꼴 자동'],
+    ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
   ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
@@ -4834,7 +4898,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -5953,6 +6017,8 @@ window.__CADTEST__ = {
   isLocked, reorderSel, selectSimilar, pointsAlongEntity,
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
+  // BIM (단면/솔리드 수치 검증용)
+  bimSolids, lineClipPoly, genSectionView, stairSolids, roofSolids, solidTopZ,
 };
 
 // ============================================================
