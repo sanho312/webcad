@@ -2240,10 +2240,11 @@ function open3D() {
     ov.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--glass-chrome);border-bottom:0.5px solid var(--line);position:relative;z-index:2;flex-wrap:wrap;">
         <b style="font-size:13px;">3D 작업 뷰</b>
-        <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 좌드래그=박스 선택(→포함/←걸침) · 우드래그=회전 · Shift/휠버튼 드래그=화면 이동 · 휠=줌 · 검볼=이동 · 그립=높이 · Del=삭제</span>
+        <span style="font-size:11.5px;color:var(--muted);">평면 명령어 그대로 사용 가능(클릭=바닥면 작도) · 좌드래그=박스 선택 · 우드래그=회전 · Shift=이동 · 휠=줌 · 뷰포트 더블클릭=최대화 · Del=삭제</span>
         <span style="flex:1"></span>
         <button class="tbtn" id="b3Wall" title="3D에서 직접 벽 그리기 — 바닥면 클릭 2점, 연속 그리기, Esc 종료">벽 그리기</button>
         <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
+        <button class="tbtn" id="b3Quad" title="사분할 뷰 ↔ 단일 뷰 (뷰포트 더블클릭과 동일)">4분할</button>
         <button class="tbtn" id="b3Top">위에서</button>
         <button class="tbtn" id="b3Iso">아이소</button>
         <button class="tbtn" id="b3Close">평면으로</button>
@@ -2251,7 +2252,13 @@ function open3D() {
       <canvas id="b3cv" style="flex:1;touch-action:none;cursor:grab;"></canvas>`;
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
-    v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [] };
+    v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
+      quad: false, act: 1, views: [ // 사분할 뷰 (TL/TR/BL/BR) — 라이노식
+        { name: '평면', yaw: 0, pitch: 1.5707, zoom: 1, panX: 0, panY: 0 },
+        { name: '아이소', yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0 },
+        { name: '정면', yaw: 0, pitch: 0.03, zoom: 1, panX: 0, panY: 0 },
+        { name: '우측면', yaw: 1.5708, pitch: 0.03, zoom: 1, panX: 0, panY: 0 },
+      ] };
     bind3D(ov, cv3);
   }
   ov.style.display = 'flex';
@@ -2262,6 +2269,8 @@ function open3D() {
   v3.cx = (xmin + xmax) / 2; v3.cy = (ymin + ymax) / 2; v3.cz = zmax / 2;
   v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
   v3.zoom = 1; v3.panX = 0; v3.panY = 0;
+  for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
+  loadVp(v3.act);
   if (!v3.fit || !isFinite(v3.fit)) v3.fit = 10000;
   size3D(); render3D();
   syncViewSeg(true);
@@ -2304,26 +2313,70 @@ function proj3D(x, y, z) {
   const x1 = dx * c - dy * s, y1 = dx * s + dy * c;
   const cp = Math.cos(v3.pitch), sp = Math.sin(v3.pitch);
   const sx = x1, sy = y1 * sp + dz * cp, depth = y1 * cp - dz * sp;
-  const W = v3.cv.width, H = v3.cv.height;
-  const k = Math.min(W, H) / (v3.fit * 1.4) * v3.zoom;
-  return [W / 2 + (sx + v3.panX) * k, H / 2 - (sy + v3.panY) * k, depth];
+  const vp = v3.vp || { x: 0, y: 0, w: v3.cv.width, h: v3.cv.height };
+  const k = Math.min(vp.w, vp.h) / (v3.fit * 1.4) * v3.zoom;
+  return [vp.x + vp.w / 2 + (sx + v3.panX) * k, vp.y + vp.h / 2 - (sy + v3.panY) * k, depth];
 }
 // 화면 캔버스 px → 월드 (z=ze 평면 위의 점) — proj3D의 역변환
 function unproj3D(px, py, ze) {
-  const W = v3.cv.width, H = v3.cv.height;
-  const k = Math.min(W, H) / (v3.fit * 1.4) * v3.zoom;
+  const vp = v3.vp || { x: 0, y: 0, w: v3.cv.width, h: v3.cv.height };
+  const k = Math.min(vp.w, vp.h) / (v3.fit * 1.4) * v3.zoom;
   const sp = Math.sin(v3.pitch), cp = Math.cos(v3.pitch);
   if (Math.abs(sp) < 0.2) return null; // 거의 수평 시점 — 바닥면 클릭 불가
-  const sx = (px - W / 2) / k - v3.panX;
-  const sy = (H / 2 - py) / k - v3.panY;
+  const sx = (px - vp.x - vp.w / 2) / k - v3.panX;
+  const sy = (vp.y + vp.h / 2 - py) / k - v3.panY;
   const dz = ze - v3.cz;
   const x1 = sx, y1 = (sy - dz * cp) / sp;
   const cs = Math.cos(v3.yaw), sn = Math.sin(v3.yaw);
   return [x1 * cs + y1 * sn + v3.cx, -x1 * sn + y1 * cs + v3.cy];
 }
+// ── 뷰포트 유틸 (사분할) ──
+function vpRect(i) {
+  const W = v3.cv.width, H = v3.cv.height;
+  if (!v3.quad) return { x: 0, y: 0, w: W, h: H };
+  const w2 = Math.floor(W / 2), h2 = Math.floor(H / 2);
+  return [{ x: 0, y: 0, w: w2, h: h2 }, { x: w2, y: 0, w: W - w2, h: h2 },
+          { x: 0, y: h2, w: w2, h: H - h2 }, { x: w2, y: h2, w: W - w2, h: H - h2 }][i];
+}
+function loadVp(i) { const w = v3.views[i]; v3.yaw = w.yaw; v3.pitch = w.pitch; v3.zoom = w.zoom; v3.panX = w.panX; v3.panY = w.panY; }
+function saveVp() { const w = v3.views[v3.act]; w.yaw = v3.yaw; w.pitch = v3.pitch; w.zoom = v3.zoom; w.panX = v3.panX; w.panY = v3.panY; }
+function vpAt(px, py) {
+  if (!v3.quad) return v3.act;
+  return (px < v3.cv.width / 2 ? 0 : 1) + (py < v3.cv.height / 2 ? 0 : 2);
+}
 function render3D() {
   const c = v3.ctx, W = v3.cv.width, H = v3.cv.height;
+  saveVp(); // 현재 조작 파라미터를 활성 뷰에 보존
   c.clearRect(0, 0, W, H);
+  const dpr = devicePixelRatio || 1;
+  v3.grip = null; v3.gum = null;
+  const order = v3.quad ? [0, 1, 2, 3] : [v3.act];
+  for (const i of order) {
+    const r = vpRect(i);
+    v3.vp = r; loadVp(i);
+    c.save(); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip();
+    const res = renderScene(i === v3.act);
+    c.restore();
+    v3.views[i]._faces = res.faces; v3.views[i]._under = res.under;
+    c.font = `600 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
+    c.fillStyle = i === v3.act ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
+    c.fillText(v3.views[i].name, r.x + 8 * dpr, r.y + 16 * dpr);
+    if (v3.quad) {
+      c.strokeStyle = i === v3.act ? '#0A84FF' : (getCSS('--line') || 'rgba(120,140,180,.3)');
+      c.lineWidth = i === v3.act ? 1.5 : 1;
+      c.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    }
+  }
+  loadVp(v3.act); v3.vp = vpRect(v3.act);
+  v3.faces = v3.views[v3.act]._faces; v3.under = v3.views[v3.act]._under;
+  if (window.__BIM3D_DEBUG) {
+    window.__BIM3D_STATS = { solids: v3.solids.length, faces: v3.faces.length };
+    window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D, unproj3D, wall3DClick, vpAt, loadVp, vpRect };
+  }
+}
+// 한 뷰포트의 장면 렌더 (v3.vp/yaw/pitch/zoom/pan 기준) — isActive면 그립/검볼/미리보기 포함
+function renderScene(isActive) {
+  const c = v3.ctx;
   const faces = [];
   // 바닥 그리드 (z=0, 모델 주변)
   const g = Math.pow(10, Math.round(Math.log10(v3.fit / 8)));
@@ -2334,8 +2387,8 @@ function render3D() {
   for (let y = gy0; y <= gy1; y += g) { const a = proj3D(gx0, y, 0), b = proj3D(gx1, y, 0); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
   c.stroke();
   // 평면 밑그림 — BIM 지정 안 된 일반 도형도 해당 층 레벨 높이에 라인워크로 표시 (평면↔3D 연속성)
-  // 투영 경로를 v3.under에 캐시해 클릭 픽킹(pick3DAt)에서 재사용
-  v3.under = [];
+  // 투영 경로를 캐시해 클릭 픽킹(pick3DAt)에서 재사용 (활성 뷰 것만 v3.under로 노출)
+  const under = [];
   c.save();
   c.lineWidth = 1;
   for (const e of state.entities) {
@@ -2357,7 +2410,7 @@ function render3D() {
         path.push(proj3D(e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a), z));
       }
     } else continue; // TEXT/치수/해치 등은 3D 밑그림 생략
-    v3.under.push({ eid: e.id, path, closed });
+    under.push({ eid: e.id, path, closed });
     const isSel = state.selection.has(e.id);
     c.globalAlpha = isSel ? 0.95 : 0.5;
     c.strokeStyle = isSel ? '#0A84FF' : entityColor(e);
@@ -2404,10 +2457,8 @@ function render3D() {
     c.lineWidth = isSel ? 2 : 1; c.stroke();
     c.globalAlpha = 1;
   }
-  v3.faces = faces; // 클릭 선택용
-  // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (거의 수직 뷰에서는 높이 방향이 화면에 안 보여 숨김)
-  v3.grip = null;
-  if (state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
+  // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (활성 뷰에서만, 거의 수직 뷰에서는 숨김)
+  if (isActive && state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
     const sid = [...state.selection][0];
     const ent = state.entities.find(en => en.id === sid);
     if (ent && ent.bim && (ent.bim.kind === 'wall' || ent.bim.kind === 'column' || ent.bim.kind === 'stair')) {
@@ -2434,9 +2485,8 @@ function render3D() {
       }
     }
   }
-  // 검볼 — 선택 1개의 이동 핸들 (X/Y/Z 축 화살표: 드래그=이동, 클릭=수치 입력)
-  v3.gum = null;
-  if (state.selection.size === 1) {
+  // 검볼 — 선택 1개의 이동 핸들 (활성 뷰에서만)
+  if (isActive && state.selection.size === 1) {
     const sid = [...state.selection][0];
     const ent = state.entities.find(en => en.id === sid);
     if (ent && (ent.bim || ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(ent.type))) {
@@ -2471,8 +2521,8 @@ function render3D() {
       c.globalAlpha = 1;
     }
   }
-  // 3D 벽 그리기 미리보기 (러버밴드 + 시작점 표시)
-  if (v3.wallMode && v3.wallP1) {
+  // 3D 벽 그리기 미리보기 (활성 뷰에서만)
+  if (isActive && v3.wallMode && v3.wallP1) {
     const ze = lvElev(), dpr = devicePixelRatio || 1;
     const a = proj3D(v3.wallP1[0], v3.wallP1[1], ze);
     c.fillStyle = '#ff9f0a'; c.beginPath(); c.arc(a[0], a[1], 4 * dpr, 0, Math.PI * 2); c.fill();
@@ -2484,10 +2534,7 @@ function render3D() {
       c.fillText(`${Math.round(Math.hypot(v3.wallCur[0] - v3.wallP1[0], v3.wallCur[1] - v3.wallP1[1]))}`, (a[0] + b[0]) / 2 + 6, (a[1] + b[1]) / 2 - 6);
     }
   }
-  if (window.__BIM3D_DEBUG) {
-    window.__BIM3D_STATS = { solids: v3.solids.length, faces: faces.length };
-    window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D, unproj3D, wall3DClick };
-  }
+  return { faces, under };
 }
 function shadeColor(hex, k) {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * k), g = Math.round(parseInt(hex.slice(3, 5), 16) * k), b = Math.round(parseInt(hex.slice(5, 7), 16) * k);
@@ -2508,6 +2555,13 @@ function bind3D(ov, cv3) {
   let drag = null;
   cv3.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    { // 사분할: 클릭한 뷰포트를 활성화
+      const rv = cv3.getBoundingClientRect();
+      const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
+      const pyv = (e.clientY - rv.top) * (rv.height ? cv3.height / rv.height : 1);
+      const vi = vpAt(pxv, pyv);
+      if (vi !== v3.act) { v3.act = vi; loadVp(vi); render3D(); }
+    }
     // 높이 그립 히트 → 리프트 드래그 (벽/기둥 높이 끌어올리기)
     if (v3.grip && e.button === 0 && !e.shiftKey) {
       const r = cv3.getBoundingClientRect();
@@ -2549,8 +2603,8 @@ function bind3D(ov, cv3) {
         }
       }
     }
-    // 벽 그리기 모드: 좌클릭은 점 찍기 전용 (박스 선택 없음)
-    if (v3.wallMode && e.button === 0 && !e.shiftKey) {
+    // 벽 그리기 모드/평면 도구 활성: 좌클릭은 점 찍기 전용 (박스 선택 없음)
+    if ((v3.wallMode || state.tool !== 'select') && e.button === 0 && !e.shiftKey) {
       drag = { mode: 'wallpt', x: e.clientX, y: e.clientY, moved: 0 };
       try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
       return;
@@ -2652,7 +2706,9 @@ function bind3D(ov, cv3) {
     } else if (drag && e && e.type === 'pointerup') {
       if (drag.mode === 'box' && drag.moved >= 4) applyBox3D(drag);
       else if (drag.moved < 4 && (e.button === 0 || e.pointerType === 'touch')) {
-        if (v3.wallMode) wall3DClick(e); else pick3D(e, drag.shift); // 클릭 = 벽 점 찍기 / 선택
+        if (v3.wallMode) wall3DClick(e);
+        else if (state.tool !== 'select') tool3DClick(e); // 평면 도구를 3D에서 사용
+        else pick3D(e, drag.shift);
       } else if (drag.mode === 'box') render3D(); // 박스 흔적 지우기
     }
     drag = null; cv3.style.cursor = v3.wallMode ? 'crosshair' : 'grab';
@@ -2660,9 +2716,25 @@ function bind3D(ov, cv3) {
   cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
   cv3.addEventListener('wheel', (e) => {
     e.preventDefault();
+    { // 커서가 올라간 뷰포트에 줌 적용
+      const rv = cv3.getBoundingClientRect();
+      const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
+      const pyv = (e.clientY - rv.top) * (rv.height ? cv3.height / rv.height : 1);
+      const vi = vpAt(pxv, pyv);
+      if (vi !== v3.act) { v3.act = vi; loadVp(vi); }
+    }
     v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * (e.deltaY < 0 ? 1.12 : 0.9)));
     render3D();
   }, { passive: false });
+  // 더블클릭: 사분할 ↔ 해당 뷰 최대화 (라이노식)
+  cv3.addEventListener('dblclick', (e) => {
+    const rv = cv3.getBoundingClientRect();
+    const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
+    const pyv = (e.clientY - rv.top) * (rv.height ? cv3.height / rv.height : 1);
+    if (v3.quad) { v3.act = vpAt(pxv, pyv); loadVp(v3.act); v3.quad = false; }
+    else v3.quad = true;
+    render3D();
+  });
   cv3.addEventListener('contextmenu', (e) => e.preventDefault());
   // 터치: 핀치 줌
   let pinch = null;
@@ -2688,6 +2760,7 @@ function bind3D(ov, cv3) {
     ov.querySelector('#b3Roof').textContent = '지붕:' + (v3.roof === 'ghost' ? '투명' : v3.roof === 'hide' ? '숨김' : '보임');
     render3D();
   });
+  ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); });
   ov.querySelector('#b3Close').addEventListener('click', close3D);
   ov.querySelector('#b3Iso').addEventListener('click', () => { v3.yaw = -0.6; v3.pitch = 0.85; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
   ov.querySelector('#b3Top').addEventListener('click', () => { v3.yaw = 0; v3.pitch = 1.55; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
@@ -2696,6 +2769,7 @@ function bind3D(ov, cv3) {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
     if (v3.wallMode) { setWallMode(false); }                                          // 0차: 벽 그리기 종료
+    else if (state.tool !== 'select') { setTool('select'); state.selection.clear(); renderProps(); render3D(); } // 0.5차: 도구 취소
     else if (state.selection.size) { state.selection.clear(); renderProps(); render3D(); } // 1차: 선택 해제
     else close3D();                                                                  // 2차: 평면으로
   }, true);
@@ -2712,6 +2786,17 @@ function close3D() {
   if (d) d.addEventListener('click', () => open3D());
   if (p) p.addEventListener('click', close3D);
 })();
+// 평면 도구를 3D에서 사용: 클릭을 현재 층 바닥면으로 언프로젝션해 기존 도구 파이프라인(handleClick)에 전달
+function tool3DClick(e) {
+  const r = v3.cv.getBoundingClientRect();
+  const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
+  const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
+  const u = unproj3D(px, py, lvElev());
+  if (!u) { logLine('  이 뷰는 바닥면과 거의 평행해 클릭 작도가 어렵습니다 — 평면/아이소 뷰를 쓰거나 명령창에 좌표를 입력하세요.', 'warn'); return; }
+  const w = { x: Math.round(u[0]), y: Math.round(u[1]) };
+  handleClick(w, w, e);
+  v3.solids = bimSolids(); render3D();
+}
 // 3D 벽 그리기: 클릭 → 층 바닥면에 언프로젝션 → 2점째에 벽(LINE+bim) 생성, 연속 체인
 function wall3DClick(e) {
   const r = v3.cv.getBoundingClientRect();
