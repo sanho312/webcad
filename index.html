@@ -276,7 +276,10 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   .layer{display:flex;flex-direction:column;gap:3px;padding:6px 8px;border-radius:var(--radius);
     font-size:13px;cursor:pointer;transition:background .12s ease;}
   .layer:hover{background:rgba(255,255,255,0.05);}
-  .layer.active{background:var(--accent);box-shadow:var(--spec-strong),0 2px 10px rgba(10,132,255,0.35);}
+  .layer.active{background:var(--accent);box-shadow:var(--spec-strong),0 2px 10px rgba(10,132,255,0.35);
+    color:#fff;} /* 파란 활성 배경 위 콘텐츠는 테마와 무관하게 항상 흰색 */
+  .layer.active .nm,.layer.active .eye,.layer.active .lk{color:#fff;}
+  .layer.active .lrow2 select{color:#fff;background:rgba(0,0,0,.28);}
   .layer .lrow1{display:flex;align-items:center;gap:6px;}
   .layer .lrow2{display:flex;gap:4px;}
   .layer .lrow2 select{flex:1;min-width:0;background:var(--panel2);color:var(--text);
