@@ -58,7 +58,7 @@ let settings = {
   osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
-  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900 }, // BIM 기본값(mm)
+  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200 }, // BIM 기본값(mm)
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
@@ -2112,7 +2112,7 @@ function drawBimOverlay(e) {
       ctx.beginPath(); ctx.moveTo(a.x + nx, a.y + ny); ctx.lineTo(b.x + nx, b.y + ny);
       ctx.moveTo(a.x - nx, a.y - ny); ctx.lineTo(b.x - nx, b.y - ny); ctx.stroke();
     }
-  } else if (k === 'slab') {
+  } else if (k === 'slab' || k === 'roof') {
     ctx.globalAlpha = 0.06; ctx.fillStyle = entityColor(e);
     ctx.beginPath();
     if (e.type === 'CIRCLE') { const c = worldToScreen(e.cx, e.cy); ctx.arc(c.x, c.y, e.r * sc, 0, Math.PI * 2); }
@@ -2143,6 +2143,8 @@ function bimSolids() {
     else if (e.bim.kind === 'slab') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : e.points.map(p => [p[0], p[1]]);
       solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: '#9aa2af' });
+    } else if (e.bim.kind === 'roof' && e.type === 'LWPOLYLINE') {
+      for (const s of roofSolids(e)) solids.push(s);
     } else if (e.bim.kind === 'column') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
       solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: '#8fa3c8' });
@@ -2262,7 +2264,8 @@ function render3D() {
   // 면 수집: 측면(모서리별 사각) + 상/하면
   for (const s of v3.solids) {
     const n = s.poly.length;
-    const top = s.poly.map(p => proj3D(p[0], p[1], s.z1));
+    const zt = s.zt || s.poly.map(() => s.z1);
+    const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
     const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
@@ -2403,17 +2406,32 @@ function genSectionView(p1, u, nrm, lineLen, depth, isElev) {
     const dvals = s.poly.map(v => (v[0] - p1.x) * nrm.x + (v[1] - p1.y) * nrm.y);
     const svals = s.poly.map(v => (v[0] - p1.x) * u.x + (v[1] - p1.y) * u.y);
     const dmin = Math.min(...dvals), dmax = Math.max(...dvals);
-    zmin = Math.min(zmin, s.z0); zmax = Math.max(zmax, s.z1);
+    const sZ1 = s.zt ? Math.max(...s.zt) : s.z1;
+    zmin = Math.min(zmin, s.z0); zmax = Math.max(zmax, sZ1);
     if (!isElev && dmin < -1e-6 && dmax > 1e-6) {
       // 절단됨: 선과 풋프린트의 교차 구간 → 사각형
       for (const [s0, s1] of lineClipPoly(p1, u, s.poly)) {
-        cuts.push({ s0, s1, z0: s.z0, z1: s.z1, glass: s.glass });
+        if (s.zt) {
+          // 경사 상단: 절단선 위 두 점의 상단 높이 → 사다리꼴
+          const A = { x: p1.x + u.x * s0, y: p1.y + u.y * s0 }, B = { x: p1.x + u.x * s1, y: p1.y + u.y * s1 };
+          cuts.push({ s0, s1, z0: s.z0, z1: null, zA: solidTopZ(s, A.x, A.y), zB: solidTopZ(s, B.x, B.y), glass: s.glass });
+        } else cuts.push({ s0, s1, z0: s.z0, z1: s.z1, glass: s.glass });
         smin = Math.min(smin, s0); smax = Math.max(smax, s1);
       }
     } else if (dmin > 1e-6 && dmin <= depth) {
       // 앞쪽(바라보는 방향)에 있음 → 투영
       const ps0 = Math.min(...svals), ps1 = Math.max(...svals);
-      projs.push({ s0: ps0, s1: ps1, z0: s.z0, z1: s.z1, glass: s.glass, d: dmin });
+      if (s.zt) {
+        // 경사 지붕 프로파일: 꼭짓점 (s, zt) 상부 외곽선
+        const vps = s.poly.map((v, i) => [svals[i], s.zt[i]]).sort((a, b) => a[0] - b[0]);
+        const env = []; // s별 최대 z (상부 포락선)
+        for (const [sv, zv] of vps) {
+          const last = env[env.length - 1];
+          if (last && Math.abs(last[0] - sv) < 1) { last[1] = Math.max(last[1], zv); }
+          else env.push([sv, zv]);
+        }
+        projs.push({ profile: env, s0: ps0, s1: ps1, z0: s.z0, glass: s.glass, d: dmin });
+      } else projs.push({ s0: ps0, s1: ps1, z0: s.z0, z1: s.z1, glass: s.glass, d: dmin });
       smin = Math.min(smin, ps0); smax = Math.max(smax, ps1);
     }
   }
@@ -2425,20 +2443,35 @@ function genSectionView(p1, u, nrm, lineLen, depth, isElev) {
   ensureLayer('투영', '#8a94a8');
   ensureLayer('절단', '#e8e2d6');
   ensureLayer('유리', '#7ec8ff');
-  // 지반선
+  // 지반선 + 층 레벨선 (원본 도면의 층 정보)
+  const srcLevels = (state.levels || []).slice();
   addEntity({ type: 'LINE', layer: '투영', linetype: 'center', x1: smin - 500, y1: 0, x2: smax + 500, y2: 0 });
   // 투영(먼 것부터 그려 순서 유지)
   projs.sort((a, b) => b.d - a.d);
   for (const p of projs) {
-    addEntity({ type: 'LWPOLYLINE', layer: p.glass ? '유리' : '투영', closed: true,
-      points: [[p.s0, p.z0], [p.s1, p.z0], [p.s1, p.z1], [p.s0, p.z1]] });
+    if (p.profile) { // 경사 지붕: 바닥 + 상부 프로파일 폴리곤
+      const pts = [[p.s0, p.z0], [p.s1, p.z0]];
+      for (let i = p.profile.length - 1; i >= 0; i--) pts.push([p.profile[i][0], p.profile[i][1]]);
+      addEntity({ type: 'LWPOLYLINE', layer: '투영', closed: true, points: pts });
+    } else {
+      addEntity({ type: 'LWPOLYLINE', layer: p.glass ? '유리' : '투영', closed: true,
+        points: [[p.s0, p.z0], [p.s1, p.z0], [p.s1, p.z1], [p.s0, p.z1]] });
+    }
   }
   // 절단(외곽 + 해치)
   for (const c of cuts) {
-    const pts = [[c.s0, c.z0], [c.s1, c.z0], [c.s1, c.z1], [c.s0, c.z1]];
+    const pts = c.z1 == null
+      ? [[c.s0, c.z0], [c.s1, c.z0], [c.s1, c.zB], [c.s0, c.zA]]
+      : [[c.s0, c.z0], [c.s1, c.z0], [c.s1, c.z1], [c.s0, c.z1]];
     addEntity({ type: 'LWPOLYLINE', layer: '절단', closed: true, points: pts, lineweight: 50 });
     if (!c.glass) addEntity({ type: 'HATCH', layer: '절단', pattern: 'ansi31',
       spacing: Math.max(60, (c.s1 - c.s0) / 3), boundary: { kind: 'poly', points: pts } });
+  }
+  // 층 레벨선 + 레벨 라벨
+  for (const lvv of srcLevels) {
+    if (lvv.elev !== 0) addEntity({ type: 'LINE', layer: '투영', linetype: 'dashed', x1: smin - 500, y1: lvv.elev, x2: smax + 500, y2: lvv.elev });
+    addEntity({ type: 'TEXT', layer: '투영', x: smax + 600, y: lvv.elev - 100, height: 250,
+      text: `${lvv.name}  ${lvv.elev >= 0 ? '+' : ''}${lvv.elev}`, rotation: 0 });
   }
   // 라벨
   addEntity({ type: 'TEXT', layer: '투영', x: smin, y: zmax + 400, height: 300, text: label + (isElev ? '' : ' (절단 해치 = 잘린 부분)'), rotation: 0 });
@@ -2498,6 +2531,74 @@ function entityArea2(e) {
   if (e.type === 'LWPOLYLINE' && e.closed) return polyArea(e.points);
   if (e.type === 'HATCH') { const b = e.boundary; return b.kind === 'circle' ? Math.PI * b.r * b.r : polyArea(b.points); }
   return 0;
+}
+
+// ====== ROOF — 지붕 지정 (사각 풋프린트: 박공/외쪽/평) ======
+function cmdRoofTag() {
+  const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed);
+  if (!sel.length) { logLine('  지붕: 닫힌 폴리라인(지붕 외곽)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const tp = prompt('지붕 유형 — 1: 박공(gable)  2: 외쪽(shed)  3: 평(flat)', '1');
+  if (tp === null) return;
+  const rtype = tp.trim() === '2' ? 'shed' : tp.trim() === '3' ? 'flat' : 'gable';
+  const eave = bimAskNum('처마 높이 (지붕이 시작되는 z, mm):', lvElev() + settings.bim.wallH); if (eave == null) return;
+  const rise = rtype === 'flat'
+    ? (bimAskNum('지붕 두께 (mm):', 300) || 300)
+    : (bimAskNum(rtype === 'gable' ? '용마루 추가 높이 (처마 위로, mm):' : '높은 쪽 추가 높이 (mm):', settings.bim.roofRise) || settings.bim.roofRise);
+  let dir = 'auto';
+  if (rtype === 'shed') {
+    const d = prompt('높은 쪽 방향 — 1: 북(+Y)  2: 남(-Y)  3: 동(+X)  4: 서(-X)', '1');
+    dir = { '1': 'n', '2': 's', '3': 'e', '4': 'w' }[(d || '1').trim()] || 'n';
+  } else if (rtype === 'gable') {
+    const d = prompt('용마루 방향 — Enter: 자동(긴 변)  1: 가로(X)  2: 세로(Y)', '');
+    dir = d && d.trim() === '1' ? 'x' : d && d.trim() === '2' ? 'y' : 'auto';
+  }
+  settings.bim.roofRise = rise; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'roof', rtype, eave, rise, dir };
+  logLine(`  ✔ 지붕 지정 ${sel.length}개 (${{ gable: '박공', shed: '외쪽', flat: '평' }[rtype]}, 처마 ${eave}${rtype === 'flat' ? '' : ', 상승 ' + rise})`, 'ok');
+  renderProps(); draw();
+}
+// 지붕 → 경사 상단(zt) 솔리드 생성 (풋프린트의 bbox 사각 기준)
+function roofSolids(e) {
+  const b = e.bim;
+  const xs = e.points.map(p => p[0]), ys = e.points.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const col = '#b8695a';
+  if (b.rtype === 'flat')
+    return [{ poly: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], z0: b.eave, z1: b.eave + b.rise, color: col }];
+  if (b.rtype === 'shed') {
+    const P = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    const hi = b.eave + b.rise, lo = b.eave;
+    const ztOf = { n: [lo, lo, hi, hi], s: [hi, hi, lo, lo], e: [lo, hi, hi, lo], w: [hi, lo, lo, hi] }[b.dir] || [lo, lo, hi, hi];
+    return [{ poly: P, z0: b.eave, zt: ztOf, color: col }];
+  }
+  // 박공: 용마루 = 긴 변 방향(또는 지정) 중앙선, 두 개의 경사 솔리드
+  const alongX = b.dir === 'x' || (b.dir !== 'y' && (x1 - x0) >= (y1 - y0));
+  const hi = b.eave + b.rise, lo = b.eave;
+  if (alongX) {
+    const ym = (y0 + y1) / 2;
+    return [
+      { poly: [[x0, y0], [x1, y0], [x1, ym], [x0, ym]], z0: lo, zt: [lo, lo, hi, hi], color: col },
+      { poly: [[x0, ym], [x1, ym], [x1, y1], [x0, y1]], z0: lo, zt: [hi, hi, lo, lo], color: col },
+    ];
+  }
+  const xm = (x0 + x1) / 2;
+  return [
+    { poly: [[x0, y0], [xm, y0], [xm, y1], [x0, y1]], z0: lo, zt: [lo, hi, hi, lo], color: col },
+    { poly: [[xm, y0], [x1, y0], [x1, y1], [xm, y1]], z0: lo, zt: [hi, lo, lo, hi], color: col },
+  ];
+}
+// 경사 상단 평면 z(x,y) — zt 솔리드용 (첫 세 꼭짓점으로 평면 결정)
+function solidTopZ(s, x, y) {
+  if (!s.zt) return s.z1;
+  const [p0, p1, p2] = [s.poly[0], s.poly[1], s.poly[2]];
+  const [z0v, z1v, z2v] = [s.zt[0], s.zt[1], s.zt[2]];
+  const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = z1v - z0v;
+  const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = z2v - z0v;
+  // 법선 n = a × b, 평면: n·(P - p0) = 0
+  const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+  if (Math.abs(nz) < 1e-12) return s.zt[0];
+  return z0v - (nx * (x - p0[0]) + ny * (y - p0[1])) / nz;
 }
 
 // ====== SUM — 선택 도형의 길이·면적 합계 ======
@@ -3289,6 +3390,7 @@ const INSTANT_CMDS = {
   bimclear: cmdBimClear,
   view3d: open3D,
   level: cmdLevelInfo,
+  roof: cmdRoofTag,
 };
 
 function nearGrip(e, w, tol) {
@@ -3498,6 +3600,7 @@ const CMD_ALIASES = {
   door: 'door', window: 'window', win: 'window', bimclear: 'bimclear',
   '3d': 'view3d', view3d: 'view3d',
   level: 'level', lv: 'level',
+  roof: 'roof',
   section: 'section', sec: 'section',
   elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
@@ -4523,6 +4626,7 @@ const CMD_HELP = [
     ['section', '단면 추출', '절단선 두 점 → 방향 클릭 → 새 탭에 단면도 자동 생성(절단 해치+후방 투영)'],
     ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
     ['level', '층(다층)', '그리기 설정 패널에서 층 전환/추가 — 새 도형은 현재 층에 생성, 다른 층은 흐리게 표시, BIM 높이 자동 반영'],
+    ['roof', '지붕 지정', '닫힌 폴리라인 선택 후 → 박공/외쪽/평 + 처마 높이 + 상승 높이 — 3D 경사면·단면 사다리꼴 자동'],
   ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
@@ -4595,7 +4699,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
