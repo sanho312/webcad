@@ -243,6 +243,11 @@ function addEntity(e) {
   e.layer = e.layer || state.currentLayer;
   if (state.currentColor) e.color = state.currentColor;
   e.lv = state.curLv || 0; // 생성 시점의 층에 귀속
+  { // 3D 뷰에서 작업면을 올려놓고 그리면 그 높이에 생성 (레이캐스팅 교점의 z)
+    const ov3 = typeof v3 !== 'undefined' && v3 && document.getElementById('bim3d');
+    if (ov3 && ov3.style.display !== 'none' && v3.cplane != null && Math.abs(v3.cplane - lvElev()) > 0.5 && !e.bim)
+      e.zo = v3.cplane - lvElev();
+  }
   state.entities.push(e);
   return e;
 }
@@ -2238,7 +2243,18 @@ function open3D() {
     ov.id = 'bim3d';
     ov.style.cssText = 'position:absolute;inset:0;z-index:18;background:var(--bg);display:flex;flex-direction:column;';
     ov.innerHTML = `
-      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>`;
+      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>
+      <div id="cplaneBar" style="position:absolute;left:8px;bottom:8px;z-index:3;display:flex;gap:5px;align-items:center;
+        background:var(--glass-chrome);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
+        padding:5px 9px;border-radius:11px;box-shadow:var(--spec);"
+        title="작업면(Construction Plane) 높이 — 3D에서 그리는 객체가 이 높이에 생성됩니다">
+        <span style="font-size:11px;color:var(--muted);white-space:nowrap;">작업면 Z</span>
+        <button class="miniBtn" id="cpMinus" style="min-width:22px;">−</button>
+        <input id="cpZ" type="number" step="100" value="0" style="width:64px;font-size:12px;">
+        <button class="miniBtn" id="cpPlus" style="min-width:22px;">＋</button>
+        <input id="cpSlide" type="range" min="-1000" max="9000" step="100" value="0" style="width:110px;">
+        <button class="miniBtn" id="cpReset" title="현재 층 레벨로">층</button>
+      </div>`;
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
     v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
@@ -2566,9 +2582,22 @@ function renderScene(isActive) {
       c.globalAlpha = 1;
     }
   }
+  // 작업면 시각화 — 층 레벨과 다르면 점선 사각형 + 높이 라벨 (모든 뷰포트)
+  if (Math.abs(cplaneZ() - lvElev()) > 0.5) {
+    const zc = cplaneZ(), dcp = devicePixelRatio || 1;
+    const hx = v3.fit * 0.7, hy = v3.fit * 0.7;
+    const cor = [[v3.cx - hx, v3.cy - hy], [v3.cx + hx, v3.cy - hy], [v3.cx + hx, v3.cy + hy], [v3.cx - hx, v3.cy + hy]].map(p => proj3D(p[0], p[1], zc));
+    c.save();
+    c.strokeStyle = '#bf5af2'; c.globalAlpha = 0.75; c.lineWidth = 1.2 * dcp; c.setLineDash([8 * dcp, 5 * dcp]);
+    c.beginPath(); cor.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke();
+    c.setLineDash([]);
+    c.font = `${11 * dcp}px -apple-system,system-ui,sans-serif`; c.fillStyle = '#bf5af2';
+    c.fillText(`작업면 z=${zc}`, cor[0][0] + 4, cor[0][1] - 4);
+    c.restore();
+  }
   // 작도 가선 — 평면의 draft/pts/previewEnts를 층 바닥면에 투영 (모든 뷰포트에 표시)
   if (draft || pts.length || previewEnts) {
-    const zw = lvElev(), dg = devicePixelRatio || 1;
+    const zw = cplaneZ(), dg = devicePixelRatio || 1;
     const pathOf = (e) => {
       if (e.type === 'LINE') return { p: [proj3D(e.x1, e.y1, zw), proj3D(e.x2, e.y2, zw)], cl: false };
       if (e.type === 'LWPOLYLINE' && e.points && e.points.length) return { p: e.points.map(q => proj3D(q[0], q[1], zw)), cl: !!e.closed };
@@ -2595,7 +2624,7 @@ function renderScene(isActive) {
   // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각)
   if (v3.snapHit && (v3.wallMode || state.tool !== 'select')) {
     const sm = v3.snapHit, dpr3 = devicePixelRatio || 1;
-    const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : lvElev());
+    const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : cplaneZ());
     const rr = 7 * dpr3;
     c.save();
     c.strokeStyle = '#2ee6a6'; c.lineWidth = 1.8 * dpr3; c.setLineDash([]);
@@ -2608,7 +2637,7 @@ function renderScene(isActive) {
   }
   // 3D 벽 그리기 미리보기 (모든 뷰포트에 표시)
   if (v3.wallMode && v3.wallP1) {
-    const ze = lvElev(), dpr = devicePixelRatio || 1;
+    const ze = cplaneZ(), dpr = devicePixelRatio || 1;
     const a = proj3D(v3.wallP1[0], v3.wallP1[1], ze);
     c.fillStyle = '#ff9f0a'; c.beginPath(); c.arc(a[0], a[1], 4 * dpr, 0, Math.PI * 2); c.fill();
     if (v3.wallCur && (v3.wallCur[0] !== v3.wallP1[0] || v3.wallCur[1] !== v3.wallP1[1])) {
@@ -2624,6 +2653,16 @@ function renderScene(isActive) {
 function shadeColor(hex, k) {
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * k), g = Math.round(parseInt(hex.slice(3, 5), 16) * k), b = Math.round(parseInt(hex.slice(5, 7), 16) * k);
   return `rgb(${Math.min(255, r)},${Math.min(255, g)},${Math.min(255, b)})`;
+}
+// 작업면(Construction Plane) z — 3D 작도의 레이캐스팅 교차 평면 (기본: 현재 층 레벨)
+function cplaneZ() { return (v3 && v3.cplane != null) ? v3.cplane : lvElev(); }
+function setCplane(z) {
+  if (!v3) return;
+  v3.cplane = isFinite(z) ? Math.round(z) : null;
+  const zi = document.getElementById('cpZ'), sl = document.getElementById('cpSlide');
+  if (zi) zi.value = cplaneZ();
+  if (sl) sl.value = Math.max(sl.min | 0, Math.min(sl.max | 0, cplaneZ()));
+  render3D();
 }
 // 3D 커서 — 평면(setTool)과 동일 규칙: select=기본, pan=손, 그 외 도구=십자
 function cursor3D() {
@@ -2731,7 +2770,7 @@ function bind3D(ov, cv3) {
       const py3 = (e.clientY - r3.top) * (r3.height ? cv3.height / r3.height : 1);
       const vi3 = vpAt(px3, py3); // 사분할: 커서가 있는 뷰포트 기준으로 스냅·가선 계산
       if (vi3 !== v3.act) { v3.act = vi3; loadVp(vi3); v3.vp = vpRect(vi3); }
-      const w = unproj3D(px3, py3, lvElev());
+      const w = unproj3D(px3, py3, cplaneZ());
       if (w) {
         const sn = snap3D(px3, py3, null);
         v3.snapHit = sn || null; // 스냅 마커 표시용
@@ -2741,7 +2780,7 @@ function bind3D(ov, cv3) {
         mouseWorld = { x: cur.x, y: cur.y };  // 2D 파이프라인의 러버밴드 로직 재사용
         updateDraft();
         const co = document.getElementById('coords');
-        if (co) co.textContent = `X: ${cur.x.toFixed(2)}  Y: ${cur.y.toFixed(2)}`;
+        if (co) co.textContent = `X: ${cur.x.toFixed(2)}  Y: ${cur.y.toFixed(2)}  Z: ${cplaneZ()}`;
         render3D();
       }
       return;
@@ -2865,6 +2904,16 @@ function bind3D(ov, cv3) {
     render3D();
   };
   v3.setWallMode = setWallMode;
+  { // 작업면 컨트롤
+    const zi = ov.querySelector('#cpZ'), sl = ov.querySelector('#cpSlide');
+    zi.value = cplaneZ(); sl.value = cplaneZ();
+    zi.addEventListener('change', () => setCplane(parseFloat(zi.value)));
+    sl.addEventListener('input', () => setCplane(parseFloat(sl.value)));
+    ov.querySelector('#cpMinus').addEventListener('click', () => setCplane(cplaneZ() - 100));
+    ov.querySelector('#cpPlus').addEventListener('click', () => setCplane(cplaneZ() + 100));
+    ov.querySelector('#cpReset').addEventListener('click', () => { v3.cplane = null; setCplane(NaN); });
+    zi.addEventListener('keydown', (e) => e.stopPropagation()); // 전역 단축키와 충돌 방지
+  }
   window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
@@ -2917,7 +2966,7 @@ function tool3DClick(e) {
   const r = v3.cv.getBoundingClientRect();
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
-  const u = unproj3D(px, py, lvElev());
+  const u = unproj3D(px, py, cplaneZ()); // 레이캐스팅: 뷰 광선 ∩ 작업면
   if (!u) return;
   const w = snap3D(px, py, { x: Math.round(u[0]), y: Math.round(u[1]) });
   handleClick(w, w, e);
@@ -2928,7 +2977,7 @@ function wall3DClick(e) {
   const r = v3.cv.getBoundingClientRect();
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
-  const w = unproj3D(px, py, lvElev());
+  const w = unproj3D(px, py, cplaneZ());
   if (!w) return;
   const sn = snap3D(px, py, null);
   const pt = sn ? [sn.x, sn.y] : [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
@@ -2936,7 +2985,7 @@ function wall3DClick(e) {
   if (Math.hypot(pt[0] - v3.wallP1[0], pt[1] - v3.wallP1[1]) < 10) return; // 같은 점
   pushUndo();
   const ln = addEntity({ type: 'LINE', x1: v3.wallP1[0], y1: v3.wallP1[1], x2: pt[0], y2: pt[1] });
-  ln.bim = { kind: 'wall', h: settings.bim.wallH, t: settings.bim.wallT, base: lvElev() };
+  ln.bim = { kind: 'wall', h: settings.bim.wallH, t: settings.bim.wallT, base: cplaneZ() };
   v3.wallP1 = pt; // 연속 그리기: 끝점이 다음 시작점
   v3.solids = bimSolids();
   logLine(`  ✔ 벽 생성 (${ln.x1},${ln.y1}) → (${ln.x2},${ln.y2}) · 길이 ${Math.round(Math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1))} — 평면에도 동시 반영`, 'ok');
