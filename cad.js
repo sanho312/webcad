@@ -23,6 +23,9 @@ const state = {
   currentColor: null,    // null = 레이어색(ByLayer), 아니면 '#rrggbb'
   tool: 'select',
   view: { x: 0, y: 0, scale: 1 },   // x,y = 화면 중앙이 가리키는 월드좌표
+  levels: [{ name: '1F', elev: 0 }], // 층 목록 (BIM 다층)
+  curLv: 0,                          // 현재 작업 층
+  ghostLv: true,                     // 다른 층을 흐리게 표시(참조용)
   grid: { show: true, size: 10 },
   ortho: false,          // 직교 모드(F8): 기준점 대비 수평/수직 고정
   selection: new Set(),
@@ -238,9 +241,13 @@ function addEntity(e) {
   e.id = state.nextId++;
   e.layer = e.layer || state.currentLayer;
   if (state.currentColor) e.color = state.currentColor;
+  e.lv = state.curLv || 0; // 생성 시점의 층에 귀속
   state.entities.push(e);
   return e;
 }
+// 현재 층 요소인가 (lv 없는 옛 도형 = 1층)
+function onLv(e) { return (e.lv || 0) === (state.curLv || 0); }
+function lvElev() { return (state.levels[state.curLv] || { elev: 0 }).elev; }
 
 // ============================================================
 //  렌더링
@@ -265,6 +272,10 @@ function draw() {
     const l = getLayer(e.layer);
     if (l && !l.visible) continue;
     if (cull) { const bb = entityBBox(e); if (bb && (bb.xmax < vxmin || bb.xmin > vxmax || bb.ymax < vymin || bb.ymin > vymax)) continue; }
+    if (!onLv(e)) { // 다른 층: 흐리게(참조) 또는 숨김
+      if (state.ghostLv && e.type !== 'IMAGE') { ctx.save(); ctx.globalAlpha = 0.15; drawEntity(e, false); ctx.restore(); }
+      continue;
+    }
     if (e.bim && e.bim.kind !== 'opening') drawBimOverlay(e); // 벽 밴드는 도형선 아래
     drawEntity(e, state.selection.has(e.id));
     if (e.bim && e.bim.kind === 'opening') drawBimOverlay(e);  // 개구부는 도형선 위
@@ -559,6 +570,7 @@ function hitTest(w, tolWorld) {
   for (let i = state.entities.length - 1; i >= 0; i--) {
     const e = state.entities[i];
     const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) continue;
+    if (!onLv(e)) continue; // 다른 층은 선택 불가
     if (entityHit(e, w, tolWorld)) return e;
   }
   return null;
@@ -750,6 +762,7 @@ function findObjectSnap(raw) {
   const preTol = tol / state.view.scale * 1.5; // bbox 프리체크(대형 도면 성능)
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
+    if (!onLv(e)) continue; // 다른 층에는 스냅하지 않음
     if (skipSel && state.selection.has(e.id)) continue;
     if (state.entities.length > 300) {
       const bb = entityBBox(e);
@@ -2006,7 +2019,7 @@ function cmdWallTag() {
   const t = bimAskNum('벽 두께 (mm):', settings.bim.wallT); if (t == null) return;
   settings.bim.wallH = h; settings.bim.wallT = t; saveSettings();
   pushUndo();
-  for (const e of sel) e.bim = { kind: 'wall', h, t, base: (e.bim && e.bim.base) || 0 };
+  for (const e of sel) e.bim = { kind: 'wall', h, t, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
   logLine(`  ✔ 벽 지정 ${sel.length}개 (높이 ${h}, 두께 ${t}) — 평면에 두께 밴드로 표시`, 'ok');
   renderProps(); draw();
 }
@@ -2016,7 +2029,7 @@ function cmdSlabTag() {
   const t = bimAskNum('슬래브 두께 (mm):', settings.bim.slabT); if (t == null) return;
   settings.bim.slabT = t; saveSettings();
   pushUndo();
-  for (const e of sel) e.bim = { kind: 'slab', t, top: (e.bim && e.bim.top) || 0 };
+  for (const e of sel) e.bim = { kind: 'slab', t, top: (e.bim && e.bim.top != null) ? e.bim.top : lvElev() };
   logLine(`  ✔ 슬래브 지정 ${sel.length}개 (두께 ${t})`, 'ok');
   renderProps(); draw();
 }
@@ -2026,7 +2039,7 @@ function cmdColumnTag() {
   const h = bimAskNum('기둥 높이 (mm):', settings.bim.colH); if (h == null) return;
   settings.bim.colH = h; saveSettings();
   pushUndo();
-  for (const e of sel) e.bim = { kind: 'column', h, base: (e.bim && e.bim.base) || 0 };
+  for (const e of sel) e.bim = { kind: 'column', h, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
   logLine(`  ✔ 기둥 지정 ${sel.length}개 (높이 ${h})`, 'ok');
   renderProps(); draw();
 }
@@ -2433,6 +2446,43 @@ function genSectionView(p1, u, nrm, lineLen, depth, isElev) {
   renderDocTabs(); renderLayers(); updateStat(); zoomFit();
   logLine(`  ✔ ${label} 생성 — 절단 ${cuts.length}개 · 투영 ${projs.length}개 (새 탭, 치수·수정·DXF 저장 가능)`, 'ok');
   if (window.WEBCAD_API && WEBCAD_API.onUsage) WEBCAD_API.onUsage(isElev ? 'elevation' : 'section');
+}
+
+// ============================================================
+//  층(Level) UI — 그리기 설정의 층 선택/추가, 고스트 토글
+// ============================================================
+function renderLevels() {
+  const sel = document.getElementById('curLv');
+  if (!sel) return;
+  sel.innerHTML = state.levels.map((l, i) =>
+    `<option value="${i}" ${i === state.curLv ? 'selected' : ''}>${escapeHtml(l.name)} (${l.elev})</option>`).join('');
+  const g = document.getElementById('lvGhost');
+  if (g) g.checked = !!state.ghostLv;
+}
+(function bindLevels() {
+  const sel = document.getElementById('curLv');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    state.curLv = parseInt(sel.value, 10) || 0;
+    state.selection.clear(); renderProps(); draw();
+    logLine(`  ▷ 현재 층: ${state.levels[state.curLv].name} (레벨 ${state.levels[state.curLv].elev}) — 새 도형·BIM은 이 층에 생성됩니다`, 'info');
+  });
+  document.getElementById('lvAdd').addEventListener('click', () => {
+    const last = state.levels[state.levels.length - 1];
+    const name = prompt('새 층 이름:', `${state.levels.length + 1}F`);
+    if (!name) return;
+    const elev = parseFloat(prompt('레벨(바닥 높이, mm):', last.elev + 3000));
+    if (!isFinite(elev)) return;
+    state.levels.push({ name, elev });
+    state.curLv = state.levels.length - 1;
+    renderLevels(); state.selection.clear(); renderProps(); draw();
+    logLine(`  ✔ 층 추가: ${name} (레벨 ${elev}) — 아래층이 흐리게 비칩니다(참조용)`, 'ok');
+  });
+  document.getElementById('lvGhost').addEventListener('change', (ev) => { state.ghostLv = ev.target.checked; draw(); });
+})();
+function cmdLevelInfo() {
+  logLine('  층 목록: ' + state.levels.map((l, i) => `${i === state.curLv ? '▶' : ''}${l.name}(${l.elev})`).join(' · ') +
+    ' — 그리기 설정 패널에서 전환/추가', 'info');
 }
 
 // ====== 도형 길이/면적 헬퍼 ======
@@ -3238,6 +3288,7 @@ const INSTANT_CMDS = {
   column: cmdColumnTag,
   bimclear: cmdBimClear,
   view3d: open3D,
+  level: cmdLevelInfo,
 };
 
 function nearGrip(e, w, tol) {
@@ -3354,6 +3405,7 @@ function finishDragSelect(ev) {
     const crossing = x2 < x1; // 오른쪽→왼쪽 드래그 = 크로싱(걸치면 선택), 왼→오 = 윈도우(전체 포함)
     for (const e of state.entities) {
       const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) continue; // 잠긴 레이어 제외
+      if (!onLv(e)) continue;
       if (crossing ? entityCrossesBox(e, box) : entityFullyInBox(e, box)) state.selection.add(e.id);
     }
   }
@@ -3445,6 +3497,7 @@ const CMD_ALIASES = {
   wall: 'wall', slab: 'slab', column: 'column', col: 'column',
   door: 'door', window: 'window', win: 'window', bimclear: 'bimclear',
   '3d': 'view3d', view3d: 'view3d',
+  level: 'level', lv: 'level',
   section: 'section', sec: 'section',
   elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
@@ -4105,7 +4158,7 @@ window.addEventListener('keydown', (ev) => {
   if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
   if (ev.ctrlKey && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); return; }
   if (ev.ctrlKey && ev.key.toLowerCase() === 's') { ev.preventDefault(); saveDXF(); return; }
-  if (ev.ctrlKey && ev.key.toLowerCase() === 'a') { ev.preventDefault(); state.entities.forEach(e => state.selection.add(e.id)); renderProps(); draw(); return; }
+  if (ev.ctrlKey && ev.key.toLowerCase() === 'a') { ev.preventDefault(); state.entities.forEach(e => { if (onLv(e)) state.selection.add(e.id); }); renderProps(); draw(); return; }
   if (ev.ctrlKey && ev.key.toLowerCase() === 'c') { ev.preventDefault(); copySelection(); return; }
   if (ev.ctrlKey && ev.key.toLowerCase() === 'v') { ev.preventDefault(); startPaste(); return; }
   switch (ev.key) {
@@ -4469,6 +4522,7 @@ const CMD_HELP = [
     ['3d', '3D 뷰', '벽·슬래브·기둥·개구부를 입체로 표시 — 드래그 회전, 휠 줌, Shift+드래그 이동'],
     ['section', '단면 추출', '절단선 두 점 → 방향 클릭 → 새 탭에 단면도 자동 생성(절단 해치+후방 투영)'],
     ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
+    ['level', '층(다층)', '그리기 설정 패널에서 층 전환/추가 — 새 도형은 현재 층에 생성, 다른 층은 흐리게 표시, BIM 높이 자동 반영'],
   ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
@@ -4541,6 +4595,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
+  { name: 'level', ko: '층 정보' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -4627,7 +4682,7 @@ if (cmdInputEl) {
       if (k === 'y') { ev.preventDefault(); ev.stopPropagation(); redo(); return; }
       if (k === 's') { ev.preventDefault(); ev.stopPropagation(); saveDXF(); return; }
       if (cmdInputEl.value === '') { // 텍스트 편집과 겹치지 않을 때만
-        if (k === 'a') { ev.preventDefault(); ev.stopPropagation(); state.entities.forEach(e => state.selection.add(e.id)); renderProps(); draw(); return; }
+        if (k === 'a') { ev.preventDefault(); ev.stopPropagation(); state.entities.forEach(e => { if (onLv(e)) state.selection.add(e.id); }); renderProps(); draw(); return; }
         if (k === 'c') { ev.preventDefault(); ev.stopPropagation(); copySelection(); return; }
         if (k === 'v') { ev.preventDefault(); ev.stopPropagation(); startPaste(); return; }
       }
@@ -5467,6 +5522,7 @@ function captureDoc() {
   return {
     entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
     nextId: state.nextId, blocks: state.blocks, view: { ...state.view }, views: state.views,
+    levels: state.levels, curLv: state.curLv, ghostLv: state.ghostLv,
     fileName: currentFileName, fileLoc: currentFileLoc, fileHandle,
     undo: undoStack.slice(), redo: redoStack.slice(),
   };
@@ -5479,6 +5535,10 @@ function applyDoc(d) {
   state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
   state.views = d.views || {};
+  state.levels = (d.levels && d.levels.length) ? d.levels : [{ name: '1F', elev: 0 }];
+  state.curLv = Math.min(d.curLv || 0, state.levels.length - 1);
+  state.ghostLv = d.ghostLv !== false;
+  renderLevels();
   viewPrevStack.length = 0;
   if (d.view) state.view = { ...d.view };
   fileHandle = d.fileHandle || null;
@@ -5545,6 +5605,8 @@ function renderDocTabs() {
 
 function newDrawing() {
   state.entities = [];
+  state.levels = [{ name: '1F', elev: 0 }]; state.curLv = 0; state.ghostLv = true;
+  if (typeof renderLevels === 'function') try { renderLevels(); } catch (e) {}
   state.layers = [
     { name: '0', color: '#ffffff', visible: true },
     { name: '치수', color: '#5dff8f', visible: true },
@@ -5662,12 +5724,14 @@ window.WEBCAD_API = {
   getDoc: () => ({
     name: currentFileName,
     data: { v: 1, entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
-            blocks: state.blocks, nextId: state.nextId, view: state.view, views: state.views },
+            blocks: state.blocks, nextId: state.nextId, view: state.view, views: state.views,
+            levels: state.levels, curLv: state.curLv },
   }),
   // 클라우드 도면 로드
   setDoc: (name, d) => {
     applyDoc({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId,
-               blocks: d.blocks, view: d.view, views: d.views, fileName: name || null, fileLoc: 'cloud' });
+               blocks: d.blocks, view: d.view, views: d.views, levels: d.levels, curLv: d.curLv,
+               fileName: name || null, fileLoc: 'cloud' });
     renderDocTabs(); draw();
   },
   getName: () => currentFileName,

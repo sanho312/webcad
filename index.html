@@ -611,6 +611,9 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <div class="section">
         <h3>그리기 설정</h3>
         <div class="body">
+          <div class="row"><label>층</label><select id="curLv" style="flex:1"></select>
+            <button class="miniBtn" id="lvAdd" title="층 추가 (레벨 지정)">＋</button></div>
+          <label class="optChk" style="font-size:11px;margin:0 0 6px;"><input type="checkbox" id="lvGhost" checked> 다른 층 흐리게 표시</label>
           <div class="row"><label>현재 색</label>
             <input type="color" id="curColor" value="#ffffff">
             <span id="curColorTxt" style="font-size:12px;color:var(--muted);">레이어색 사용</span>
@@ -648,7 +651,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260704h"></script>
+<script src="cad.js?v=20260704i"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>
