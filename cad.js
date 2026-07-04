@@ -1551,6 +1551,10 @@ function handleClick(w, rawW, ev) {
     case 'leader': clickLeader(w); break;
     case 'centerline': clickCenterline(w, rawW); break;
     case 'revcloud': clickRevcloud(w); break;
+    case 'frame': clickFrame(w); break;
+    case 'align': clickAlign(w, rawW); break;
+    case 'xline': clickXline(w); break;
+    case 'breakpt': clickBreakpt(w, rawW); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -1964,6 +1968,148 @@ function clickDimCircle(w, rawW, dia) {
   logLine(`  ✔ ${dia ? '지름' : '반지름'} 치수 ${txt}`, 'ok');
   cmdOp = { name, step: 'obj' }; updateStat();
   setPrompt('치수: 원/호를 클릭하세요. (연속 기입, Esc 종료)');
+}
+
+// ====== 도형 길이/면적 헬퍼 ======
+function entityLength(e) {
+  if (e.type === 'LINE') return Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+  if (e.type === 'LWPOLYLINE') return polyPerimeter(e.points, !!e.closed);
+  if (e.type === 'CIRCLE') return 2 * Math.PI * e.r;
+  if (e.type === 'ARC') { const sw = norm360(e.endAngle - e.startAngle) || 360; return e.r * sw * Math.PI / 180; }
+  return 0;
+}
+function entityArea2(e) {
+  if (e.type === 'CIRCLE') return Math.PI * e.r * e.r;
+  if (e.type === 'LWPOLYLINE' && e.closed) return polyArea(e.points);
+  if (e.type === 'HATCH') { const b = e.boundary; return b.kind === 'circle' ? Math.PI * b.r * b.r : polyArea(b.points); }
+  return 0;
+}
+
+// ====== SUM — 선택 도형의 길이·면적 합계 ======
+function cmdSum() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  합계: 먼저 도형을 선택하세요.', 'warn'); return; }
+  let len = 0, area = 0, nL = 0, nA = 0;
+  for (const e of sel) {
+    const l = entityLength(e); if (l > 0) { len += l; nL++; }
+    const a = entityArea2(e); if (a > 0) { area += a; nA++; }
+  }
+  const u = settings.units;
+  logLine(`  Σ 합계 (${sel.length}개 선택): 길이 ${fmtNum(len)}${u} (${nL}개)` + (nA ? ` · 면적 ${fmtNum(area)}${u}² (${nA}개)` : ''), 'ok');
+}
+
+// ====== ISOLATE / UNISO — 선택 도형의 레이어만 표시 ======
+function cmdIsolate() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  격리: 먼저 도형을 선택하세요.', 'warn'); return; }
+  const keep = new Set(sel.map(e => e.layer || '0'));
+  let hidden = 0;
+  for (const l of state.layers) { const v = keep.has(l.name); if (l.visible && !v) hidden++; l.visible = v; }
+  renderLayers(); draw();
+  logLine(`  ✔ 레이어 격리: ${[...keep].join(', ')}만 표시 (${hidden}개 레이어 숨김) — uniso로 해제`, 'ok');
+}
+function cmdUniso() {
+  for (const l of state.layers) l.visible = true;
+  renderLayers(); draw();
+  logLine('  ✔ 격리 해제: 모든 레이어 표시', 'ok');
+}
+
+// ====== XLINE — 구성선(아주 긴 보조선) ======
+function clickXline(w) {
+  if (!cmdOp || cmdOp.name !== 'xline') cmdOp = { name: 'xline', step: 'p1' };
+  if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('구성선: 방향 점을 클릭하세요. (수평/수직은 직교 F8 활용)'); return; }
+  const p1 = cmdOp.p1, dx = w.x - p1.x, dy = w.y - p1.y, L = Math.hypot(dx, dy);
+  if (L < 1e-9) return;
+  const ux = dx / L, uy = dy / L, EXT = 100000; // 사실상 무한
+  pushUndo();
+  ensureLayer('보조선', '#5d9dff');
+  addEntity({ type: 'LINE', layer: '보조선', x1: p1.x - ux * EXT, y1: p1.y - uy * EXT, x2: p1.x + ux * EXT, y2: p1.y + uy * EXT });
+  logLine('  ✔ 구성선 (보조선 레이어 — 자르기 기준·스냅 대상)', 'ok');
+  cmdOp = { name: 'xline', step: 'p1' }; previewEnts = null; updateStat(); renderLayers();
+  setPrompt('구성선: 지나는 점을 클릭하세요. (연속, Esc 종료)');
+}
+
+// ====== BREAKPT — 한 점에서 끊기 ======
+function clickBreakpt(w, rawW) {
+  if (!cmdOp || cmdOp.name !== 'breakpt') cmdOp = { name: 'breakpt', step: 'obj' };
+  if (cmdOp.step === 'obj') {
+    const hit = pick(w, rawW);
+    if (!hit || !['LINE', 'CIRCLE', 'ARC'].includes(hit.type)) { logLine('  한 점 끊기: 선/원/호만 지원합니다.', 'warn'); return; }
+    cmdOp.target = hit; cmdOp.step = 'p';
+    state.selection.clear(); state.selection.add(hit.id); renderProps();
+    setPrompt('한 점 끊기: 끊을 지점을 클릭하세요.'); return;
+  }
+  pushUndo();
+  if (doBreak(cmdOp.target, w, w)) logLine('  ✔ 한 점에서 끊음 (두 도형으로 분리)', 'ok');
+  cmdOp = { name: 'breakpt', step: 'obj' }; state.selection.clear(); renderProps(); updateStat();
+  setPrompt('한 점 끊기: 대상을 클릭하세요. (연속, Esc 종료)');
+}
+
+// ====== ALIGN — 두 점 쌍으로 이동+회전(+배율) ======
+function clickAlign(w, rawW) {
+  if (!cmdOp || cmdOp.name !== 'align') {
+    if (!state.selection.size) {
+      // 이 클릭은 도형 선택용으로 소비
+      const hit = pick(w, rawW);
+      if (hit) { state.selection.add(hit.id); renderProps(); cmdOp = { name: 'align', step: 's1' }; setPrompt('정렬: 원본 1번째 점을 클릭하세요.'); }
+      else setPrompt('정렬: 먼저 도형을 선택하세요.');
+      return;
+    }
+    // 이미 선택돼 있으면 이 클릭이 곧 원본 1번째 점
+    cmdOp = { name: 'align', step: 's1' };
+  }
+  if (cmdOp.step === 's1') { cmdOp.s1 = w; cmdOp.step = 'd1'; setPrompt('정렬: 목표 1번째 점을 클릭하세요.'); return; }
+  if (cmdOp.step === 'd1') { cmdOp.d1 = w; cmdOp.step = 's2'; setPrompt('정렬: 원본 2번째 점을 클릭하세요.'); return; }
+  if (cmdOp.step === 's2') { cmdOp.s2 = w; cmdOp.step = 'd2'; setPrompt('정렬: 목표 2번째 점을 클릭하세요.'); return; }
+  const s1 = cmdOp.s1, d1 = cmdOp.d1, s2 = cmdOp.s2, d2 = w;
+  const v1x = s2.x - s1.x, v1y = s2.y - s1.y, v2x = d2.x - d1.x, v2y = d2.y - d1.y;
+  const L1 = Math.hypot(v1x, v1y), L2 = Math.hypot(v2x, v2y);
+  if (L1 < 1e-9 || L2 < 1e-9) { logLine('  정렬: 두 점이 같습니다.', 'warn'); cmdOp = null; setTool('select'); return; }
+  const ang = (Math.atan2(v2y, v2x) - Math.atan2(v1y, v1x)) * 180 / Math.PI;
+  const doScale = Math.abs(L2 / L1 - 1) > 1e-6 && confirm(`목표 간격에 맞춰 배율도 적용할까요? (×${(L2 / L1).toFixed(3)})`);
+  pushUndo();
+  const ents = selectedEntities();
+  for (const e of ents) {
+    translateEntity(e, d1.x - s1.x, d1.y - s1.y);
+    applyTransform(e, T_rotate(d1.x, d1.y, ang));
+  }
+  if (doScale) scaleEntities(ents, d1, L2 / L1);
+  logLine(`  ✔ 정렬 ${ents.length}개 (회전 ${ang.toFixed(2)}°${doScale ? `, 배율 ×${(L2 / L1).toFixed(3)}` : ''})`, 'ok');
+  cmdOp = null; previewEnts = null; state.selection.clear(); renderProps(); updateStat();
+  setTool('select');
+}
+
+// ====== FRAME — 도곽 + 표제란 ======
+const FRAME_PAPERS = { a4: [297, 210], a3: [420, 297], a2: [594, 420], a1: [841, 594], letter: [279, 216] };
+function clickFrame(w) {
+  const paper = (prompt('용지 (a4 / a3 / a2 / a1 / letter):', 'a3') || '').trim().toLowerCase();
+  if (!FRAME_PAPERS[paper]) { if (paper) logLine('  도곽: 알 수 없는 용지입니다.', 'warn'); setTool('select'); return; }
+  const sc = parseFloat(prompt('축척 1:N (도면 단위 = mm):', '100'));
+  if (!(sc > 0)) { setTool('select'); return; }
+  pushUndo();
+  ensureLayer('도곽', '#c0c0c0');
+  const pp = FRAME_PAPERS[paper];
+  const W = pp[0] * sc, H = pp[1] * sc, M = 10 * sc; // 여백 10mm
+  const x0 = w.x, y0 = w.y;
+  const rect = (x, y, ww, hh) => addEntity({ type: 'LWPOLYLINE', layer: '도곽', closed: true, points: [[x, y], [x + ww, y], [x + ww, y + hh], [x, y + hh]] });
+  rect(x0, y0, W, H);
+  rect(x0 + M, y0 + M, W - 2 * M, H - 2 * M);
+  const tbW = 90 * sc, tbH = 24 * sc, rH = tbH / 3;
+  const tx = x0 + W - M - tbW, ty = y0 + M;
+  rect(tx, ty, tbW, tbH);
+  const ln = (x1, y1, x2, y2) => addEntity({ type: 'LINE', layer: '도곽', x1, y1, x2, y2 });
+  ln(tx, ty + rH, tx + tbW, ty + rH); ln(tx, ty + rH * 2, tx + tbW, ty + rH * 2);
+  ln(tx + 28 * sc, ty, tx + 28 * sc, ty + tbH);
+  const th = 3.2 * sc, tpad = 2.2 * sc;
+  const txt = (x, y, t) => addEntity({ type: 'TEXT', layer: '도곽', x, y, height: th, text: t, rotation: 0 });
+  const today = new Date();
+  const dstr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  txt(tx + tpad, ty + rH * 2 + (rH - th) / 2, '제목'); txt(tx + 28 * sc + tpad, ty + rH * 2 + (rH - th) / 2, '도면명 입력');
+  txt(tx + tpad, ty + rH + (rH - th) / 2, '축척');     txt(tx + 28 * sc + tpad, ty + rH + (rH - th) / 2, '1 : ' + sc);
+  txt(tx + tpad, ty + (rH - th) / 2, '날짜');          txt(tx + 28 * sc + tpad, ty + (rH - th) / 2, dstr);
+  logLine(`  ✔ 도곽 ${paper.toUpperCase()} (1:${sc}) — '도면명 입력' 문자를 더블클릭해 수정하세요.`, 'ok');
+  updateStat(); renderLayers(); zoomFit();
+  setTool('select');
 }
 
 // ====== CENTERLINE (중심선) — 원/호 클릭 → 십자 중심선 ======
@@ -2618,6 +2764,9 @@ const INSTANT_CMDS = {
   zp: zoomPrev,
   undo: () => { undo(); logLine('  ✔ 실행취소', 'info'); },
   redo: () => { redo(); logLine('  ✔ 다시실행', 'info'); },
+  isolate: cmdIsolate,
+  uniso: cmdUniso,
+  sum: cmdSum,
 };
 
 function nearGrip(e, w, tol) {
@@ -2817,6 +2966,10 @@ const CMD_ALIASES = {
   similar: 'similar', ss: 'similar',
   centerline: 'centerline', cl: 'centerline',
   revcloud: 'revcloud', rc: 'revcloud',
+  frame: 'frame', align: 'align', al: 'align',
+  isolate: 'isolate', iso: 'isolate', uniso: 'uniso', unisolate: 'uniso',
+  sum: 'sum', xline: 'xline', xl: 'xline',
+  breakpt: 'breakpt', bp: 'breakpt',
 };
 
 function runCommandInput(raw) {
@@ -2915,6 +3068,10 @@ function feedDrawInput(v) {
     case 'dim': return feedPointCmd(p, clickDim);
     case 'leader': return feedPointCmd(p, clickLeader);
     case 'revcloud': return feedPointCmd(p, clickRevcloud);
+    case 'frame': return feedPointCmd(p, clickFrame);
+    case 'align': return feedPointCmd(p, (w) => clickAlign(w, w));
+    case 'xline': return feedPointCmd(p, clickXline);
+    case 'breakpt': return feedPointCmd(p, (w) => clickBreakpt(w, w));
     case 'text': return feedPointCmd(p, (w) => { const t = prompt('문자 입력:', ''); if (t) { pushUndo(); addEntity({ type: 'TEXT', x: w.x, y: w.y, height: state.textHeight, text: t, rotation: 0 }); updateStat(); } });
     case 'dist': return feedPointCmd(p, clickDist);
     case 'area': return feedPointCmd(p, (w) => clickArea(w, w));
@@ -3189,6 +3346,10 @@ function setTool(t) {
     hatch: `해치: ${HATCH_PATTERNS[hatchPattern].ko}, 간격 ${hatchSpacing}. 경계 클릭. (숫자=간격, 패턴명 입력: ansi31·ansi37·steel·grid·brick·concrete·dots·solid)`,
     centerline: '중심선: 원/호를 클릭하면 십자 중심선이 그려집니다. (중심선 레이어, 일점쇄선)',
     revcloud: '구름마크: 영역의 첫 코너 → 반대 코너를 클릭하세요. (도면 검토 표시)',
+    frame: '도곽: 배치할 좌하단 지점을 클릭하세요. (이후 용지·축척 입력)',
+    align: '정렬: (도형 선택) → 원본1점 → 목표1점 → 원본2점 → 목표2점. 이동+회전(+배율).',
+    xline: '구성선: 지나는 점 → 방향 점을 클릭하면 아주 긴 보조선이 그려집니다.',
+    breakpt: '한 점 끊기: 선/원/호 클릭 → 끊을 지점을 클릭하면 그 점에서 둘로 나뉩니다.',
   };
   setPrompt(hints[t] || '');
   if (t !== 'select') {
@@ -3712,6 +3873,10 @@ document.getElementById('gridSize').addEventListener('change', (e) => { state.gr
 // ============================================================
 const COMMAND_LIST = [
   { name: 'centerline', ko: '중심선' }, { name: 'revcloud', ko: '구름마크' },
+  { name: 'frame', ko: '도곽(표제란)' }, { name: 'align', ko: '정렬' },
+  { name: 'isolate', ko: '레이어 격리' }, { name: 'uniso', ko: '격리 해제' },
+  { name: 'sum', ko: '길이·면적 합계' }, { name: 'xline', ko: '구성선' },
+  { name: 'breakpt', ko: '한 점 끊기' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
