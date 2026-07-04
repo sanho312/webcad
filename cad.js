@@ -2240,7 +2240,7 @@ function open3D() {
     ov.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--glass-chrome);border-bottom:0.5px solid var(--line);position:relative;z-index:2;flex-wrap:wrap;">
         <b style="font-size:13px;">3D 작업 뷰</b>
-        <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 파란 그립 드래그=높이 조절 · 드래그=회전 · 휠=줌 · Shift+드래그=이동 · Del=삭제</span>
+        <span style="font-size:11.5px;color:var(--muted);">클릭=선택(입체·밑그림 모두, 속성에서 편집·벽 지정) · 그립 드래그=높이 · 드래그=회전 · 휠=줌 · Shift+드래그=이동 · Del=삭제</span>
         <span style="flex:1"></span>
         <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
         <button class="tbtn" id="b3Top">위에서</button>
@@ -2320,31 +2320,37 @@ function render3D() {
   for (let y = gy0; y <= gy1; y += g) { const a = proj3D(gx0, y, 0), b = proj3D(gx1, y, 0); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
   c.stroke();
   // 평면 밑그림 — BIM 지정 안 된 일반 도형도 해당 층 레벨 높이에 라인워크로 표시 (평면↔3D 연속성)
+  // 투영 경로를 v3.under에 캐시해 클릭 픽킹(pick3DAt)에서 재사용
+  v3.under = [];
   c.save();
-  c.globalAlpha = 0.5; c.lineWidth = 1;
+  c.lineWidth = 1;
   for (const e of state.entities) {
     if (e.bim) continue; // BIM 요소는 아래에서 솔리드로 그려짐
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const z = (state.levels[e.lv || 0] || { elev: 0 }).elev;
-    c.strokeStyle = entityColor(e);
-    c.beginPath();
+    let path = null, closed = false;
     if (e.type === 'LINE') {
-      const a = proj3D(e.x1, e.y1, z), b = proj3D(e.x2, e.y2, z);
-      c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]);
+      path = [proj3D(e.x1, e.y1, z), proj3D(e.x2, e.y2, z)];
     } else if (e.type === 'LWPOLYLINE' && e.points && e.points.length) {
-      e.points.forEach((p, i) => { const q = proj3D(p[0], p[1], z); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); });
-      if (e.closed) c.closePath();
+      path = e.points.map(p => proj3D(p[0], p[1], z)); closed = !!e.closed;
     } else if (e.type === 'CIRCLE') {
-      for (let i = 0; i <= 32; i++) { const t = i / 32 * Math.PI * 2; const q = proj3D(e.cx + e.r * Math.cos(t), e.cy + e.r * Math.sin(t), z); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }
+      path = []; for (let i = 0; i <= 32; i++) { const t = i / 32 * Math.PI * 2; path.push(proj3D(e.cx + e.r * Math.cos(t), e.cy + e.r * Math.sin(t), z)); }
     } else if (e.type === 'ARC') {
       let s0 = e.startAngle, e0 = e.endAngle; if (e0 < s0) e0 += 360;
       const steps = Math.max(8, Math.ceil((e0 - s0) / 10));
-      for (let i = 0; i <= steps; i++) {
+      path = []; for (let i = 0; i <= steps; i++) {
         const a = (s0 + (e0 - s0) * i / steps) * Math.PI / 180;
-        const q = proj3D(e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a), z);
-        i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]);
+        path.push(proj3D(e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a), z));
       }
     } else continue; // TEXT/치수/해치 등은 3D 밑그림 생략
+    v3.under.push({ eid: e.id, path, closed });
+    const isSel = state.selection.has(e.id);
+    c.globalAlpha = isSel ? 0.95 : 0.5;
+    c.strokeStyle = isSel ? '#0A84FF' : entityColor(e);
+    c.lineWidth = isSel ? 2.5 : 1;
+    c.beginPath();
+    path.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]));
+    if (closed) c.closePath();
     c.stroke();
   }
   c.restore();
@@ -2542,7 +2548,23 @@ function pick3DAt(px, py, additive) {
     return inside;
   };
   // 앞(depth 작은) 면부터
-  const hit = [...v3.faces].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
+  let hit = [...v3.faces].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
+  // 평면 밑그림(비 BIM 라인워크) 픽킹: 투영 경로와의 거리 + 깊이 비교(면보다 앞이면 밑그림 우선)
+  if (v3.under && v3.under.length) {
+    const tol = 8 * (devicePixelRatio || 1);
+    let best = null, bestD = tol, bestDepth = Infinity;
+    for (const u of v3.under) {
+      const n = u.path.length;
+      for (let i = 0; i < (u.closed ? n : n - 1); i++) {
+        const a = u.path[i], b = u.path[(i + 1) % n];
+        const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+        const t = L2 ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / L2)) : 0;
+        const d = Math.hypot(px - (a[0] + dx * t), py - (a[1] + dy * t));
+        if (d < bestD) { bestD = d; best = u; bestDepth = a[2] + (b[2] - a[2]) * t; }
+      }
+    }
+    if (best && (!hit || bestDepth < hit.d)) hit = { eid: best.eid };
+  }
   if (!additive) state.selection.clear();
   if (hit) {
     if (additive && state.selection.has(hit.eid)) state.selection.delete(hit.eid);
