@@ -2185,14 +2185,14 @@ function bimSolids() {
     const t = w.bim.t, h = w.bim.h, base = w.bim.base || 0;
     const segs = w.type === 'LINE'
       ? [[w.x1, w.y1, w.x2, w.y2]]
-      : (w.points || []).slice(0, -0).map((p, i, arr) => i < arr.length - 1 ? [p[0], p[1], arr[i + 1][0], arr[i + 1][1]] : null).filter(Boolean)
+      : (w.points || []).map((p, i, arr) => i < arr.length - 1 ? [p[0], p[1], arr[i + 1][0], arr[i + 1][1]] : null).filter(Boolean) // slice(0,-0)은 빈 배열이 되는 버그였음 — 전 세그먼트 사용
           .concat(w.type === 'LWPOLYLINE' && w.closed && w.points.length > 2 ? [[w.points[w.points.length - 1][0], w.points[w.points.length - 1][1], w.points[0][0], w.points[0][1]]] : []);
     for (const [x1, y1, x2, y2] of segs) {
       const L = Math.hypot(x2 - x1, y2 - y1); if (L < 1e-6) continue;
       const ux = (x2 - x1) / L, uy = (y2 - y1) / L;
-      // 이 세그먼트 위의 개구부(콜리니어) 수집 → 구간 분할
+      // 이 세그먼트 위의 개구부(콜리니어) 수집 → 구간 분할 (LINE·폴리라인/사각 벽 모두 — 세그먼트 단위 판정)
       const cuts = [];
-      if (w.type === 'LINE') for (const o of opens) {
+      for (const o of opens) {
         const mx = (o.x1 + o.x2) / 2, my = (o.y1 + o.y2) / 2;
         const s = (mx - x1) * ux + (my - y1) * uy;
         const dPerp = Math.abs((mx - x1) * (-uy) + (my - y1) * ux);
@@ -2685,8 +2685,8 @@ function bind3D(ov, cv3) {
       try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
       return;
     }
-    // 입면 뷰 라벨 클릭 → 정면/우측면/좌측면/배면 순환
-    if (e.button === 0) {
+    // 입면 뷰 라벨 클릭 → 정면/우측면/좌측면/배면 순환 (작도 중엔 클릭을 가로채지 않음)
+    if (e.button === 0 && state.tool === 'select' && !v3.wallMode) {
       const rl = cv3.getBoundingClientRect();
       const plx = (e.clientX - rl.left) * (rl.width ? cv3.width / rl.width : 1);
       const ply = (e.clientY - rl.top) * (rl.height ? cv3.height / rl.height : 1);
@@ -4902,7 +4902,7 @@ function zoomFit(robust) {
       v3.zoom = 1; v3.panX = 0; v3.panY = 0;
       for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
       loadVp(v3.act); render3D();
-      return;
+      // return 하지 않음 — 평면 뷰도 함께 맞춰야 (3D 중 문서 열기 등에서) 복귀 시 화면이 맞음
     } }
   pushViewPrev();
   if (!state.entities.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }

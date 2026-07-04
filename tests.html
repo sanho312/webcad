@@ -239,6 +239,18 @@ function tests(){
     eq(Math.hypot(p[1][0]-p[0][0],p[1][1]-p[0][1]),4000/17,'디딤 깊이 = L/n',0.01); }
   { const st={type:'LINE',x1:0,y1:0,x2:0,y2:0,bim:{kind:'stair',w:1200,h:3000,riser:180}};
     eqi(C.stairSolids(st).length,0,'길이 0 선 → 솔리드 없음'); }
+
+  group('BIM 벽 — 폴리라인(사각) 벽 + 개구부 (slice(0,-0) 회귀)');
+  { setEnts([
+      {type:'LWPOLYLINE',closed:true,points:[[0,0],[8000,0],[8000,5000],[0,5000]],layer:'0',bim:{kind:'wall',h:2700,t:200,base:0}},
+      {type:'LINE',x1:3000,y1:5000,x2:4500,y2:5000,layer:'0',bim:{kind:'opening',ot:'window',h:1200,sill:900,t:200}},
+    ]);
+    S0.levels=[{name:'1F',elev:0}]; S0.curLv=0;
+    const ss=C.bimSolids();
+    ok(ss.length>=5,'사각 벽 4변 모두 입체화 (밴드 '+ss.length+'개)');
+    const g=ss.find(s=>s.glass);
+    ok(!!g,'폴리라인 벽에도 창 유리 생성');
+    if(g){ eq(g.z0,900,'유리 z0=씰'); eq(g.z1,2100,'유리 z1=씰+높이'); } }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });
