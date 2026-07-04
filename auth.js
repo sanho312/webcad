@@ -16,6 +16,9 @@
   #authGate{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
     background:rgba(5,8,20,0.82);-webkit-backdrop-filter:saturate(180%) blur(30px);backdrop-filter:saturate(180%) blur(30px);}
   #authGate.hidden{display:none;}
+  html.light #authGate{background:rgba(238,242,250,0.88);}
+  html.light .authCard input{background:rgba(30,60,140,0.08);box-shadow:inset 0 .5px 0 0 rgba(20,40,90,.08);}
+  html.light .authBtn.ghost{background:rgba(30,60,140,0.08);}
   #authGate .gateNote{font-size:12.5px;color:rgba(210,222,250,0.55);letter-spacing:-0.01em;}
   .authCard{width:min(92vw,360px);background:var(--glass-pop,rgba(26,37,64,.9));
     -webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px);

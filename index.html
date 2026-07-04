@@ -14,6 +14,10 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <title>WebCAD — DXF 편집기</title>
 <script>
+// 저장된 테마를 스타일 적용 전에 반영 (화면 깜빡임 방지)
+try { if (localStorage.getItem('webcad_theme') === 'light') document.documentElement.classList.add('light'); } catch(e) {}
+</script>
+<script>
 // 오류 진단 배너 — 스크립트 오류가 나면 화면 최상단에 표시(원인 파악용) + 복구 버튼
 (function(){
   var shown=false;
@@ -60,6 +64,26 @@
     --font:-apple-system,"SF Pro Text","SF Pro Display","Helvetica Neue",Helvetica,Arial,"Segoe UI",system-ui,sans-serif;
     --mono:"SF Mono",ui-monospace,"SFMono-Regular",Consolas,"D2Coding",monospace;
   }
+  /* ── 화이트(라이트) 모드 ── */
+  html.light{
+    --bg:#eef1f7; --panel:#f7f8fc; --panel2:#e9edf5; --panel3:#dde3ee;
+    --line:rgba(20,40,90,0.13); --line-strong:rgba(20,40,90,0.22);
+    --text:#151a2c; --muted:rgba(30,42,75,0.62); --muted2:rgba(30,42,75,0.35);
+    --accent:#0071e3; --accent-hover:#2b8bf0; --accent-text:#0060c8;
+    --canvas-bg:#ffffff; --grid:rgba(20,40,90,0.09); --grid2:rgba(20,40,90,0.16);
+    --glass-fill:rgba(30,60,140,0.07); --glass-fill-hi:rgba(30,60,140,0.13);
+    --glass-chrome:rgba(247,248,252,0.72); --glass-pop:rgba(252,253,255,0.9);
+    --topbar-bg:rgba(247,248,252,0.75);
+    --spec:inset 0 0.5px 0 0 rgba(255,255,255,0.85), inset 0 -0.5px 0 0 rgba(20,40,90,0.06);
+    --spec-strong:inset 0 1px 0 0 rgba(255,255,255,0.95), inset 0 -1px 1px 0 rgba(20,40,90,0.08);
+    --shadow-pop:0 12px 40px rgba(30,50,100,0.20), 0 0 0 0.5px rgba(20,40,90,0.08);
+  }
+  html.light #cmdLog{color:rgba(25,35,70,0.8);}
+  html.light .dtab:hover{background:rgba(20,40,90,0.06);}
+  html.light .dtabNew{background:rgba(20,40,90,0.08);}
+  html.light .dtabNew:hover{background:rgba(20,40,90,0.14);}
+  html.light .menuItem:hover{background:rgba(20,40,90,0.08);}
+  html.light ::-webkit-scrollbar-thumb{background:rgba(20,40,90,0.22);background-clip:content-box;}
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;font-family:var(--font);letter-spacing:-0.01em;
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
@@ -90,7 +114,7 @@
      명시적으로 올리지 않으면 드롭다운 메뉴가 아래 패널(도구창·캔버스) '뒤'에 그려져 안 보임 */
   #topbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;position:relative;z-index:60;
     padding:5px calc(10px + env(safe-area-inset-right, 0px)) 5px calc(10px + env(safe-area-inset-left, 0px));
-    background:rgba(13,20,38,0.72);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
+    background:var(--topbar-bg,rgba(13,20,38,0.72));-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     border-bottom:0.5px solid var(--line);}
   #topbar .title{font-weight:600;font-size:15px;margin-right:6px;color:var(--text);letter-spacing:-0.02em;}
   #fileName{color:var(--text);font-size:13px;margin-left:12px;max-width:340px;
@@ -160,10 +184,10 @@
   #canvasWrap{position:relative;flex:1 1 auto;min-width:0;background:var(--canvas-bg);}
   canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
   #coords{position:absolute;left:12px;bottom:12px;font-size:12px;color:var(--muted);
-    font-family:var(--mono);background:rgba(13,20,38,0.66);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
+    font-family:var(--mono);background:var(--topbar-bg,rgba(13,20,38,0.66));-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     padding:4px 10px;border-radius:var(--radius);pointer-events:none;}
   #hint{position:absolute;left:50%;top:12px;transform:translateX(-50%);
-    font-size:12px;color:var(--text);background:rgba(13,20,38,0.72);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
+    font-size:12px;color:var(--text);background:var(--topbar-bg,rgba(13,20,38,0.72));-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     padding:5px 14px;border-radius:var(--radius-pill);pointer-events:none;max-width:80%;text-align:center;}
 
   /* Bottom command console */
@@ -324,6 +348,7 @@
     <button class="tbtn" id="btnOrtho" title="직교 모드 (F8) — 수평·수직 고정">직교</button>
     <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처">객체스냅</button>
     <button class="tbtn" id="btnCmdHelp" title="전체 명령어 목록 (help 또는 ? 입력)">❓ 명령어</button>
+    <button class="tbtn" id="btnTheme" title="다크/화이트 모드 전환">🌓</button>
     <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
     <input type="file" id="fileInput" accept=".dxf" style="display:none">
     <input type="file" id="imgInput" accept="image/*" style="display:none">
@@ -617,10 +642,10 @@
   </div>
 </div>
 
-<script src="cad.js?v=20260704d"></script>
+<script src="cad.js?v=20260704e"></script>
 <script src="auth-config.js?v=2"></script>
-<script src="auth.js?v=6"></script>
-<script src="cloud.js?v=4"></script>
+<script src="auth.js?v=7"></script>
+<script src="cloud.js?v=5"></script>
 <script>
 // UI 배치: 하단 명령창 접기(화살표) + 좌우 패널 폭 드래그 조절(오토캐드식) — localStorage에 저장
 (() => {
@@ -629,6 +654,22 @@
   try { st = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { st = {}; }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} };
   const app = document.getElementById('app');
+
+  // ── 다크/화이트 모드 토글 ──
+  const btnTheme = document.getElementById('btnTheme');
+  function applyTheme() {
+    const light = document.documentElement.classList.contains('light');
+    btnTheme.textContent = light ? '☀ 라이트' : '🌙 다크';
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = light ? '#eef1f7' : '#0a1020';
+    if (window.WEBCAD_API && WEBCAD_API.redraw) WEBCAD_API.redraw();
+  }
+  btnTheme.addEventListener('click', () => {
+    document.documentElement.classList.toggle('light');
+    try { localStorage.setItem('webcad_theme', document.documentElement.classList.contains('light') ? 'light' : 'dark'); } catch (e) {}
+    applyTheme();
+  });
+  applyTheme();
 
   // ── 하단 명령창 접기 ──
   const tgB = document.getElementById('tgBottom');

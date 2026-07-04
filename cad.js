@@ -195,10 +195,20 @@ function ensureLayer(name, color) {
   if (!l) { l = { name, color: color || '#ffffff', visible: true }; state.layers.push(l); }
   return l;
 }
+// 화이트 모드에서 밝은 잉크(흰색 등)는 안 보이므로 어둡게 매핑 (DXF 저장에는 영향 없음 — 원본 색 별도 사용)
+function themedInk(c) {
+  if (!document.documentElement.classList.contains('light')) return c;
+  if (!/^#[0-9a-fA-F]{6}$/.test(c)) return c;
+  const r = parseInt(c.slice(1, 3), 16) / 255, g = parseInt(c.slice(3, 5), 16) / 255, b = parseInt(c.slice(5, 7), 16) / 255;
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  if (L < 0.8) return c;
+  if (c.toLowerCase() === '#ffffff') return '#1a1d29';
+  const d = (v) => Math.round(v * 255 * 0.45).toString(16).padStart(2, '0');
+  return '#' + d(r) + d(g) + d(b);
+}
 function entityColor(e) {
-  if (e.color) return e.color;
-  const l = getLayer(e.layer);
-  return l ? l.color : '#ffffff';
+  const raw = e.color || ((getLayer(e.layer) || {}).color) || '#ffffff';
+  return themedInk(raw);
 }
 // 선종류: 이름 → 월드 단위 dash 패턴. 화면 스케일 반영해 픽셀 배열 반환(null=실선)
 const LINETYPES = {
@@ -338,7 +348,7 @@ function drawAxes() {
 function drawCursor() {
   const s = worldToScreen(mouseWorld.x, mouseWorld.y);
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = document.documentElement.classList.contains('light') ? 'rgba(20,30,60,.4)' : 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
   ctx.beginPath();
   ctx.moveTo(s.x, 0); ctx.lineTo(s.x, cv._h);
   ctx.moveTo(0, s.y); ctx.lineTo(cv._w, s.y);
@@ -5164,6 +5174,7 @@ window.WEBCAD_API = {
     draw();
   },
   zoomFit: () => zoomFit(true),
+  redraw: () => draw(),
   // 블록 라이브러리
   getBlocks: () => state.blocks,
   addBlock: (name, def) => { state.blocks[name] = def; refreshBlockList(); logLine(`  ✔ 라이브러리에서 블록 "${name}" 가져옴 — 삽입(insert)으로 배치`, 'ok'); },

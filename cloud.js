@@ -17,6 +17,13 @@
   st.textContent = `
   .cdOverlay{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
     background:rgba(5,8,20,.55);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);}
+  html.light .cdOverlay{background:rgba(60,80,130,.25);}
+  html.light .cdBtn{background:rgba(30,60,140,.08);}
+  html.light .cdBtn:hover{background:rgba(30,60,140,.15);}
+  html.light .cdIn{background:rgba(30,60,140,.08);}
+  html.light .cdCard{background:rgba(30,60,140,.06);}
+  html.light .cdCard:hover{background:rgba(30,60,140,.11);}
+  html.light .cdItem{background:rgba(30,60,140,.06);}
   .cdBox{width:min(94vw,560px);max-height:86vh;display:flex;flex-direction:column;
     background:var(--glass-pop,rgba(26,37,64,.92));-webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px);
     border-radius:22px;padding:20px 22px;box-shadow:0 12px 40px rgba(2,6,20,.6);color:var(--text,#f2f5ff);}
