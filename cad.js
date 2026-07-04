@@ -55,12 +55,13 @@ let settings = {
   osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
+  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900 }, // BIM 기본값(mm)
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
-    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.polar = s.polar || 0; settings.aliases = s.aliases || {}; Object.assign(settings.dim, s.dim || {}); }
+    if (s) { settings.units = s.units || 'mm'; Object.assign(settings.osnapModes, s.osnapModes || {}); settings.polar = s.polar || 0; settings.aliases = s.aliases || {}; Object.assign(settings.dim, s.dim || {}); Object.assign(settings.bim, s.bim || {}); }
   } catch (e) {}
 })();
 function saveSettings() {
@@ -264,7 +265,9 @@ function draw() {
     const l = getLayer(e.layer);
     if (l && !l.visible) continue;
     if (cull) { const bb = entityBBox(e); if (bb && (bb.xmax < vxmin || bb.xmin > vxmax || bb.ymax < vymin || bb.ymin > vymax)) continue; }
+    if (e.bim && e.bim.kind !== 'opening') drawBimOverlay(e); // 벽 밴드는 도형선 아래
     drawEntity(e, state.selection.has(e.id));
+    if (e.bim && e.bim.kind === 'opening') drawBimOverlay(e);  // 개구부는 도형선 위
   }
 
   // 작도 미리보기
@@ -1565,6 +1568,8 @@ function handleClick(w, rawW, ev) {
     case 'align': clickAlign(w, rawW); break;
     case 'xline': clickXline(w); break;
     case 'breakpt': clickBreakpt(w, rawW); break;
+    case 'door': clickOpening(w, rawW, 'door'); break;
+    case 'window': clickOpening(w, rawW, 'window'); break;
   }
   draw();
   // 명령 진행 중에는 명령행을 계속 활성 상태로 유지(치수 바로 입력). 터치는 키보드 팝업 방지로 제외.
@@ -1978,6 +1983,134 @@ function clickDimCircle(w, rawW, dia) {
   logLine(`  ✔ ${dia ? '지름' : '반지름'} 치수 ${txt}`, 'ok');
   cmdOp = { name, step: 'obj' }; updateStat();
   setPrompt('치수: 원/호를 클릭하세요. (연속 기입, Esc 종료)');
+}
+
+// ============================================================
+//  BIM 1단계 — 2D 도형에 3D 속성(벽·슬래브·기둥·개구부) 부여
+//  e.bim = {kind:'wall',h,t,base} | {kind:'slab',t,top} | {kind:'column',h,base}
+//        | {kind:'opening',ot:'door'|'window',h,sill,t}
+//  (클라우드/자동저장/실시간에 자동 포함. DXF에는 저장되지 않음)
+// ============================================================
+function bimAskNum(msg, def) {
+  const v = prompt(msg, def);
+  if (v === null) return null;
+  const n = parseFloat(v);
+  return (isFinite(n) && n > 0) ? n : null;
+}
+function cmdWallTag() {
+  const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE');
+  if (!sel.length) { logLine('  벽: 선/폴리라인을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const h = bimAskNum('벽 높이 (mm):', settings.bim.wallH); if (h == null) return;
+  const t = bimAskNum('벽 두께 (mm):', settings.bim.wallT); if (t == null) return;
+  settings.bim.wallH = h; settings.bim.wallT = t; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'wall', h, t, base: (e.bim && e.bim.base) || 0 };
+  logLine(`  ✔ 벽 지정 ${sel.length}개 (높이 ${h}, 두께 ${t}) — 평면에 두께 밴드로 표시`, 'ok');
+  renderProps(); draw();
+}
+function cmdSlabTag() {
+  const sel = selectedEntities().filter(e => (e.type === 'LWPOLYLINE' && e.closed) || e.type === 'CIRCLE');
+  if (!sel.length) { logLine('  슬래브: 닫힌 폴리라인(또는 원)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const t = bimAskNum('슬래브 두께 (mm):', settings.bim.slabT); if (t == null) return;
+  settings.bim.slabT = t; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'slab', t, top: (e.bim && e.bim.top) || 0 };
+  logLine(`  ✔ 슬래브 지정 ${sel.length}개 (두께 ${t})`, 'ok');
+  renderProps(); draw();
+}
+function cmdColumnTag() {
+  const sel = selectedEntities().filter(e => e.type === 'CIRCLE' || (e.type === 'LWPOLYLINE' && e.closed));
+  if (!sel.length) { logLine('  기둥: 원 또는 닫힌 폴리라인을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const h = bimAskNum('기둥 높이 (mm):', settings.bim.colH); if (h == null) return;
+  settings.bim.colH = h; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'column', h, base: (e.bim && e.bim.base) || 0 };
+  logLine(`  ✔ 기둥 지정 ${sel.length}개 (높이 ${h})`, 'ok');
+  renderProps(); draw();
+}
+function cmdBimClear() {
+  const sel = selectedEntities().filter(e => e.bim);
+  if (!sel.length) { logLine('  BIM 해제: BIM 속성이 있는 도형을 선택하세요.', 'warn'); return; }
+  pushUndo();
+  for (const e of sel) delete e.bim;
+  logLine(`  ✔ BIM 속성 해제 ${sel.length}개`, 'ok');
+  renderProps(); draw();
+}
+// 문/창: 벽 선 위 클릭 → 폭 입력 → 벽 방향의 개구부 세그먼트 생성
+function clickOpening(w, rawW, ot) {
+  const hit = pick(w, rawW);
+  if (!hit || hit.type !== 'LINE' || !hit.bim || hit.bim.kind !== 'wall') {
+    logLine(`  ${ot === 'door' ? '문' : '창'}: 먼저 wall 명령으로 벽 지정된 "선"을 클릭하세요.`, 'warn'); return;
+  }
+  const dx = hit.x2 - hit.x1, dy = hit.y2 - hit.y1, L = Math.hypot(dx, dy);
+  if (L < 1e-9) return;
+  const ux = dx / L, uy = dy / L;
+  let s = ((w.x - hit.x1) * ux + (w.y - hit.y1) * uy); // 클릭점의 벽 위 위치
+  const defW = ot === 'door' ? settings.bim.doorW : settings.bim.winW;
+  const wid = bimAskNum(`${ot === 'door' ? '문' : '창'} 폭 (mm):`, defW); if (wid == null) return;
+  if (ot === 'door') settings.bim.doorW = wid; else settings.bim.winW = wid;
+  saveSettings();
+  s = Math.max(wid / 2, Math.min(L - wid / 2, s)); // 벽 밖으로 안 나가게
+  const cx = hit.x1 + ux * s, cy = hit.y1 + uy * s;
+  pushUndo();
+  ensureLayer('개구부', '#ff9f0a');
+  const bim = ot === 'door'
+    ? { kind: 'opening', ot: 'door', h: settings.bim.doorH, sill: 0, t: hit.bim.t }
+    : { kind: 'opening', ot: 'window', h: settings.bim.winH, sill: settings.bim.winSill, t: hit.bim.t };
+  addEntity({ type: 'LINE', layer: '개구부',
+    x1: cx - ux * wid / 2, y1: cy - uy * wid / 2, x2: cx + ux * wid / 2, y2: cy + uy * wid / 2, bim });
+  logLine(`  ✔ ${ot === 'door' ? '문' : '창'} (폭 ${wid}) — 속성 패널에서 높이·씰 수정 가능`, 'ok');
+  renderLayers(); updateStat(); draw();
+}
+// 평면 BIM 오버레이 (벽 두께 밴드 / 슬래브·기둥 채움 / 개구부 표식)
+function drawBimOverlay(e) {
+  if (!e.bim) return;
+  const k = e.bim.kind, sc = state.view.scale;
+  ctx.save();
+  if (k === 'wall' && (e.type === 'LINE' || e.type === 'LWPOLYLINE')) {
+    ctx.globalAlpha = 0.16;
+    ctx.strokeStyle = entityColor(e);
+    ctx.lineWidth = Math.max(1, e.bim.t * sc);
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    if (e.type === 'LINE') {
+      const a = worldToScreen(e.x1, e.y1), b = worldToScreen(e.x2, e.y2);
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    } else {
+      e.points.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+      if (e.closed) ctx.closePath();
+    }
+    ctx.stroke();
+  } else if (k === 'opening' && e.type === 'LINE') {
+    // 벽 밴드를 끊는 표시: 배경색 밴드 + 주황 심볼
+    const a = worldToScreen(e.x1, e.y1), b = worldToScreen(e.x2, e.y2);
+    ctx.lineCap = 'butt';
+    ctx.strokeStyle = getCSS('--canvas-bg') || '#0a1020';
+    ctx.lineWidth = Math.max(2, (e.bim.t || 200) * sc + 2);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.strokeStyle = '#ff9f0a'; ctx.globalAlpha = 0.9;
+    ctx.lineWidth = Math.max(1.5, (e.bim.ot === 'door' ? 3 : 2));
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    if (e.bim.ot === 'window') { // 창: 이중선
+      const dx = b.x - a.x, dy = b.y - a.y, L2 = Math.hypot(dx, dy) || 1;
+      const nx = -dy / L2 * 3, ny = dx / L2 * 3;
+      ctx.beginPath(); ctx.moveTo(a.x + nx, a.y + ny); ctx.lineTo(b.x + nx, b.y + ny);
+      ctx.moveTo(a.x - nx, a.y - ny); ctx.lineTo(b.x - nx, b.y - ny); ctx.stroke();
+    }
+  } else if (k === 'slab') {
+    ctx.globalAlpha = 0.06; ctx.fillStyle = entityColor(e);
+    ctx.beginPath();
+    if (e.type === 'CIRCLE') { const c = worldToScreen(e.cx, e.cy); ctx.arc(c.x, c.y, e.r * sc, 0, Math.PI * 2); }
+    else { e.points.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); ctx.closePath(); }
+    ctx.fill();
+  } else if (k === 'column') {
+    ctx.globalAlpha = 0.22; ctx.fillStyle = entityColor(e);
+    ctx.beginPath();
+    if (e.type === 'CIRCLE') { const c = worldToScreen(e.cx, e.cy); ctx.arc(c.x, c.y, e.r * sc, 0, Math.PI * 2); }
+    else { e.points.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); ctx.closePath(); }
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 // ====== 도형 길이/면적 헬퍼 ======
@@ -2778,6 +2911,10 @@ const INSTANT_CMDS = {
   uniso: cmdUniso,
   sum: cmdSum,
   help: openCmdHelp,
+  wall: cmdWallTag,
+  slab: cmdSlabTag,
+  column: cmdColumnTag,
+  bimclear: cmdBimClear,
 };
 
 function nearGrip(e, w, tol) {
@@ -2982,6 +3119,8 @@ const CMD_ALIASES = {
   sum: 'sum', xline: 'xline', xl: 'xline',
   breakpt: 'breakpt', bp: 'breakpt',
   help: 'help', '?': 'help',
+  wall: 'wall', slab: 'slab', column: 'column', col: 'column',
+  door: 'door', window: 'window', win: 'window', bimclear: 'bimclear',
 };
 
 function runCommandInput(raw) {
@@ -3362,6 +3501,8 @@ function setTool(t) {
     align: '정렬: (도형 선택) → 원본1점 → 목표1점 → 원본2점 → 목표2점. 이동+회전(+배율).',
     xline: '구성선: 지나는 점 → 방향 점을 클릭하면 아주 긴 보조선이 그려집니다.',
     breakpt: '한 점 끊기: 선/원/호 클릭 → 끊을 지점을 클릭하면 그 점에서 둘로 나뉩니다.',
+    door: '문: 벽(wall 지정된 선)에서 문 중심 위치를 클릭하세요. (이후 폭 입력)',
+    window: '창: 벽(wall 지정된 선)에서 창 중심 위치를 클릭하세요. (이후 폭 입력)',
   };
   setPrompt(hints[t] || '');
   if (t !== 'select') {
@@ -3470,6 +3611,10 @@ function renderProps() {
          <button class="miniBtn" id="pFront">맨 앞</button><button class="miniBtn" id="pBack">맨 뒤</button>
          <button class="miniBtn" id="pSim">유사 선택</button>
        </div>
+       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
+         <button class="miniBtn" id="pBimWall">벽 지정</button><button class="miniBtn" id="pBimSlab">슬래브</button>
+         <button class="miniBtn" id="pBimCol">기둥</button><button class="miniBtn" id="pBimClr">BIM 해제</button>
+       </div>
        <button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
     const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); draw(); };
     document.getElementById('pFront').addEventListener('click', () => reorderSel(true));
@@ -3480,6 +3625,10 @@ function renderProps() {
     document.getElementById('mColClear').addEventListener('click', () => apply(e => delete e.color));
     document.getElementById('mLt').addEventListener('change', ev => { if (ev.target.value) apply(e => { if (ev.target.value === 'continuous') delete e.linetype; else e.linetype = ev.target.value; }); });
     document.getElementById('pDel').addEventListener('click', deleteSelection);
+    document.getElementById('pBimWall').addEventListener('click', cmdWallTag);
+    document.getElementById('pBimSlab').addEventListener('click', cmdSlabTag);
+    document.getElementById('pBimCol').addEventListener('click', cmdColumnTag);
+    document.getElementById('pBimClr').addEventListener('click', cmdBimClear);
     return;
   }
   const e = sel[0];
@@ -3504,6 +3653,24 @@ function renderProps() {
       `<option value="${k}" ${e.pattern === k ? 'selected' : ''}>${HATCH_PATTERNS[k].ko}</option>`).join('')}</select></div>`;
   rows += `<div class="row"><label>색상</label><input type="color" id="pColor" value="${rgbHex(entityColor(e))}">
     <button class="miniBtn" id="pColClear">레이어색</button></div>`;
+  // BIM 속성
+  const BIM_FIELDS = {
+    wall: [['h', '벽 높이'], ['t', '벽 두께'], ['base', '하단(base)']],
+    slab: [['t', '두께'], ['top', '상단(top)']],
+    column: [['h', '높이'], ['base', '하단(base)']],
+    opening: [['h', '개구 높이'], ['sill', '씰 높이']],
+  };
+  if (e.bim) {
+    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
+    rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">BIM</label><span style="font-weight:590;">${kindKo}</span></div>`;
+    for (const [k, lab] of (BIM_FIELDS[e.bim.kind] || []))
+      rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-bk="${k}" value="${e.bim[k] != null ? e.bim[k] : 0}"></div>`;
+    rows += `<button class="miniBtn" id="pBimClr1" style="margin-top:2px;">BIM 해제</button>`;
+  } else if (['LINE', 'LWPOLYLINE', 'CIRCLE'].includes(e.type)) {
+    rows += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+      <button class="miniBtn" id="pBimWall1">벽 지정</button><button class="miniBtn" id="pBimSlab1">슬래브</button>
+      <button class="miniBtn" id="pBimCol1">기둥</button></div>`;
+  }
   rows += `<div style="display:flex;gap:6px;margin-top:6px;">
     <button class="miniBtn" id="pFront1">맨 앞</button><button class="miniBtn" id="pBack1">맨 뒤</button>
     <button class="miniBtn" id="pSim1">유사 선택</button></div>`;
@@ -3511,6 +3678,15 @@ function renderProps() {
   body.innerHTML = rows;
   document.getElementById('pFront1').addEventListener('click', () => reorderSel(true));
   document.getElementById('pBack1').addEventListener('click', () => reorderSel(false));
+  body.querySelectorAll('input[data-bk]').forEach(inp => inp.addEventListener('change', () => {
+    const v = parseFloat(inp.value);
+    if (!isFinite(v)) return;
+    pushUndo(); e.bim[inp.dataset.bk] = v; draw();
+  }));
+  document.getElementById('pBimClr1')?.addEventListener('click', cmdBimClear);
+  document.getElementById('pBimWall1')?.addEventListener('click', cmdWallTag);
+  document.getElementById('pBimSlab1')?.addEventListener('click', cmdSlabTag);
+  document.getElementById('pBimCol1')?.addEventListener('click', cmdColumnTag);
   document.getElementById('pSim1').addEventListener('click', selectSimilar);
 
   body.querySelectorAll('input[data-k]').forEach(inp =>
@@ -3953,6 +4129,14 @@ const CMD_HELP = [
     ['isolate', '레이어 격리', '선택 도형의 레이어만 표시, 나머지 숨김 (즉시 실행)'],
     ['uniso', '격리 해제', '모든 레이어 표시 (즉시 실행)'],
   ]},
+  { c: 'BIM (2D→3D)', items: [
+    ['wall', '벽 지정', '선/폴리라인 선택 후 실행 → 높이·두께 입력. 평면에 두께 밴드 표시'],
+    ['slab', '슬래브 지정', '닫힌 폴리라인/원 선택 후 → 두께 입력 (바닥판)'],
+    ['column', '기둥 지정', '원/닫힌 폴리라인 선택 후 → 높이 입력'],
+    ['door', '문 배치', '벽 선을 클릭한 위치에 문 개구부 생성 (폭 입력)'],
+    ['window', '창 배치', '벽 선을 클릭한 위치에 창 개구부 생성 (폭·씰 기본값)'],
+    ['bimclear', 'BIM 해제', '선택 도형의 BIM 속성 제거'],
+  ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
     ['redo', '다시실행', 'Ctrl+Y와 동일'],
@@ -4019,6 +4203,9 @@ const COMMAND_LIST = [
   { name: 'sum', ko: '길이·면적 합계' }, { name: 'xline', ko: '구성선' },
   { name: 'breakpt', ko: '한 점 끊기' },
   { name: 'help', ko: '명령어 목록(?)' },
+  { name: 'wall', ko: 'BIM 벽 지정' }, { name: 'slab', ko: 'BIM 슬래브' },
+  { name: 'column', ko: 'BIM 기둥' }, { name: 'door', ko: 'BIM 문' },
+  { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -5170,6 +5357,7 @@ window.WEBCAD_API = {
     if (s.polar !== undefined) settings.polar = s.polar;
     settings.aliases = s.aliases || settings.aliases;
     Object.assign(settings.dim, s.dim || {});
+    Object.assign(settings.bim, s.bim || {});
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
     draw();
   },
