@@ -2254,10 +2254,11 @@ function open3D() {
     const cv3 = ov.querySelector('#b3cv');
     v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
       quad: false, act: 1, views: [ // 사분할 뷰 (TL/TR/BL/BR) — 라이노식
-        { name: '평면', yaw: 0, pitch: 1.5707, zoom: 1, panX: 0, panY: 0 },
+        // fixed = 평행 투영 고정(회전 불가): 평면·입면은 도면에 넣을 수 있는 정투영 뷰
+        { name: '평면', yaw: 0, pitch: Math.PI / 2, zoom: 1, panX: 0, panY: 0, fixed: true },
         { name: '아이소', yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0 },
-        { name: '정면', yaw: 0, pitch: 0.03, zoom: 1, panX: 0, panY: 0 },
-        { name: '우측면', yaw: 1.5708, pitch: 0.03, zoom: 1, panX: 0, panY: 0 },
+        { name: '정면', yaw: 0, pitch: 0, zoom: 1, panX: 0, panY: 0, fixed: true },
+        { name: '우측면', yaw: -Math.PI / 2, pitch: 0, zoom: 1, panX: 0, panY: 0, fixed: true },
       ] };
     bind3D(ov, cv3);
   }
@@ -2270,10 +2271,15 @@ function open3D() {
   v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
   v3.zoom = 1; v3.panX = 0; v3.panY = 0;
   for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
-  try { // 저장된 뷰 레이아웃 복원 (분할 여부·활성 뷰·뷰 방향)
-    const ly = JSON.parse(localStorage.getItem('webcad_v3_layout') || 'null');
+  try { // 저장된 뷰 레이아웃 복원 (분할 여부·활성 뷰·뷰 방향·입면 종류)
+    const ly = JSON.parse(localStorage.getItem('webcad_v3_layout2') || 'null');
     if (ly && Array.isArray(ly.views) && ly.views.length === 4) {
-      ly.views.forEach((w, i) => { if (isFinite(w.yaw)) { v3.views[i].yaw = w.yaw; v3.views[i].pitch = w.pitch; } });
+      ly.views.forEach((w, i) => {
+        if (!isFinite(w.yaw)) return;
+        v3.views[i].yaw = w.yaw; v3.views[i].pitch = w.pitch;
+        if (w.name) v3.views[i].name = w.name;
+        v3.views[i].fixed = !!w.fixed;
+      });
       v3.quad = !!ly.quad;
       v3.act = (ly.act >= 0 && ly.act < 4) ? ly.act : 1;
     }
@@ -2348,12 +2354,25 @@ function vpRect(i) {
           { x: 0, y: h2, w: w2, h: H - h2 }, { x: w2, y: h2, w: W - w2, h: H - h2 }][i];
 }
 function loadVp(i) { const w = v3.views[i]; v3.yaw = w.yaw; v3.pitch = w.pitch; v3.zoom = w.zoom; v3.panX = w.panX; v3.panY = w.panY; }
-// 뷰 레이아웃(분할 여부·활성 뷰·각 뷰 방향) 저장/복원 — 줌·팬은 열 때마다 모델에 맞춤
+// 입면(파사드) 뷰 순환: 정면 → 우측면 → 좌측면 → 배면 (라벨 클릭)
+const ELEV_ORDER = ['정면', '우측면', '좌측면', '배면'];
+const ELEV_YAW = { '정면': 0, '우측면': -Math.PI / 2, '좌측면': Math.PI / 2, '배면': Math.PI };
+function cycleElev(i) {
+  const w = v3.views[i];
+  if (!(w.name in ELEV_YAW)) return false;
+  w.name = ELEV_ORDER[(ELEV_ORDER.indexOf(w.name) + 1) % ELEV_ORDER.length];
+  w.yaw = ELEV_YAW[w.name]; w.pitch = 0;
+  if (i === v3.act) loadVp(i);
+  render3D(); saveV3Layout();
+  logLine(`  ▷ 입면 뷰 전환: ${w.name}`, 'info');
+  return true;
+}
+// 뷰 레이아웃(분할 여부·활성 뷰·각 뷰 방향·입면 종류) 저장/복원 — 줌·팬은 열 때마다 모델에 맞춤
 function saveV3Layout() {
   try {
-    localStorage.setItem('webcad_v3_layout', JSON.stringify({
+    localStorage.setItem('webcad_v3_layout2', JSON.stringify({
       quad: v3.quad, act: v3.act,
-      views: v3.views.map(w => ({ yaw: w.yaw, pitch: w.pitch })),
+      views: v3.views.map(w => ({ name: w.name, yaw: w.yaw, pitch: w.pitch, fixed: !!w.fixed })),
     }));
   } catch (_) {}
 }
@@ -2378,7 +2397,7 @@ function render3D() {
     v3.views[i]._faces = res.faces; v3.views[i]._under = res.under;
     c.font = `600 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
     c.fillStyle = i === v3.act ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
-    c.fillText(v3.views[i].name, r.x + 8 * dpr, r.y + 16 * dpr);
+    c.fillText(v3.views[i].name + (v3.views[i].name in ELEV_YAW ? ' ▾' : ''), r.x + 8 * dpr, r.y + 16 * dpr);
     if (v3.quad) {
       c.strokeStyle = i === v3.act ? '#0A84FF' : (getCSS('--line') || 'rgba(120,140,180,.3)');
       c.lineWidth = i === v3.act ? 1.5 : 1;
@@ -2627,11 +2646,20 @@ function bind3D(ov, cv3) {
       try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
       return;
     }
-    // 평면과 동일한 규약: 좌드래그=박스 선택 · 우드래그=회전 · Shift/휠버튼=화면 이동 · 터치=회전
+    // 입면 뷰 라벨 클릭 → 정면/우측면/좌측면/배면 순환
+    if (e.button === 0) {
+      const rl = cv3.getBoundingClientRect();
+      const plx = (e.clientX - rl.left) * (rl.width ? cv3.width / rl.width : 1);
+      const ply = (e.clientY - rl.top) * (rl.height ? cv3.height / rl.height : 1);
+      const li = vpAt(plx, ply), lr = vpRect(li), dpr2 = devicePixelRatio || 1;
+      if (plx <= lr.x + 90 * dpr2 && ply <= lr.y + 22 * dpr2 && cycleElev(li)) return;
+    }
+    // 평면과 동일한 규약: 좌드래그=박스 선택 · 우드래그=회전(고정 뷰는 이동) · Shift/휠버튼=화면 이동 · 터치=회전
     const isTouch = e.pointerType === 'touch';
+    const fixedVp = !!v3.views[v3.act].fixed; // 평면·입면: 평행 투영 고정 — 회전 대신 이동
     const mode = (e.button === 1 || (e.shiftKey && e.button === 0)) ? 'pan'
-      : (e.button === 2) ? 'orbit'
-      : isTouch ? 'orbit' : 'box';
+      : (e.button === 2) ? (fixedVp ? 'pan' : 'orbit')
+      : isTouch ? (fixedVp ? 'pan' : 'orbit') : 'box';
     drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: 0, shift: e.shiftKey, mode };
     if (mode === 'box') {
       const rb = cv3.getBoundingClientRect();
@@ -2781,8 +2809,13 @@ function bind3D(ov, cv3) {
   });
   ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); saveV3Layout(); });
   ov.querySelector('#b3Close').addEventListener('click', close3D);
-  ov.querySelector('#b3Iso').addEventListener('click', () => { v3.yaw = -0.6; v3.pitch = 0.85; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
-  ov.querySelector('#b3Top').addEventListener('click', () => { v3.yaw = 0; v3.pitch = 1.55; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
+  // 프리셋은 자유 회전 뷰(아이소)에만 적용 — 고정 투영 뷰(평면·입면)를 훼손하지 않음
+  const isoPreset = (yaw, pitch) => {
+    if (v3.views[v3.act].fixed) { v3.act = 1; loadVp(1); }
+    v3.yaw = yaw; v3.pitch = pitch; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); saveV3Layout();
+  };
+  ov.querySelector('#b3Iso').addEventListener('click', () => isoPreset(-0.6, 0.85));
+  ov.querySelector('#b3Top').addEventListener('click', () => isoPreset(0, 1.55));
   window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
