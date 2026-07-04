@@ -347,6 +347,10 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     </div>
     <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)">↶ 취소</button>
     <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)">↷ 복구</button>
+    <span id="viewSeg" style="display:inline-flex;gap:2px;background:var(--glass-fill);border-radius:980px;padding:2px;box-shadow:var(--spec);">
+      <button class="tbtn" id="vwPlan" style="box-shadow:none;background:var(--accent);color:#fff;">평면</button>
+      <button class="tbtn" id="vw3d" style="box-shadow:none;background:transparent;">3D</button>
+    </span>
     <span id="fileName" title="현재 작업 파일">새 파일</span>
     <span class="spacer"></span>
     <button class="tbtn" id="btnGrid">그리드</button>
@@ -651,7 +655,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260704j"></script>
+<script src="cad.js?v=20260704k"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>
