@@ -2113,6 +2113,224 @@ function drawBimOverlay(e) {
   ctx.restore();
 }
 
+// ============================================================
+//  BIM 2단계 — 3D 뷰 (의존성 없는 자체 렌더러)
+//  모든 BIM 요소는 수직 기둥체(prism): {poly:[[x,y]..], z0, z1, color, glass?}
+// ============================================================
+function bimSolids() {
+  const solids = [];
+  const walls = [], opens = [];
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    if (!e.bim) continue;
+    if (e.bim.kind === 'wall') walls.push(e);
+    else if (e.bim.kind === 'opening' && e.type === 'LINE') opens.push(e);
+    else if (e.bim.kind === 'slab') {
+      const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : e.points.map(p => [p[0], p[1]]);
+      solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: '#9aa2af' });
+    } else if (e.bim.kind === 'column') {
+      const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
+      solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: '#8fa3c8' });
+    }
+  }
+  for (const w of walls) {
+    const t = w.bim.t, h = w.bim.h, base = w.bim.base || 0;
+    const segs = w.type === 'LINE'
+      ? [[w.x1, w.y1, w.x2, w.y2]]
+      : (w.points || []).slice(0, -0).map((p, i, arr) => i < arr.length - 1 ? [p[0], p[1], arr[i + 1][0], arr[i + 1][1]] : null).filter(Boolean)
+          .concat(w.type === 'LWPOLYLINE' && w.closed && w.points.length > 2 ? [[w.points[w.points.length - 1][0], w.points[w.points.length - 1][1], w.points[0][0], w.points[0][1]]] : []);
+    for (const [x1, y1, x2, y2] of segs) {
+      const L = Math.hypot(x2 - x1, y2 - y1); if (L < 1e-6) continue;
+      const ux = (x2 - x1) / L, uy = (y2 - y1) / L;
+      // 이 세그먼트 위의 개구부(콜리니어) 수집 → 구간 분할
+      const cuts = [];
+      if (w.type === 'LINE') for (const o of opens) {
+        const mx = (o.x1 + o.x2) / 2, my = (o.y1 + o.y2) / 2;
+        const s = (mx - x1) * ux + (my - y1) * uy;
+        const dPerp = Math.abs((mx - x1) * (-uy) + (my - y1) * ux);
+        const ow = Math.hypot(o.x2 - o.x1, o.y2 - o.y1);
+        const odir = Math.abs(((o.x2 - o.x1) / ow) * ux + ((o.y2 - o.y1) / ow) * uy);
+        if (dPerp < t / 2 + 1 && odir > 0.99 && s > 0 && s < L)
+          cuts.push({ s0: Math.max(0, s - ow / 2), s1: Math.min(L, s + ow / 2), o });
+      }
+      cuts.sort((a, b) => a.s0 - b.s0);
+      const band = (s0, s1, z0, z1, color, glass) => {
+        if (s1 - s0 < 1e-6 || z1 - z0 < 1e-6) return;
+        const ax = x1 + ux * s0, ay = y1 + uy * s0, bx = x1 + ux * s1, by = y1 + uy * s1;
+        const nx = -uy * t / 2, ny = ux * t / 2;
+        solids.push({ poly: [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]], z0, z1, color, glass });
+      };
+      let cur = 0;
+      for (const c of cuts) {
+        band(cur, c.s0, base, base + h, '#cfc7ba');            // 개구부 앞 벽체
+        const sill = c.o.bim.sill || 0, oh = c.o.bim.h || 2100;
+        if (sill > 0) band(c.s0, c.s1, base, base + sill, '#cfc7ba');            // 창 아래
+        if (base + h > base + sill + oh) band(c.s0, c.s1, base + sill + oh, base + h, '#cfc7ba'); // 인방(상부)
+        if (c.o.bim.ot === 'window') band(c.s0 + 10, c.s1 - 10, base + sill, base + sill + oh, '#7ec8ff', true); // 유리
+        cur = c.s1;
+      }
+      band(cur, L, base, base + h, '#cfc7ba');
+    }
+  }
+  return solids;
+}
+function circlePoly(cx, cy, r, n) {
+  const p = [];
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
+  return p;
+}
+
+let v3 = null; // {yaw,pitch,zoom,cx,cy,cz,panX,panY,cv,ctx,faces}
+function open3D() {
+  const solids = bimSolids();
+  if (!solids.length) { logLine('  3D: BIM 속성이 없습니다 — 먼저 wall/slab/column으로 지정하세요. (help 참고)', 'warn'); return; }
+  let ov = document.getElementById('bim3d');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'bim3d';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:90;background:var(--bg);display:flex;flex-direction:column;';
+    ov.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--glass-chrome);border-bottom:0.5px solid var(--line);position:relative;z-index:2;">
+        <b style="font-size:14px;">3D 뷰 (BIM)</b>
+        <span style="font-size:12px;color:var(--muted);">드래그=회전 · 휠=줌 · Shift+드래그(또는 우클릭)=이동 · 두 손가락=줌/이동</span>
+        <span style="flex:1"></span>
+        <button class="tbtn" id="b3Top">평면</button>
+        <button class="tbtn" id="b3Iso">아이소</button>
+        <button class="tbtn" id="b3Close">✕ 닫기</button>
+      </div>
+      <canvas id="b3cv" style="flex:1;touch-action:none;cursor:grab;"></canvas>`;
+    document.body.appendChild(ov);
+    const cv3 = ov.querySelector('#b3cv');
+    v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [] };
+    bind3D(ov, cv3);
+  }
+  ov.style.display = 'flex';
+  v3.solids = solids;
+  // 모델 중심·초기 줌
+  let xmin = 1e18, xmax = -1e18, ymin = 1e18, ymax = -1e18, zmax = 0;
+  for (const s of solids) { for (const [x, y] of s.poly) { xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); } zmax = Math.max(zmax, s.z1); }
+  v3.cx = (xmin + xmax) / 2; v3.cy = (ymin + ymax) / 2; v3.cz = zmax / 2;
+  v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
+  v3.zoom = 1; v3.panX = 0; v3.panY = 0;
+  size3D(); render3D();
+  logLine(`  ✔ 3D 뷰 — 요소 ${solids.length}개 (닫기: 우상단 ✕ 또는 Esc)`, 'ok');
+  usage3d();
+}
+function usage3d() { if (window.WEBCAD_API && WEBCAD_API.onUsage) WEBCAD_API.onUsage('view3d'); }
+function size3D() {
+  const cvs = v3.cv, r = cvs.getBoundingClientRect();
+  cvs.width = Math.max(2, r.width * (devicePixelRatio || 1));
+  cvs.height = Math.max(2, r.height * (devicePixelRatio || 1));
+}
+function proj3D(x, y, z) {
+  const dx = x - v3.cx, dy = y - v3.cy, dz = z - v3.cz;
+  const c = Math.cos(v3.yaw), s = Math.sin(v3.yaw);
+  const x1 = dx * c - dy * s, y1 = dx * s + dy * c;
+  const cp = Math.cos(v3.pitch), sp = Math.sin(v3.pitch);
+  const sx = x1, sy = y1 * sp + dz * cp, depth = y1 * cp - dz * sp;
+  const W = v3.cv.width, H = v3.cv.height;
+  const k = Math.min(W, H) / (v3.fit * 1.4) * v3.zoom;
+  return [W / 2 + (sx + v3.panX) * k, H / 2 - (sy + v3.panY) * k, depth];
+}
+function render3D() {
+  const c = v3.ctx, W = v3.cv.width, H = v3.cv.height;
+  c.clearRect(0, 0, W, H);
+  const faces = [];
+  // 바닥 그리드 (z=0, 모델 주변)
+  const g = Math.pow(10, Math.round(Math.log10(v3.fit / 8)));
+  const gx0 = Math.floor((v3.cx - v3.fit) / g) * g, gx1 = v3.cx + v3.fit, gy0 = Math.floor((v3.cy - v3.fit) / g) * g, gy1 = v3.cy + v3.fit;
+  c.strokeStyle = getCSS('--grid') || 'rgba(140,160,220,.1)'; c.lineWidth = 1;
+  c.beginPath();
+  for (let x = gx0; x <= gx1; x += g) { const a = proj3D(x, gy0, 0), b = proj3D(x, gy1, 0); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
+  for (let y = gy0; y <= gy1; y += g) { const a = proj3D(gx0, y, 0), b = proj3D(gx1, y, 0); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
+  c.stroke();
+  // 면 수집: 측면(모서리별 사각) + 상/하면
+  for (const s of v3.solids) {
+    const n = s.poly.length;
+    const top = s.poly.map(p => proj3D(p[0], p[1], s.z1));
+    const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const quad = [bot[i], bot[j], top[j], top[i]];
+      // 월드 법선(수평)으로 셰이딩
+      const ex = s.poly[j][0] - s.poly[i][0], ey = s.poly[j][1] - s.poly[i][1];
+      const el = Math.hypot(ex, ey) || 1;
+      const nx = ey / el, ny = -ex / el; // 바깥 방향(다각형 방향에 따라 뒤집힐 수 있음 — 절대값 셰이딩)
+      const lightA = Math.abs(nx * 0.8 + ny * 0.35); // 광원 방향과의 정렬
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass });
+    }
+    faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass });
+    faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass });
+  }
+  faces.sort((a, b) => b.d - a.d); // 먼 것부터 (painter)
+  const light = document.documentElement.classList.contains('light');
+  for (const f of faces) {
+    c.beginPath();
+    f.pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
+    c.closePath();
+    const col = shadeColor(f.color, f.shade);
+    c.globalAlpha = f.glass ? 0.45 : 1;
+    c.fillStyle = col; c.fill();
+    c.globalAlpha = f.glass ? 0.6 : 1;
+    c.strokeStyle = light ? 'rgba(30,40,70,.35)' : 'rgba(10,16,32,.55)';
+    c.lineWidth = 1; c.stroke();
+    c.globalAlpha = 1;
+  }
+  if (window.__BIM3D_DEBUG) window.__BIM3D_STATS = { solids: v3.solids.length, faces: faces.length };
+}
+function shadeColor(hex, k) {
+  const r = Math.round(parseInt(hex.slice(1, 3), 16) * k), g = Math.round(parseInt(hex.slice(3, 5), 16) * k), b = Math.round(parseInt(hex.slice(5, 7), 16) * k);
+  return `rgb(${Math.min(255, r)},${Math.min(255, g)},${Math.min(255, b)})`;
+}
+function bind3D(ov, cv3) {
+  let drag = null;
+  cv3.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    drag = { x: e.clientX, y: e.clientY, mode: (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit' };
+    cv3.setPointerCapture(e.pointerId); cv3.style.cursor = 'grabbing';
+  });
+  cv3.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX; drag.y = e.clientY;
+    if (drag.mode === 'orbit') {
+      v3.yaw -= dx * 0.008;
+      v3.pitch = Math.max(0.05, Math.min(1.55, v3.pitch + dy * 0.006));
+    } else {
+      const k = Math.min(v3.cv.width, v3.cv.height) / (v3.fit * 1.4) * v3.zoom;
+      v3.panX += dx * (devicePixelRatio || 1) / k;
+      v3.panY -= dy * (devicePixelRatio || 1) / k;
+    }
+    render3D();
+  });
+  const end = () => { drag = null; cv3.style.cursor = 'grab'; };
+  cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
+  cv3.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * (e.deltaY < 0 ? 1.12 : 0.9)));
+    render3D();
+  }, { passive: false });
+  cv3.addEventListener('contextmenu', (e) => e.preventDefault());
+  // 터치: 핀치 줌
+  let pinch = null;
+  cv3.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }, { passive: true });
+  cv3.addEventListener('touchmove', (e) => {
+    if (pinch && e.touches.length === 2) {
+      const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+      v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; render3D();
+    }
+  }, { passive: true });
+  ov.querySelector('#b3Close').addEventListener('click', close3D);
+  ov.querySelector('#b3Iso').addEventListener('click', () => { v3.yaw = -0.6; v3.pitch = 0.85; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
+  ov.querySelector('#b3Top').addEventListener('click', () => { v3.yaw = 0; v3.pitch = 1.55; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
+  window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ov.style.display !== 'none') close3D(); }, true);
+}
+function close3D() {
+  const ov = document.getElementById('bim3d');
+  if (ov) ov.style.display = 'none';
+}
+
 // ====== 도형 길이/면적 헬퍼 ======
 function entityLength(e) {
   if (e.type === 'LINE') return Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
@@ -2915,6 +3133,7 @@ const INSTANT_CMDS = {
   slab: cmdSlabTag,
   column: cmdColumnTag,
   bimclear: cmdBimClear,
+  view3d: open3D,
 };
 
 function nearGrip(e, w, tol) {
@@ -3121,6 +3340,7 @@ const CMD_ALIASES = {
   help: 'help', '?': 'help',
   wall: 'wall', slab: 'slab', column: 'column', col: 'column',
   door: 'door', window: 'window', win: 'window', bimclear: 'bimclear',
+  '3d': 'view3d', view3d: 'view3d',
 };
 
 function runCommandInput(raw) {
@@ -4136,6 +4356,7 @@ const CMD_HELP = [
     ['door', '문 배치', '벽 선을 클릭한 위치에 문 개구부 생성 (폭 입력)'],
     ['window', '창 배치', '벽 선을 클릭한 위치에 창 개구부 생성 (폭·씰 기본값)'],
     ['bimclear', 'BIM 해제', '선택 도형의 BIM 속성 제거'],
+    ['3d', '3D 뷰', '벽·슬래브·기둥·개구부를 입체로 표시 — 드래그 회전, 휠 줌, Shift+드래그 이동'],
   ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
@@ -4206,6 +4427,7 @@ const COMMAND_LIST = [
   { name: 'wall', ko: 'BIM 벽 지정' }, { name: 'slab', ko: 'BIM 슬래브' },
   { name: 'column', ko: 'BIM 기둥' }, { name: 'door', ko: 'BIM 문' },
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
+  { name: '3d', ko: '3D 뷰' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
