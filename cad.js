@@ -2247,9 +2247,8 @@ function open3D() {
         <button class="tbtn" id="b3Quad" title="사분할 뷰 ↔ 단일 뷰 (뷰포트 더블클릭과 동일)">4분할</button>
         <button class="tbtn" id="b3Top">위에서</button>
         <button class="tbtn" id="b3Iso">아이소</button>
-        <button class="tbtn" id="b3Close">평면으로</button>
       </div>
-      <canvas id="b3cv" style="flex:1;touch-action:none;cursor:grab;"></canvas>`;
+      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:grab;"></canvas>`;
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
     v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
@@ -2808,7 +2807,6 @@ function bind3D(ov, cv3) {
     render3D();
   });
   ov.querySelector('#b3Quad').addEventListener('click', () => { v3.quad = !v3.quad; render3D(); saveV3Layout(); });
-  ov.querySelector('#b3Close').addEventListener('click', close3D);
   // 프리셋은 자유 회전 뷰(아이소)에만 적용 — 고정 투영 뷰(평면·입면)를 훼손하지 않음
   const isoPreset = (yaw, pitch) => {
     if (v3.views[v3.act].fixed) { v3.act = 1; loadVp(1); }
@@ -2823,7 +2821,7 @@ function bind3D(ov, cv3) {
     if (v3.wallMode) { setWallMode(false); }                                          // 0차: 벽 그리기 종료
     else if (state.tool !== 'select') { setTool('select'); state.selection.clear(); renderProps(); render3D(); } // 0.5차: 도구 취소
     else if (state.selection.size) { state.selection.clear(); renderProps(); render3D(); } // 1차: 선택 해제
-    else close3D();                                                                  // 2차: 평면으로
+    // 평면 복귀는 상단 [평면|3D] 토글로만 — Esc로는 뷰를 바꾸지 않음
   }, true);
 }
 function close3D() {
