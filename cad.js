@@ -2173,7 +2173,7 @@ function bimSolids() {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : e.points.map(p => [p[0], p[1]]);
       solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: '#9aa2af', eid: e.id });
     } else if (e.bim.kind === 'roof' && e.type === 'LWPOLYLINE') {
-      for (const s of roofSolids(e)) { s.eid = e.id; solids.push(s); }
+      for (const s of roofSolids(e)) { s.eid = e.id; s.rf = true; solids.push(s); }
     } else if (e.bim.kind === 'stair' && e.type === 'LINE') {
       for (const s of stairSolids(e)) { s.eid = e.id; solids.push(s); }
     } else if (e.bim.kind === 'column') {
@@ -2242,6 +2242,7 @@ function open3D() {
         <b style="font-size:13px;">3D 작업 뷰</b>
         <span style="font-size:11.5px;color:var(--muted);">클릭=선택 · 파란 그립 드래그=높이 조절 · 드래그=회전 · 휠=줌 · Shift+드래그=이동 · Del=삭제</span>
         <span style="flex:1"></span>
+        <button class="tbtn" id="b3Roof" title="지붕 보임 → 투명 → 숨김 순환">지붕:보임</button>
         <button class="tbtn" id="b3Top">위에서</button>
         <button class="tbtn" id="b3Iso">아이소</button>
         <button class="tbtn" id="b3Close">평면으로</button>
@@ -2256,7 +2257,7 @@ function open3D() {
   v3.solids = solids;
   // 모델 중심·초기 줌
   let xmin = 1e18, xmax = -1e18, ymin = 1e18, ymax = -1e18, zmax = 0;
-  for (const s of solids) { for (const [x, y] of s.poly) { xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); } zmax = Math.max(zmax, s.z1); }
+  for (const s of solids) { for (const [x, y] of s.poly) { xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); } zmax = Math.max(zmax, s.zt ? Math.max(...s.zt) : (s.z1 || 0)); } // 경사 지붕은 zt만 있음 — NaN 방지
   v3.cx = (xmin + xmax) / 2; v3.cy = (ymin + ymax) / 2; v3.cz = zmax / 2;
   v3.fit = Math.max(xmax - xmin, ymax - ymin, zmax) || 1000;
   v3.zoom = 1; v3.panX = 0; v3.panY = 0;
@@ -2318,8 +2319,38 @@ function render3D() {
   for (let x = gx0; x <= gx1; x += g) { const a = proj3D(x, gy0, 0), b = proj3D(x, gy1, 0); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
   for (let y = gy0; y <= gy1; y += g) { const a = proj3D(gx0, y, 0), b = proj3D(gx1, y, 0); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
   c.stroke();
+  // 평면 밑그림 — BIM 지정 안 된 일반 도형도 해당 층 레벨 높이에 라인워크로 표시 (평면↔3D 연속성)
+  c.save();
+  c.globalAlpha = 0.5; c.lineWidth = 1;
+  for (const e of state.entities) {
+    if (e.bim) continue; // BIM 요소는 아래에서 솔리드로 그려짐
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    const z = (state.levels[e.lv || 0] || { elev: 0 }).elev;
+    c.strokeStyle = entityColor(e);
+    c.beginPath();
+    if (e.type === 'LINE') {
+      const a = proj3D(e.x1, e.y1, z), b = proj3D(e.x2, e.y2, z);
+      c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]);
+    } else if (e.type === 'LWPOLYLINE' && e.points && e.points.length) {
+      e.points.forEach((p, i) => { const q = proj3D(p[0], p[1], z); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); });
+      if (e.closed) c.closePath();
+    } else if (e.type === 'CIRCLE') {
+      for (let i = 0; i <= 32; i++) { const t = i / 32 * Math.PI * 2; const q = proj3D(e.cx + e.r * Math.cos(t), e.cy + e.r * Math.sin(t), z); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }
+    } else if (e.type === 'ARC') {
+      let s0 = e.startAngle, e0 = e.endAngle; if (e0 < s0) e0 += 360;
+      const steps = Math.max(8, Math.ceil((e0 - s0) / 10));
+      for (let i = 0; i <= steps; i++) {
+        const a = (s0 + (e0 - s0) * i / steps) * Math.PI / 180;
+        const q = proj3D(e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a), z);
+        i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]);
+      }
+    } else continue; // TEXT/치수/해치 등은 3D 밑그림 생략
+    c.stroke();
+  }
+  c.restore();
   // 면 수집: 측면(모서리별 사각) + 상/하면
   for (const s of v3.solids) {
+    if (s.rf && v3.roof === 'hide') continue; // 지붕 숨김 모드
     const n = s.poly.length;
     const zt = s.zt || s.poly.map(() => s.z1);
     const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
@@ -2332,10 +2363,10 @@ function render3D() {
       const el = Math.hypot(ex, ey) || 1;
       const nx = ey / el, ny = -ex / el; // 바깥 방향(다각형 방향에 따라 뒤집힐 수 있음 — 절대값 셰이딩)
       const lightA = Math.abs(nx * 0.8 + ny * 0.35); // 광원 방향과의 정렬
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid });
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf });
     }
-    faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid });
-    faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid });
+    faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf });
+    faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf });
   }
   faces.sort((a, b) => b.d - a.d); // 먼 것부터 (painter)
   const light = document.documentElement.classList.contains('light');
@@ -2345,9 +2376,10 @@ function render3D() {
     f.pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
     c.closePath();
     const col = isSel ? shadeColor('#0A84FF', 0.6 + 0.4 * f.shade) : shadeColor(f.color, f.shade);
-    c.globalAlpha = f.glass ? 0.45 : 1;
+    const rfGhost = f.rf && v3.roof === 'ghost';
+    c.globalAlpha = f.glass ? 0.45 : rfGhost ? 0.22 : 1;
     c.fillStyle = col; c.fill();
-    c.globalAlpha = f.glass ? 0.6 : 1;
+    c.globalAlpha = f.glass ? 0.6 : rfGhost ? 0.3 : 1;
     c.strokeStyle = isSel ? '#5eb1ff' : (light ? 'rgba(30,40,70,.35)' : 'rgba(10,16,32,.55)');
     c.lineWidth = isSel ? 2 : 1; c.stroke();
     c.globalAlpha = 1;
@@ -2463,6 +2495,11 @@ function bind3D(ov, cv3) {
       v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; render3D();
     }
   }, { passive: true });
+  ov.querySelector('#b3Roof').addEventListener('click', () => {
+    v3.roof = (!v3.roof || v3.roof === 'show') ? 'ghost' : v3.roof === 'ghost' ? 'hide' : 'show';
+    ov.querySelector('#b3Roof').textContent = '지붕:' + (v3.roof === 'ghost' ? '투명' : v3.roof === 'hide' ? '숨김' : '보임');
+    render3D();
+  });
   ov.querySelector('#b3Close').addEventListener('click', close3D);
   ov.querySelector('#b3Iso').addEventListener('click', () => { v3.yaw = -0.6; v3.pitch = 0.85; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
   ov.querySelector('#b3Top').addEventListener('click', () => { v3.yaw = 0; v3.pitch = 1.55; v3.zoom = 1; v3.panX = 0; v3.panY = 0; render3D(); });
@@ -2764,7 +2801,7 @@ function roofSolids(e) {
     const P = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
     const hi = b.eave + b.rise, lo = b.eave;
     const ztOf = { n: [lo, lo, hi, hi], s: [hi, hi, lo, lo], e: [lo, hi, hi, lo], w: [hi, lo, lo, hi] }[b.dir] || [lo, lo, hi, hi];
-    return [{ poly: P, z0: b.eave, zt: ztOf, color: col }];
+    return [{ poly: P, z0: b.eave, z1: hi, zt: ztOf, color: col }];
   }
   // 박공: 용마루 = 긴 변 방향(또는 지정) 중앙선, 두 개의 경사 솔리드
   const alongX = b.dir === 'x' || (b.dir !== 'y' && (x1 - x0) >= (y1 - y0));
@@ -2772,14 +2809,14 @@ function roofSolids(e) {
   if (alongX) {
     const ym = (y0 + y1) / 2;
     return [
-      { poly: [[x0, y0], [x1, y0], [x1, ym], [x0, ym]], z0: lo, zt: [lo, lo, hi, hi], color: col },
-      { poly: [[x0, ym], [x1, ym], [x1, y1], [x0, y1]], z0: lo, zt: [hi, hi, lo, lo], color: col },
+      { poly: [[x0, y0], [x1, y0], [x1, ym], [x0, ym]], z0: lo, z1: hi, zt: [lo, lo, hi, hi], color: col },
+      { poly: [[x0, ym], [x1, ym], [x1, y1], [x0, y1]], z0: lo, z1: hi, zt: [hi, hi, lo, lo], color: col },
     ];
   }
   const xm = (x0 + x1) / 2;
   return [
-    { poly: [[x0, y0], [xm, y0], [xm, y1], [x0, y1]], z0: lo, zt: [lo, hi, hi, lo], color: col },
-    { poly: [[xm, y0], [x1, y0], [x1, y1], [xm, y1]], z0: lo, zt: [hi, lo, lo, hi], color: col },
+    { poly: [[x0, y0], [xm, y0], [xm, y1], [x0, y1]], z0: lo, z1: hi, zt: [lo, hi, hi, lo], color: col },
+    { poly: [[xm, y0], [x1, y0], [x1, y1], [xm, y1]], z0: lo, z1: hi, zt: [hi, lo, lo, hi], color: col },
   ];
 }
 // 경사 상단 평면 z(x,y) — zt 솔리드용 (첫 세 꼭짓점으로 평면 결정)
@@ -4820,7 +4857,7 @@ const CMD_HELP = [
     ['door', '문 배치', '벽 선을 클릭한 위치에 문 개구부 생성 (폭 입력)'],
     ['window', '창 배치', '벽 선을 클릭한 위치에 창 개구부 생성 (폭·씰 기본값)'],
     ['bimclear', 'BIM 해제', '선택 도형의 BIM 속성 제거'],
-    ['3d', '3D 작업 뷰', '상단 [평면|3D] 토글과 동일 — 3D에서 클릭=선택 후 속성 패널에서 높이·두께 수정(즉시 반영), Del=삭제, Esc=선택해제/평면 복귀'],
+    ['3d', '3D 작업 뷰', '상단 [평면|3D] 토글과 동일 — 클릭=선택, 그립 드래그=높이, Del=삭제, Esc=선택해제/평면 복귀. BIM 미지정 도형은 층 바닥에 밑그림으로 표시, 지붕:보임/투명/숨김 토글'],
     ['section', '단면 추출', '절단선 두 점 → 방향 클릭 → 새 탭에 단면도 자동 생성(절단 해치+후방 투영)'],
     ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
     ['level', '층(다층)', '그리기 설정 패널에서 층 전환/추가 — 새 도형은 현재 층에 생성, 다른 층은 흐리게 표시, BIM 높이 자동 반영'],
