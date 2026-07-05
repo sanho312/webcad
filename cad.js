@@ -3325,6 +3325,60 @@ function entityArea2(e) {
 }
 
 // ====== ROOF — 지붕 지정 (사각 풋프린트: 박공/외쪽/평) ======
+// 3D 작업 명령 세트(라이노식) — move3d/copy3d/box/cylinder/settop
+function ask3(msg, def) {
+  const s = prompt(msg, def); if (s == null) return null;
+  const p = String(s).split(',').map(Number);
+  return (p.length >= 2 && p.slice(0, 2).every(isFinite)) ? p : null;
+}
+function zShift3(e, dz) { if (dz) gumMove(e, { vz: 1 }, Math.round(dz)); }
+function cmdMove3D(copy) {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine(`  ${copy ? 'copy3d' : 'move3d'}: 객체를 선택한 뒤 실행하세요.`, 'warn'); return; }
+  const v = ask3(`${copy ? '복사' : '이동'}량 dx,dy,dz (mm):`, '0,0,0'); if (!v) return;
+  const dx = v[0] || 0, dy = v[1] || 0, dz = v[2] || 0;
+  pushUndo();
+  let targets = sel;
+  if (copy) targets = sel.map(e => {
+    const c = JSON.parse(JSON.stringify(e)); delete c.id;
+    const zo = c.zo; const n = addEntity(c);
+    if (zo != null) n.zo = zo; else delete n.zo;
+    return n;
+  });
+  for (const e of targets) { translateEntity(e, dx, dy); zShift3(e, dz); }
+  state.selection.clear(); targets.forEach(e => state.selection.add(e.id));
+  logLine(`  ✔ ${copy ? 'Copy3D' : 'Move3D'} (${dx}, ${dy}, ${dz}) — ${targets.length}개`, 'ok');
+  renderProps(); draw();
+}
+function cmdBox() {
+  const a = ask3('상자 모서리1 x,y:', '0,0'); if (!a) return;
+  const b = ask3('상자 모서리2 x,y:', '3000,3000'); if (!b) return;
+  const h = bimAskNum('높이 (mm):', settings.bim.wallH); if (h == null) return;
+  pushUndo();
+  const e = addEntity({ type: 'LWPOLYLINE', closed: true, points: [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]] });
+  e.bim = { kind: 'column', h, base: cplaneZ() }; delete e.zo;
+  logLine(`  ✔ Box (${a[0]},${a[1]})~(${b[0]},${b[1]}) 높이 ${h} · 바닥 z=${cplaneZ()}`, 'ok');
+  renderProps(); draw();
+}
+function cmdCylinder() {
+  const c0 = ask3('원기둥 중심 x,y:', '0,0'); if (!c0) return;
+  const r = bimAskNum('반지름 (mm):', 500); if (r == null) return;
+  const h = bimAskNum('높이 (mm):', settings.bim.wallH); if (h == null) return;
+  pushUndo();
+  const e = addEntity({ type: 'CIRCLE', cx: c0[0], cy: c0[1], r });
+  e.bim = { kind: 'column', h, base: cplaneZ() }; delete e.zo;
+  logLine(`  ✔ Cylinder r=${r} 높이 ${h} · 바닥 z=${cplaneZ()}`, 'ok');
+  renderProps(); draw();
+}
+function cmdSetTop() {
+  const sel = selectedEntities().filter(e => e.bim && ['wall', 'column', 'stair'].includes(e.bim.kind));
+  if (!sel.length) { logLine('  settop: 벽·기둥·계단(돌출체)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const z = bimAskNum('상단 높이 z (mm):', lvElev() + settings.bim.wallH); if (z == null) return;
+  pushUndo();
+  for (const e of sel) e.bim.h = Math.max(10, Math.round(z - (e.bim.base || 0)));
+  logLine(`  ✔ SetTop: ${sel.length}개 상단을 z=${z}(으)로 정렬`, 'ok');
+  renderProps(); draw();
+}
 // ExtrudeCrv(라이노식): 곡선을 수직 돌출 — 닫힌 곡선=솔리드, 열린 곡선=두께 없는 면(서피스)
 function cmdExtrudeCrv() {
   const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
@@ -4239,6 +4293,11 @@ const INSTANT_CMDS = {
   stair: cmdStairTag,
   extrudecrv: cmdExtrudeCrv,
   extrudesrf: cmdExtrudeSrf,
+  move3d: () => cmdMove3D(false),
+  copy3d: () => cmdMove3D(true),
+  box: cmdBox,
+  cylinder: cmdCylinder,
+  settop: cmdSetTop,
   bimclear: cmdBimClear,
   view3d: open3D,
   roofview: () => {
@@ -4463,6 +4522,10 @@ const CMD_ALIASES = {
   stair: 'stair', '계단': 'stair',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
+  move3d: 'move3d', m3: 'move3d',
+  copy3d: 'copy3d', c3: 'copy3d',
+  box: 'box', cylinder: 'cylinder', cyl: 'cylinder',
+  settop: 'settop',
   section: 'section', sec: 'section',
   elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
@@ -5515,6 +5578,11 @@ const CMD_HELP = [
     ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
     ['level', '층(다층)', '그리기 설정 패널에서 층 전환/추가 — 새 도형은 현재 층에 생성, 다른 층은 흐리게 표시, BIM 높이 자동 반영'],
     ['roof', '지붕 지정', '닫힌 폴리라인 선택 후 → 박공/외쪽/평 + 처마 높이 + 상승 높이 — 3D 경사면·단면 사다리꼴 자동'],
+    ['move3d', '3D 이동', '선택 후 dx,dy,dz 입력 — z는 base·씰·표시높이 등 종류별로 이동'],
+    ['copy3d', '3D 복사', '선택 후 dx,dy,dz — 복제본을 3D로 이동'],
+    ['box', '상자', '모서리 2점 + 높이 — 작업면 위에 솔리드 상자'],
+    ['cylinder', '원기둥', '중심·반지름·높이 — 작업면 위에 원기둥'],
+    ['settop', '상단 정렬', '벽·기둥·계단 선택 후 상단 z 입력 — 높이가 그 z에 맞게 조정'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 입력 — 닫힌 곡선=솔리드, 열린 곡선=면. 2D·3D 어디서든'],
     ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
     ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
@@ -5592,6 +5660,8 @@ const COMMAND_LIST = [
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
   { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' },
   { name: 'extrudecrv', ko: '곡선 돌출' }, { name: 'extrudesrf', ko: '면 두께' },
+  { name: 'move3d', ko: '3D 이동' }, { name: 'copy3d', ko: '3D 복사' },
+  { name: 'box', ko: '상자' }, { name: 'cylinder', ko: '원기둥' }, { name: 'settop', ko: '상단 정렬' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
