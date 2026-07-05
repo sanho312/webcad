@@ -2189,16 +2189,43 @@ function bimSolids() {
   }
   for (const w of walls) {
     const t = w.bim.t, h = w.bim.h, base = w.bim.base || 0;
-    const segs = w.type === 'CIRCLE'
-      ? (() => { const cp = circlePoly(w.cx, w.cy, w.r, 24); return cp.map((p, i) => [p[0], p[1], cp[(i + 1) % 24][0], cp[(i + 1) % 24][1]]); })()
-      : w.type === 'LINE'
-      ? [[w.x1, w.y1, w.x2, w.y2]]
-      : (w.points || []).map((p, i, arr) => i < arr.length - 1 ? [p[0], p[1], arr[i + 1][0], arr[i + 1][1]] : null).filter(Boolean) // slice(0,-0)은 빈 배열이 되는 버그였음 — 전 세그먼트 사용
-          .concat(w.type === 'LWPOLYLINE' && w.closed && w.points.length > 2 ? [[w.points[w.points.length - 1][0], w.points[w.points.length - 1][1], w.points[0][0], w.points[0][1]]] : []);
-    for (const [x1, y1, x2, y2] of segs) {
+    // 꼭짓점 링 구성: LINE=2점 열린, 폴리라인=점열(닫힘 여부), 원=24각 닫힘
+    let V, closedW;
+    if (w.type === 'CIRCLE') { V = circlePoly(w.cx, w.cy, w.r, 24); closedW = true; }
+    else if (w.type === 'LINE') { V = [[w.x1, w.y1], [w.x2, w.y2]]; closedW = false; }
+    else { V = (w.points || []).map(p => [p[0], p[1]]); closedW = !!w.closed && V.length > 2; }
+    const n = V.length; if (n < 2) continue;
+    const nE = closedW ? n : n - 1;
+    // 변별 단위 법선
+    const eN = [];
+    for (let k = 0; k < nE; k++) {
+      const a = V[k], b = V[(k + 1) % n];
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      eN.push([-(b[1] - a[1]) / L, (b[0] - a[0]) / L]);
+    }
+    // 꼭짓점별 마이터 오프셋 — 인접 변 오프셋 선의 교차 방향 (코너가 빈틈·단차 없이 맞물림)
+    const mitO = [], mitI = [];
+    for (let i = 0; i < n; i++) {
+      const pe = closedW ? (i - 1 + n) % n : i - 1;
+      const ce = i < nE ? i : nE - 1;
+      let ox, oy;
+      if (pe >= 0 && i < nE) {
+        let mx = eN[pe][0] + eN[ce][0], my = eN[pe][1] + eN[ce][1];
+        const ml = Math.hypot(mx, my);
+        if (ml < 1e-6) { mx = eN[ce][0]; my = eN[ce][1]; }
+        else { mx /= ml; my /= ml; }
+        const cosH = Math.max(0.25, mx * eN[ce][0] + my * eN[ce][1]); // 예각 스파이크 제한
+        ox = mx * (t / 2) / cosH; oy = my * (t / 2) / cosH;
+      } else { ox = eN[ce][0] * t / 2; oy = eN[ce][1] * t / 2; } // 열린 끝: 수직 맞댐
+      mitO.push([V[i][0] + ox, V[i][1] + oy]);
+      mitI.push([V[i][0] - ox, V[i][1] - oy]);
+    }
+    for (let k = 0; k < nE; k++) {
+      const x1 = V[k][0], y1 = V[k][1], k2 = (k + 1) % n;
+      const x2 = V[k2][0], y2 = V[k2][1];
       const L = Math.hypot(x2 - x1, y2 - y1); if (L < 1e-6) continue;
       const ux = (x2 - x1) / L, uy = (y2 - y1) / L;
-      // 이 세그먼트 위의 개구부(콜리니어) 수집 → 구간 분할 (LINE·폴리라인/사각 벽 모두 — 세그먼트 단위 판정)
+      // 이 세그먼트 위의 개구부(콜리니어) 수집 → 구간 분할
       const cuts = [];
       for (const o of opens) {
         const mx = (o.x1 + o.x2) / 2, my = (o.y1 + o.y2) / 2;
@@ -2214,18 +2241,22 @@ function bimSolids() {
         if (s1 - s0 < 1e-6 || z1 - z0 < 1e-6) return;
         const ax = x1 + ux * s0, ay = y1 + uy * s0, bx = x1 + ux * s1, by = y1 + uy * s1;
         const nx = -uy * t / 2, ny = ux * t / 2;
-        solids.push({ poly: [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id });
+        let A1 = [ax + nx, ay + ny], A2 = [ax - nx, ay - ny];
+        let B1 = [bx + nx, by + ny], B2 = [bx - nx, by - ny];
+        if (s0 <= 0.01) { A1 = mitO[k]; A2 = mitI[k]; }            // 세그 시작 = 마이터 코너
+        if (s1 >= L - 0.01) { B1 = mitO[k2]; B2 = mitI[k2]; }      // 세그 끝 = 마이터 코너
+        solids.push({ poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id });
       };
-      let cur = (w.type === 'LWPOLYLINE') ? -t / 2 : 0; // 폴리라인 벽: 코너에서 이웃 세그와 맞물리도록 t/2 연장
+      let cur = 0;
       for (const c of cuts) {
         band(cur, c.s0, base, base + h, '#cfc7ba');            // 개구부 앞 벽체
         const sill = c.o.bim.sill || 0, oh = c.o.bim.h || 2100;
         if (sill > 0) band(c.s0, c.s1, base, base + sill, '#cfc7ba');            // 창 아래
         if (base + h > base + sill + oh) band(c.s0, c.s1, base + sill + oh, base + h, '#cfc7ba'); // 인방(상부)
-        if (c.o.bim.ot === 'window') band(c.s0 + 10, c.s1 - 10, base + sill, base + sill + oh, '#7ec8ff', true, c.o.id); // 유리(클릭=개구부 선택)
+        if (c.o.bim.ot === 'window') band(c.s0 + 10, c.s1 - 10, base + sill, base + sill + oh, '#7ec8ff', true, c.o.id); // 유리
         cur = c.s1;
       }
-      band(cur, L + (w.type === 'LWPOLYLINE' ? t / 2 : 0), base, base + h, '#cfc7ba'); // 끝도 t/2 연장
+      band(cur, L, base, base + h, '#cfc7ba');
     }
   }
   return solids;
