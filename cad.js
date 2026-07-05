@@ -3041,6 +3041,11 @@ function tool3DClick(e) {
   const u = unproj3D(px, py, cplaneZ()); // 레이캐스팅: 뷰 광선 ∩ 작업면
   if (!u) return;
   const w = snap3D(px, py, { x: Math.round(u[0]), y: Math.round(u[1]) });
+  // 스냅된 점이 다른 높이면 작업면을 그 높이로 이동 — 생성되는 도형이 스냅점 높이에 정확히 실림
+  if (w.z != null && Math.abs(w.z - cplaneZ()) > 0.5) {
+    setCplane(w.z);
+    logLine(`  ▷ 작업면을 스냅점 높이 ${Math.round(w.z)}(으)로 이동 — 이 높이에 작도됩니다`, 'info');
+  }
   handleClick(w, w, e);
   v3.solids = bimSolids(); render3D();
 }
@@ -3052,6 +3057,10 @@ function wall3DClick(e) {
   const w = unproj3D(px, py, cplaneZ());
   if (!w) return;
   const sn = snap3D(px, py, null);
+  if (sn && sn.z != null && Math.abs(sn.z - cplaneZ()) > 0.5) { // 스냅점 높이로 작업면 이동 (벽 base 반영)
+    setCplane(sn.z);
+    logLine(`  ▷ 작업면을 스냅점 높이 ${Math.round(sn.z)}(으)로 이동 — 벽이 이 높이에서 시작됩니다`, 'info');
+  }
   const pt = sn ? [sn.x, sn.y] : [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
   if (!v3.wallP1) { v3.wallP1 = pt; v3.wallCur = pt; render3D(); return; }
   if (Math.hypot(pt[0] - v3.wallP1[0], pt[1] - v3.wallP1[1]) < 10) return; // 같은 점
