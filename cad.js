@@ -4862,6 +4862,16 @@ function renderLayers() {
             .map(([v, t]) => `<option value="${v}" ${String(l.lineweight ?? '') === v ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
        </div>`;
+    div.addEventListener('contextmenu', (e) => { // 우클릭: 선택한 객체를 이 레이어로 이동 (라이노식)
+      e.preventDefault(); e.stopPropagation();
+      const sel = [...state.selection].map(id => state.entities.find(en => en.id === id)).filter(Boolean);
+      if (!sel.length) { logLine('  레이어 이동: 먼저 객체를 선택한 뒤 대상 레이어를 우클릭하세요.', 'warn'); return; }
+      pushUndo();
+      for (const en of sel) en.layer = l.name;
+      logLine(`  ✔ 선택 ${sel.length}개 객체를 '${l.name}' 레이어로 이동`, 'ok');
+      renderProps(); renderLayers(); draw();
+      if (typeof v3 !== 'undefined' && v3 && document.getElementById('bim3d') && document.getElementById('bim3d').style.display !== 'none') { v3.solids = bimSolids(); render3D(); }
+    });
     div.querySelector('.sw').addEventListener('click', (e) => {
       e.stopPropagation();
       const inp = document.createElement('input'); inp.type = 'color'; inp.value = rgbHex(l.color);
