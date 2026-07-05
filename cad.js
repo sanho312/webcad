@@ -3405,6 +3405,45 @@ function cmdExtrudeCrv() {
   const h = bimAskNum('돌출 높이 (mm):', settings.bim.wallH); if (h == null) return;
   const solidOpt = String(prompt('출력 — 1: 서피스(면만)  2: 솔리드(속 채움)', '1') || '1').trim() === '2';
   pushUndo();
+  // 같은 모양의 안팎 이중 외곽선(스케일/오프셋 쌍) → 간격을 두께로 하는 벽체 서피스 (건물 벽체)
+  if (sel.length === 2 && sel.every(e => e.type === 'LWPOLYLINE' && e.closed && e.points.length >= 3)) {
+    const inPoly = (p, poly) => { let ins = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+        if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins;
+      } return ins; };
+    let outer = null, inner = null;
+    if (sel[1].points.every(p => inPoly(p, sel[0].points))) { outer = sel[0]; inner = sel[1]; }
+    else if (sel[0].points.every(p => inPoly(p, sel[1].points))) { outer = sel[1]; inner = sel[0]; }
+    if (outer && inner && outer.points.length === inner.points.length) {
+      const op = outer.points, n2 = op.length;
+      const dists = [], mids = [];
+      for (const p of inner.points) {
+        let bd = Infinity, bx = 0, by = 0;
+        for (let i = 0; i < n2; i++) {
+          const a = op[i], b2 = op[(i + 1) % n2];
+          const q = closestOnSeg(p[0], p[1], a[0], a[1], b2[0], b2[1]);
+          const qx = q.x != null ? q.x : q[0], qy = q.y != null ? q.y : q[1];
+          const d = Math.hypot(p[0] - qx, p[1] - qy);
+          if (d < bd) { bd = d; bx = qx; by = qy; }
+        }
+        dists.push(bd); mids.push([(p[0] + bx) / 2, (p[1] + by) / 2]);
+      }
+      const t = Math.round(dists.reduce((a, b) => a + b, 0) / dists.length);
+      const uniform = Math.max(...dists) - Math.min(...dists) < Math.max(2, t * 0.25); // 스케일 쌍은 간격 약간 비균일 허용
+      if (t > 0.5 && uniform) {
+        const base = lvElev() + (outer.zo || 0);
+        const ids = new Set([outer.id, inner.id]);
+        state.entities = state.entities.filter(e => !ids.has(e.id));
+        const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mids });
+        ln.bim = { kind: 'wall', h, t, base }; delete ln.zo;
+        state.selection.clear(); state.selection.add(ln.id);
+        logLine(`  ✔ ExtrudeCrv: 이중 외곽선 → 두께 ${t} 벽체 서피스 (높이 ${h}, 바닥 z=${base})`, 'ok');
+        renderProps(); draw();
+        return;
+      }
+    }
+  }
   let nOpen = 0, nClosed = 0, nSlant = 0;
   for (const e of sel) {
     let base = lvElev() + (e.zo || 0); // 공중에 띄운 곡선은 그 높이에서 돌출

@@ -90,7 +90,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     background:var(--bg);color:var(--text);overflow:hidden;user-select:none;}
   #app{display:flex;flex-direction:column;height:100%;}
   /* 라이노식 배치: 문서탭(0) → 상단바(1) → 명령창(2) → 작업영역(3) → 상태바(4) */
-  #docTabs{order:0;} #topbar{order:1;} #console{order:2;border-top:none;border-bottom:0.5px solid var(--line);} #main{order:3;} #statusBar{order:4;}
+  #docTabs{order:0;} #topbar{order:1;} #console{order:2;border-top:none;border-bottom:0.5px solid var(--line);position:relative;z-index:56;} #main{order:3;} #statusBar{order:4;}
   #cmdSuggest{top:calc(100% + 8px) !important;bottom:auto !important;} /* 명령창이 위로 갔으니 제안은 아래로 */
   #statusBar{display:flex;gap:12px;align-items:center;flex:0 0 auto;flex-wrap:wrap;
     padding:3px 12px;font-size:11.5px;color:var(--muted);background:var(--bg);
@@ -682,7 +682,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260705y"></script>
+<script src="cad.js?v=20260705z"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>
