@@ -340,8 +340,6 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <div class="menuSep"></div>
         <button class="menuItem" id="miSave">💾 저장 (DXF)</button>
         <button class="menuItem" id="miSaveAs">📤 다른 이름으로 저장…</button>
-        <button class="menuItem" id="miExpStl">🧊 STL로 저장 (3D)</button>
-        <button class="menuItem" id="miExpObj">🧊 OBJ로 저장 (3D)</button>
         <button class="menuItem" id="miImage">🖼 밑그림 이미지 넣기…</button>
         <div class="menuSep"></div>
         <button class="menuItem" id="miShare">🔗 링크로 공유 (서버 불필요)</button>
@@ -513,6 +511,10 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
             <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="svg"> <b>SVG</b> — 벡터 이미지 (웹·일러스트)</label>
             <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="png"> <b>PNG</b> — 비트맵 이미지</label>
             <label style="display:block;margin:4px 0;opacity:.45;cursor:not-allowed;"><input type="radio" disabled> DWG — 미지원 (Autodesk 독점 포맷)</label>
+            <div style="color:var(--muted);margin:10px 0 6px;border-top:0.5px solid var(--line);padding-top:8px;">3D 형식 (입체 모델)</div>
+            <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="stl"> <b>STL</b> — 3D 모델 (라이노·스케치업·3D프린터)</label>
+            <label style="display:block;margin:4px 0;"><input type="radio" name="saveFmt" value="obj"> <b>OBJ</b> — 3D 모델 (범용)</label>
+            <label class="optChk" style="display:block;margin:6px 0 2px;font-size:12.5px;"><input type="checkbox" id="saveSelOnly"> 선택한 객체만 (3D)</label>
           </div>
           <div class="dlgBtns">
             <button class="miniBtn" id="saveAsCancel">취소</button>
@@ -684,7 +686,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260706e"></script>
+<script src="cad.js?v=20260706f"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>

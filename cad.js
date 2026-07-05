@@ -3457,7 +3457,7 @@ function cmdExportSTL(onlyIds, nameSuffix) {
     L.push('  endloop', ' endfacet');
   }
   L.push('endsolid webcad', '');
-  dl3d(L.join(String.fromCharCode(10)), 'webcad-' + (nameSuffix || '3d') + '.stl', 'model/stl');
+  dl3d(L.join(String.fromCharCode(10)), (nameSuffix || 'webcad-3d') + '.stl', 'model/stl');
   logLine('  ✔ STL 내보내기 — 삼각형 ' + tris.length + '개, mm 단위 (라이노·스케치업에서 가져오기 가능)', 'ok');
 }
 function cmdExportOBJ(onlyIds, nameSuffix) {
@@ -3469,7 +3469,7 @@ function cmdExportOBJ(onlyIds, nameSuffix) {
     for (const p of t) V.push('v ' + p[0].toFixed(3) + ' ' + p[1].toFixed(3) + ' ' + p[2].toFixed(3));
     F.push('f ' + idx + ' ' + (idx + 1) + ' ' + (idx + 2)); idx += 3;
   }
-  dl3d(V.concat(F).join(String.fromCharCode(10)), 'webcad-' + (nameSuffix || '3d') + '.obj', 'text/plain');
+  dl3d(V.concat(F).join(String.fromCharCode(10)), (nameSuffix || 'webcad-3d') + '.obj', 'text/plain');
   logLine('  ✔ OBJ 내보내기 — 삼각형 ' + tris.length + '개, mm 단위', 'ok');
 }
 // 3D 작업 명령 세트(라이노식) — move3d/copy3d/box/cylinder/settop
@@ -4498,7 +4498,7 @@ const INSTANT_CMDS = {
     if (!state.selection.size) { logLine('  selectedexport: 내보낼 객체를 먼저 선택하세요.', 'warn'); return; }
     const ids = new Set(state.selection);
     const f = String(prompt('형식 — 1: STL  2: OBJ', '1') || '1').trim();
-    if (f === '2') cmdExportOBJ(ids, 'selected'); else cmdExportSTL(ids, 'selected');
+    if (f === '2') cmdExportOBJ(ids, 'webcad-selected'); else cmdExportSTL(ids, 'webcad-selected');
   },
   bimclear: cmdBimClear,
   view3d: open3D,
@@ -5622,6 +5622,12 @@ function closeSaveAs() { document.getElementById('saveAsDlg').style.display = 'n
     else if (fmt === 'svg') saveBlob(new Blob([buildSVG()], { type: 'image/svg+xml' }), name + '.svg');
     else if (fmt === 'pdf') saveBlob(new Blob([buildPDF()], { type: 'application/pdf' }), name + '.pdf');
     else if (fmt === 'png') savePNG(name + '.png');
+    else if (fmt === 'stl' || fmt === 'obj') {
+      const selOnly = document.getElementById('saveSelOnly') && document.getElementById('saveSelOnly').checked;
+      const ids = (selOnly && state.selection.size) ? new Set(state.selection) : null;
+      if (selOnly && !ids) { logLine('  선택한 객체만 저장하려면 먼저 객체를 선택하세요.', 'warn'); return; }
+      if (fmt === 'stl') cmdExportSTL(ids, name); else cmdExportOBJ(ids, name);
+    }
   });
   dlg.addEventListener('click', (e) => { if (e.target === dlg) closeSaveAs(); });
 })();
@@ -5629,8 +5635,6 @@ document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
 document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
 document.getElementById('btnZoomFit').addEventListener('click', () => zoomFit());
-document.getElementById('miExpStl').addEventListener('click', () => cmdExportSTL());
-document.getElementById('miExpObj').addEventListener('click', () => cmdExportOBJ());
 document.getElementById('btnOrtho').addEventListener('click', toggleOrtho);
 document.getElementById('btnOsnap').addEventListener('click', toggleOsnap);
 // 토글 버튼 초기 상태 반영 (그리드 표시 ON, 직교 OFF, 객체스냅 ON)
