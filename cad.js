@@ -2658,7 +2658,7 @@ function renderScene(isActive) {
     if (previewEnts) for (const e of previewEnts) strokeGhost(pathOf(e));
   }
   // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각)
-  if (v3.snapHit && (v3.wallMode || state.tool !== 'select')) {
+  if (v3.snapHit) {
     const sm = v3.snapHit, dpr3 = devicePixelRatio || 1;
     const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : cplaneZ());
     const rr = 7 * dpr3;
@@ -2668,6 +2668,11 @@ function renderScene(isActive) {
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
     } else if (sm.kind === 'center') {
       c.beginPath(); c.arc(sp3[0], sp3[1], rr, 0, Math.PI * 2); c.stroke();
+    } else if (sm.kind === 'nearest') {
+      c.beginPath();
+      c.moveTo(sp3[0] - rr, sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1] + rr);
+      c.moveTo(sp3[0] + rr, sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr);
+      c.stroke();
     } else {
       c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
     }
@@ -2820,7 +2825,7 @@ function bind3D(ov, cv3) {
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
-    if (!drag && (v3.wallMode || state.tool !== 'select')) { // 작도 가선 추적 — 평면과 동일한 미리보기
+    if (!drag && (v3.wallMode || state.tool !== 'select' || osnapEnabled)) { // 작도 가선 + 스냅 마커 (선택 도구에서도 마커 표시)
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
       const py3 = (e.clientY - r3.top) * (r3.height ? cv3.height / r3.height : 1);
@@ -3030,6 +3035,30 @@ function snap3D(px, py, w) {
       const d = Math.hypot(s[0] - px, s[1] - py);
       if (d < bestD) { bestD = d; best = { x: p.x, y: p.y, z: p.z, kind: p.kind }; }
     }
+  }
+  // 근접(nearest): 밑그림·3D선 세그먼트 위의 최근접점 (끝점류가 안 잡힐 때 변 위에 흡착)
+  if (!best && (!settings.osnapModes || settings.osnapModes.nearest !== false)) {
+    let nb = null, nd = 10 * (devicePixelRatio || 1);
+    for (const e of state.entities) {
+      const l = getLayer(e.layer); if (l && !l.visible) continue;
+      const zb = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
+      let segs2 = [];
+      if (e.type === 'LINE') segs2 = [[[e.x1, e.y1, e.z1 != null ? e.z1 : zb], [e.x2, e.y2, e.z2 != null ? e.z2 : zb]]];
+      else if (e.type === 'LWPOLYLINE' && e.points) {
+        for (let i = 0; i < e.points.length - (e.closed ? 0 : 1); i++) {
+          const a = e.points[i], b = e.points[(i + 1) % e.points.length];
+          segs2.push([[a[0], a[1], zb], [b[0], b[1], zb]]);
+        }
+      } else continue;
+      for (const [A, B] of segs2) {
+        const pa = proj3D(A[0], A[1], A[2]), pb = proj3D(B[0], B[1], B[2]);
+        const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy;
+        const tt = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0;
+        const d = Math.hypot(px - (pa[0] + dx * tt), py - (pa[1] + dy * tt));
+        if (d < nd) { nd = d; nb = { x: Math.round(A[0] + (B[0] - A[0]) * tt), y: Math.round(A[1] + (B[1] - A[1]) * tt), z: Math.round(A[2] + (B[2] - A[2]) * tt), kind: 'nearest' }; }
+      }
+    }
+    if (nb) best = nb;
   }
   // 입체(BIM 솔리드) 모서리 꼭짓점 — 벽 상·하단 코너 등 3D 지오메트리에도 스냅
   if (!settings.osnapModes || settings.osnapModes.endpoint !== false) {
