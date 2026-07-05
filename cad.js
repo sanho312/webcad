@@ -3452,6 +3452,114 @@ function entityArea2(e) {
 }
 
 // ====== ROOF — 지붕 지정 (사각 풋프린트: 박공/외쪽/평) ======
+// ============================================================
+//  솔리드 불리언 (합집합·차집합·교집합) — BSP 기반 CSG (외부 의존 없음)
+//  Evan Wallace csg.js(MIT) 알고리즘을 삼각형 메시용으로 압축 구현
+// ============================================================
+const CSG_EPS = 1e-5;
+function csgPlane(a, b, c) {
+  const ux = b[0]-a[0], uy = b[1]-a[1], uz = b[2]-a[2];
+  const vx = c[0]-a[0], vy = c[1]-a[1], vz = c[2]-a[2];
+  let nx = uy*vz-uz*vy, ny = uz*vx-ux*vz, nz = ux*vy-uy*vx;
+  const l = Math.hypot(nx,ny,nz) || 1; nx/=l; ny/=l; nz/=l;
+  return { n:[nx,ny,nz], w:nx*a[0]+ny*a[1]+nz*a[2] };
+}
+function csgLerp(a, b, t) { return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+// 다각형: {v:[[x,y,z]...], plane}
+function csgSplit(pl, poly, coF, coB, front, back) {
+  const COP=0, FR=1, BK=2, SP=3;
+  let polyType = 0; const types = [];
+  for (const p of poly.v) {
+    const t = pl.n[0]*p[0]+pl.n[1]*p[1]+pl.n[2]*p[2] - pl.w;
+    const type = t < -CSG_EPS ? BK : t > CSG_EPS ? FR : COP;
+    polyType |= type; types.push(type);
+  }
+  if (polyType === COP) { (pl.n[0]*poly.plane.n[0]+pl.n[1]*poly.plane.n[1]+pl.n[2]*poly.plane.n[2] > 0 ? coF : coB).push(poly); }
+  else if (polyType === FR) front.push(poly);
+  else if (polyType === BK) back.push(poly);
+  else {
+    const f=[], b=[], n=poly.v.length;
+    for (let i=0;i<n;i++){
+      const j=(i+1)%n, ti=types[i], tj=types[j], vi=poly.v[i], vj=poly.v[j];
+      if (ti!==BK) f.push(vi);
+      if (ti!==FR) b.push(vi);
+      if ((ti|tj)===SP){
+        const t=(pl.w - (pl.n[0]*vi[0]+pl.n[1]*vi[1]+pl.n[2]*vi[2])) / (pl.n[0]*(vj[0]-vi[0])+pl.n[1]*(vj[1]-vi[1])+pl.n[2]*(vj[2]-vi[2]));
+        const m=csgLerp(vi,vj,t); f.push(m); b.push(m);
+      }
+    }
+    if (f.length>=3) front.push({v:f, plane:poly.plane});
+    if (b.length>=3) back.push({v:b, plane:poly.plane});
+  }
+}
+function csgNode(polys) { const nd={plane:null, front:null, back:null, polys:[]}; if (polys) csgBuild(nd, polys); return nd; }
+function csgBuild(nd, polys) {
+  if (!polys.length) return;
+  if (!nd.plane) nd.plane = polys[0].plane;
+  const f=[], b=[];
+  for (const p of polys) csgSplit(nd.plane, p, nd.polys, nd.polys, f, b);
+  if (f.length){ if(!nd.front) nd.front=csgNode(); csgBuild(nd.front, f); }
+  if (b.length){ if(!nd.back) nd.back=csgNode(); csgBuild(nd.back, b); }
+}
+function csgInvert(nd) {
+  for (const p of nd.polys) { p.v.reverse(); p.plane={n:[-p.plane.n[0],-p.plane.n[1],-p.plane.n[2]], w:-p.plane.w}; }
+  nd.plane={n:[-nd.plane.n[0],-nd.plane.n[1],-nd.plane.n[2]], w:-nd.plane.w};
+  const t=nd.front; nd.front=nd.back; nd.back=t;
+  if (nd.front) csgInvert(nd.front); if (nd.back) csgInvert(nd.back);
+}
+function csgClipPolys(nd, polys) {
+  if (!nd.plane) return polys.slice();
+  let f=[], b=[];
+  for (const p of polys) csgSplit(nd.plane, p, f, b, f, b);
+  if (nd.front) f=csgClipPolys(nd.front, f); else f=f;
+  if (nd.back) b=csgClipPolys(nd.back, b); else b=[];
+  return f.concat(b);
+}
+function csgClipTo(nd, other) { nd.polys=csgClipPolys(other, nd.polys); if (nd.front) csgClipTo(nd.front, other); if (nd.back) csgClipTo(nd.back, other); }
+function csgAll(nd) { let r=nd.polys.slice(); if (nd.front) r=r.concat(csgAll(nd.front)); if (nd.back) r=r.concat(csgAll(nd.back)); return r; }
+function csgOp(pa, pb, op) {
+  const a=csgNode(pa.map(csgClonePoly)), b=csgNode(pb.map(csgClonePoly));
+  if (op==='union') {
+    csgClipTo(a,b); csgClipTo(b,a); csgInvert(b); csgClipTo(b,a); csgInvert(b);
+    csgBuild(a, csgAll(b)); return csgAll(a);
+  }
+  if (op==='intersect') {
+    csgInvert(a); csgClipTo(b,a); csgInvert(b); csgClipTo(a,b); csgClipTo(b,a);
+    csgBuild(a, csgAll(b)); csgInvert(a); return csgAll(a);
+  }
+  // subtract (A - B)
+  csgInvert(a); csgClipTo(a,b); csgClipTo(b,a); csgInvert(b); csgClipTo(b,a); csgInvert(b);
+  csgBuild(a, csgAll(b)); csgInvert(a); return csgAll(a);
+}
+function csgClonePoly(p){ return {v:p.v.map(x=>x.slice()), plane:{n:p.plane.n.slice(), w:p.plane.w}}; }
+function trisToPolys(tris){ const r=[]; for(const t of tris){ if(t.length<3) continue; r.push({v:t.map(p=>p.slice()), plane:csgPlane(t[0],t[1],t[2])}); } return r; }
+function polysToTris(polys){ const r=[]; for(const p of polys){ for(let i=1;i+1<p.v.length;i++) r.push([p.v[0].slice(), p.v[i].slice(), p.v[i+1].slice()]); } return r; }
+// 엔티티(솔리드/메시)를 삼각형 배열로
+function entityToTris(e){
+  if (e.type==='MESH') return e.tris.map(t=>t.map(p=>p.slice()));
+  return solidsToTris(new Set([e.id]));
+}
+function cmdBoolean(op){
+  const sel = selectedEntities().filter(e => e.type==='MESH' || (e.bim && ['wall','column','slab','stair','roof'].includes(e.bim.kind)));
+  if (sel.length < 2) { logLine('  불리언: 입체(솔리드·메시) 2개 이상을 선택하세요. ' + (op==='subtract' ? '(첫 선택 − 나머지)' : ''), 'warn'); return; }
+  let acc = trisToPolys(entityToTris(sel[0]));
+  if (!acc.length) { logLine('  불리언: 첫 객체에서 면을 얻지 못했습니다.', 'warn'); return; }
+  for (let i=1;i<sel.length;i++){
+    const b = trisToPolys(entityToTris(sel[i]));
+    if (b.length) acc = csgOp(acc, b, op);
+  }
+  const tris = polysToTris(acc);
+  if (!tris.length) { logLine('  불리언 결과가 비었습니다 — 두 입체가 겹치는지 확인하세요.', 'warn'); return; }
+  pushUndo();
+  const ids = new Set(sel.map(e=>e.id));
+  state.entities = state.entities.filter(e=>!ids.has(e.id));
+  const m = addEntity({ type:'MESH', tris, color:'#a7b0c4' });
+  const koOp = op==='union' ? '합집합' : op==='intersect' ? '교집합' : '차집합';
+  logLine('  ✔ ' + koOp + ' — ' + sel.length + '개 입체 → 메시 ' + tris.length + '개 삼각형', 'ok');
+  state.selection.clear(); state.selection.add(m.id);
+  const ov = document.getElementById('bim3d');
+  if (ov && ov.style.display !== 'none') { v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); }
+}
 // 3D 내보내기 — 모든 입체(bimSolids)를 삼각형화해 STL/OBJ 파일로 (mm 단위)
 function solidsToTris(onlyIds) {
   const tris = [];
@@ -4523,6 +4631,9 @@ const INSTANT_CMDS = {
   box: cmdBox,
   cylinder: cmdCylinder,
   settop: cmdSetTop,
+  union: () => cmdBoolean('union'),
+  difference: () => cmdBoolean('subtract'),
+  intersect3d: () => cmdBoolean('intersect'),
   exportstl: () => cmdExportSTL(),
   exportobj: () => cmdExportOBJ(),
   selectedexport: () => { // 선택한 객체만 STL/OBJ로
@@ -4759,6 +4870,9 @@ const CMD_ALIASES = {
   copy3d: 'copy3d', c3: 'copy3d',
   box: 'box', cylinder: 'cylinder', cyl: 'cylinder',
   settop: 'settop',
+  union: 'union', boolunion: 'union', 합집합: 'union',
+  difference: 'difference', boolsub: 'difference', subtract: 'difference', 차집합: 'difference',
+  intersect3d: 'intersect3d', boolint: 'intersect3d', 교집합: 'intersect3d',
   exportstl: 'exportstl', stl: 'exportstl',
   exportobj: 'exportobj', obj: 'exportobj',
   selectedexport: 'selectedexport', selexport: 'selectedexport', exportsel: 'selectedexport',
@@ -5837,6 +5951,9 @@ const CMD_HELP = [
     ['obj', '3D 저장(OBJ)', '모든 입체를 OBJ 파일로 내보내기'],
     ['selectedexport', '선택 3D 저장', '선택한 객체만 STL/OBJ로 내보내기 (형식 선택)'],
     ['settop', '상단 정렬', '벽·기둥·계단 선택 후 상단 z 입력 — 높이가 그 z에 맞게 조정'],
+    ['union', '합집합(불리언)', '입체 2개+ 선택 → 하나로 합침 (결과 메시)'],
+    ['difference', '차집합(불리언)', '입체 2개+ 선택 → 첫 것에서 나머지를 뺌'],
+    ['intersect3d', '교집합(불리언)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 입력 — 닫힌 곡선=솔리드, 열린 곡선=면. 2D·3D 어디서든'],
     ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
     ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
@@ -5917,6 +6034,7 @@ const COMMAND_LIST = [
   { name: 'move3d', ko: '3D 이동' }, { name: 'copy3d', ko: '3D 복사' },
   { name: 'box', ko: '상자' }, { name: 'cylinder', ko: '원기둥' }, { name: 'settop', ko: '상단 정렬' },
   { name: 'stl', ko: '3D 저장 STL' }, { name: 'obj', ko: '3D 저장 OBJ' }, { name: 'selectedexport', ko: '선택 3D 저장' },
+  { name: 'union', ko: '합집합' }, { name: 'difference', ko: '차집합' }, { name: 'intersect3d', ko: '교집합' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -7086,7 +7204,7 @@ window.__CADTEST__ = {
   T_translate, T_rotate, T_mirror, applyTransform, translateEntity, scaleEntities, stretchEntities,
   // 파서/직렬화
   parsePointOrNumber, buildDXFText, buildSVG, loadDXF, parseDXFPairs, parseDXFEntities,
-  parseSTL, parseOBJ, loadMesh,
+  parseSTL, parseOBJ, loadMesh, csgOp, trisToPolys, polysToTris, cmdBoolean,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
