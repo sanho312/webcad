@@ -764,6 +764,11 @@ function findObjectSnap(raw) {
     if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { x, y, type, prio, d };
   };
   const base = orthoBase(); // 수직점 계산 기준점(작도 시작점 등)
+  // 그리는 중인 도형의 자기 점들에도 스냅 (폴리라인 닫기, 시작점 복귀 등)
+  if (settings.osnapModes.endpoint) {
+    for (const p of pts) consider(p.x, p.y, 'endpoint', 1);
+    if (draft && draft.type === 'LINE') consider(draft.x1, draft.y1, 'endpoint', 1);
+  }
   let perp = null, perpD = Infinity;
   const preTol = tol / state.view.scale * 1.5; // bbox 프리체크(대형 도면 성능)
   for (const e of state.entities) {
@@ -3010,6 +3015,18 @@ function close3D() {
 function snap3D(px, py, w) {
   if (!osnapEnabled) return w;
   let best = null, bestD = 14 * (devicePixelRatio || 1);
+  // 그리는 중인 자기 점들 (폴리라인 pts, 3D 선 시작, 벽 시작) — 닫기/복귀 스냅
+  if (!settings.osnapModes || settings.osnapModes.endpoint !== false) {
+    const selfPts = [];
+    for (const p of pts) selfPts.push([p.x, p.y, cplaneZ()]);
+    if (v3 && v3.line3d && v3.line3d.p1) selfPts.push([v3.line3d.p1.x, v3.line3d.p1.y, v3.line3d.p1.z]);
+    if (v3 && v3.wallMode && v3.wallP1) selfPts.push([v3.wallP1[0], v3.wallP1[1], cplaneZ()]);
+    for (const sp of selfPts) {
+      const s = proj3D(sp[0], sp[1], sp[2]);
+      const d = Math.hypot(s[0] - px, s[1] - py);
+      if (d < bestD) { bestD = d; best = { x: sp[0], y: sp[1], z: sp[2], kind: 'endpoint' }; }
+    }
+  }
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const zb = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
