@@ -1363,7 +1363,8 @@ cv.addEventListener('dblclick', () => {
 cv.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   const before = screenToWorld(mouseScreen.x, mouseScreen.y);
-  const factor = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+  // 델타 크기에 비례한 부드러운 줌 (한 칸 ≈ ×1.06) — 트랙패드·고해상 휠 과민 반응 방지
+  const factor = Math.pow(1.06, -(ev.deltaMode === 1 ? ev.deltaY * 33 : ev.deltaY) / 100);
   state.view.scale = Math.max(1e-4, Math.min(1e6, state.view.scale * factor));
   const after = screenToWorld(mouseScreen.x, mouseScreen.y);
   state.view.x += before.x - after.x;
@@ -2899,7 +2900,8 @@ function bind3D(ov, cv3) {
       const vi = vpAt(pxv, pyv);
       if (vi !== v3.act) { v3.act = vi; loadVp(vi); }
     }
-    v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * (e.deltaY < 0 ? 1.12 : 0.9)));
+    // 델타 크기에 비례한 부드러운 줌 (한 칸 ≈ ×1.06)
+    v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * Math.pow(1.06, -(e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY) / 100)));
     render3D();
   }, { passive: false });
   // 더블클릭: 사분할 ↔ 해당 뷰 최대화 (라이노식)
@@ -6698,6 +6700,7 @@ window.WEBCAD_API = {
   },
   // 설정 동기화
   getSettings: () => JSON.parse(JSON.stringify(settings)),
+  setOsnapMode: (k, on) => { if (settings.osnapModes && k in settings.osnapModes) { settings.osnapModes[k] = !!on; saveSettings(); } },
   applySettings: (s) => {
     if (!s) return;
     settings.units = s.units || settings.units;

@@ -89,6 +89,17 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
     background:var(--bg);color:var(--text);overflow:hidden;user-select:none;}
   #app{display:flex;flex-direction:column;height:100%;}
+  /* 라이노식 배치: 문서탭(0) → 상단바(1) → 명령창(2) → 작업영역(3) → 상태바(4) */
+  #docTabs{order:0;} #topbar{order:1;} #console{order:2;border-top:none;border-bottom:0.5px solid var(--line);} #main{order:3;} #statusBar{order:4;}
+  #cmdSuggest{top:calc(100% + 8px) !important;bottom:auto !important;} /* 명령창이 위로 갔으니 제안은 아래로 */
+  #statusBar{display:flex;gap:12px;align-items:center;flex:0 0 auto;flex-wrap:wrap;
+    padding:3px 12px;font-size:11.5px;color:var(--muted);background:var(--bg);
+    border-top:0.5px solid var(--line);user-select:none;}
+  #statusBar label{display:flex;align-items:center;gap:3px;cursor:pointer;}
+  #statusBar input[type=checkbox]{accent-color:var(--accent);margin:0;}
+  #statusBar .stBtn{cursor:pointer;padding:1px 7px;border-radius:7px;}
+  #statusBar .stBtn.on{color:#fff;background:var(--accent);}
+  #stCoords{font-family:var(--mono);min-width:200px;}
 
   /* 문서 탭 — 브라우저 탭처럼 여러 작업물 스택. safe-area는 여기서 흡수 */
   #docTabs{display:flex;align-items:flex-end;gap:4px;flex:0 0 auto;overflow-x:auto;
@@ -654,9 +665,24 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       </div>
     </div>
   </div>
+
+  <!-- 라이노식 하단 상태바: 좌표 · 스냅 종류 · 모드 토글 -->
+  <div id="statusBar">
+    <span id="stCoords">X 0.00  Y 0.00</span>
+    <label><input type="checkbox" data-osm="endpoint" checked>끝점</label>
+    <label><input type="checkbox" data-osm="midpoint" checked>중간</label>
+    <label><input type="checkbox" data-osm="center" checked>중심</label>
+    <label><input type="checkbox" data-osm="perp" checked>수직</label>
+    <label><input type="checkbox" data-osm="intersection" checked>교차</label>
+    <label><input type="checkbox" data-osm="nearest" checked>근접</label>
+    <span style="flex:1"></span>
+    <span class="stBtn" data-proxy="btnGrid">그리드</span>
+    <span class="stBtn" data-proxy="btnOrtho">직교</span>
+    <span class="stBtn" data-proxy="btnOsnap">객체스냅</span>
+  </div>
 </div>
 
-<script src="cad.js?v=20260705n"></script>
+<script src="cad.js?v=20260705p"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>
@@ -728,6 +754,33 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     (x) => x - toolbar.getBoundingClientRect().left, 'toolbarW', LIM.toolbar);
   bindResize(document.getElementById('rzRight'),
     (x) => side.getBoundingClientRect().right - x, 'sideW', LIM.side);
+})();
+</script>
+<script>
+// 라이노식 상태바 — 스냅 종류 체크박스(설정과 동기), 모드 토글 프록시, 좌표 미러
+(() => {
+  function initOsm() {
+    const api = window.WEBCAD_API;
+    if (!api || !api.getSettings || !api.setOsnapMode) { setTimeout(initOsm, 400); return; }
+    const sg = api.getSettings();
+    document.querySelectorAll('#statusBar input[data-osm]').forEach(cb => {
+      const k = cb.dataset.osm;
+      cb.checked = !sg.osnapModes || sg.osnapModes[k] !== false;
+      cb.addEventListener('change', () => api.setOsnapMode(k, cb.checked));
+    });
+  }
+  initOsm();
+  document.querySelectorAll('#statusBar .stBtn').forEach(b => {
+    b.addEventListener('click', () => { const t = document.getElementById(b.dataset.proxy); if (t) t.click(); });
+  });
+  setInterval(() => { // 토글 상태·좌표 미러
+    document.querySelectorAll('#statusBar .stBtn').forEach(b => {
+      const t = document.getElementById(b.dataset.proxy);
+      if (t) b.classList.toggle('on', t.classList.contains('active'));
+    });
+    const co = document.getElementById('coords'), st = document.getElementById('stCoords');
+    if (co && st && st.textContent !== co.textContent) st.textContent = co.textContent;
+  }, 250);
 })();
 </script>
 </body>
