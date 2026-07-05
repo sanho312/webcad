@@ -4866,6 +4866,7 @@ function renderLayers() {
       e.preventDefault(); e.stopPropagation();
       const sel = [...state.selection].map(id => state.entities.find(en => en.id === id)).filter(Boolean);
       if (!sel.length) { logLine('  레이어 이동: 먼저 객체를 선택한 뒤 대상 레이어를 우클릭하세요.', 'warn'); return; }
+      if (!confirm(`선택한 개체 ${sel.length}개를 '${l.name}' 레이어로 바꾸겠습니까?`)) return;
       pushUndo();
       for (const en of sel) en.layer = l.name;
       logLine(`  ✔ 선택 ${sel.length}개 객체를 '${l.name}' 레이어로 이동`, 'ok');
