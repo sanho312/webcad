@@ -2497,6 +2497,27 @@ function render3D() {
 //  소프트웨어 Z-버퍼 래스터라이저 — 은면 제거(hidden surface)
 //  painter 정렬은 겹치는 면에서 뒤가 새어나옴 → 픽셀 깊이 비교로 해결
 // ============================================================
+// 조작 중 빠른 렌더 (painter 정렬) — 드래그가 끊기지 않도록
+function paintFaces(c, faces, light) {
+  faces.sort((a, b) => b.d - a.d);
+  for (const f of faces) {
+    const isSel = f.eid != null && state.selection.has(f.eid);
+    c.beginPath(); f.pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath();
+    const rfGhost = f.rf && v3.roof === 'ghost';
+    c.globalAlpha = f.glass ? 0.45 : rfGhost ? 0.22 : 1;
+    c.fillStyle = isSel ? shadeColor('#0A84FF', 0.6 + 0.4 * f.shade) : shadeColor(f.color, f.shade); c.fill();
+    c.globalAlpha = f.glass ? 0.6 : rfGhost ? 0.3 : 1;
+    c.strokeStyle = isSel ? '#5eb1ff' : (light ? 'rgba(30,40,70,.35)' : 'rgba(10,16,32,.55)');
+    c.lineWidth = isSel ? 2 : 1; c.stroke(); c.globalAlpha = 1;
+  }
+}
+// 조작 감지: 움직이는 동안 빠른 모드, 멈추면(140ms) 정확한 Z-버퍼로 한 번 더 렌더
+function markInteract() {
+  if (!v3) return;
+  v3.fast = true;
+  clearTimeout(v3._settle);
+  v3._settle = setTimeout(() => { v3.fast = false; render3D(); }, 140);
+}
 function zTri(data, zb, W, H, ox, oy, A, B, C, r, g, b) {
   const ax = A[0]-ox, ay = A[1]-oy, bx = B[0]-ox, by = B[1]-oy, cx = C[0]-ox, cy = C[1]-oy;
   const area = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
@@ -2646,7 +2667,8 @@ function renderScene(isActive) {
     }
   }
   const light = document.documentElement.classList.contains('light');
-  zRasterFaces(c, faces, v3.vp, light); // 은면 제거: 픽셀 단위 Z-버퍼
+  if (v3.fast) paintFaces(c, faces, light);            // 조작 중: 빠른 painter (즉각 반응)
+  else zRasterFaces(c, faces, v3.vp, light);           // 멈춤: 정확한 Z-버퍼 은면 제거
   // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (활성 뷰에서만, 거의 수직 뷰에서는 숨김)
   if (isActive && state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
     const sid = [...state.selection][0];
@@ -2919,6 +2941,7 @@ function bind3D(ov, cv3) {
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
+    markInteract(); // 조작 중 빠른 렌더 → 멈추면 정확 렌더
     if (!drag && (v3.wallMode || state.tool !== 'select' || osnapEnabled)) { // 작도 가선 + 스냅 마커 (선택 도구에서도 마커 표시)
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
@@ -3025,6 +3048,7 @@ function bind3D(ov, cv3) {
   cv3.addEventListener('pointerup', end); cv3.addEventListener('pointercancel', end);
   cv3.addEventListener('wheel', (e) => {
     e.preventDefault();
+    markInteract();
     { // 커서가 올라간 뷰포트에 줌 적용
       const rv = cv3.getBoundingClientRect();
       const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
@@ -3052,7 +3076,7 @@ function bind3D(ov, cv3) {
   cv3.addEventListener('touchmove', (e) => {
     if (pinch && e.touches.length === 2) {
       const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; render3D();
+      v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; markInteract(); render3D();
     }
   }, { passive: true });
   const setWallMode = (on) => {
