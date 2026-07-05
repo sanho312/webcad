@@ -3422,9 +3422,10 @@ function entityArea2(e) {
 
 // ====== ROOF — 지붕 지정 (사각 풋프린트: 박공/외쪽/평) ======
 // 3D 내보내기 — 모든 입체(bimSolids)를 삼각형화해 STL/OBJ 파일로 (mm 단위)
-function solidsToTris() {
+function solidsToTris(onlyIds) {
   const tris = [];
   for (const s of bimSolids()) {
+    if (onlyIds && !onlyIds.has(s.eid)) continue; // 선택 객체만
     const n = s.poly.length;
     const zt = s.zt || s.poly.map(() => s.z1);
     const top = s.poly.map((p, i) => [p[0], p[1], zt[i]]);
@@ -3446,8 +3447,8 @@ function dl3d(text, name, mime) {
   a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
-function cmdExportSTL() {
-  const tris = solidsToTris();
+function cmdExportSTL(onlyIds, nameSuffix) {
+  const tris = solidsToTris(onlyIds);
   if (!tris.length) { logLine('  내보낼 3D 입체가 없습니다 — 벽·기둥·extrudecrv 등으로 입체를 만든 뒤 실행하세요.', 'warn'); return; }
   const L = ['solid webcad'];
   for (const t of tris) {
@@ -3456,11 +3457,11 @@ function cmdExportSTL() {
     L.push('  endloop', ' endfacet');
   }
   L.push('endsolid webcad', '');
-  dl3d(L.join(String.fromCharCode(10)), 'webcad-3d.stl', 'model/stl');
+  dl3d(L.join(String.fromCharCode(10)), 'webcad-' + (nameSuffix || '3d') + '.stl', 'model/stl');
   logLine('  ✔ STL 내보내기 — 삼각형 ' + tris.length + '개, mm 단위 (라이노·스케치업에서 가져오기 가능)', 'ok');
 }
-function cmdExportOBJ() {
-  const tris = solidsToTris();
+function cmdExportOBJ(onlyIds, nameSuffix) {
+  const tris = solidsToTris(onlyIds);
   if (!tris.length) { logLine('  내보낼 3D 입체가 없습니다 — 벽·기둥·extrudecrv 등으로 입체를 만든 뒤 실행하세요.', 'warn'); return; }
   const V = ['# WebCAD OBJ (mm)'], F = [];
   let idx = 1;
@@ -3468,7 +3469,7 @@ function cmdExportOBJ() {
     for (const p of t) V.push('v ' + p[0].toFixed(3) + ' ' + p[1].toFixed(3) + ' ' + p[2].toFixed(3));
     F.push('f ' + idx + ' ' + (idx + 1) + ' ' + (idx + 2)); idx += 3;
   }
-  dl3d(V.concat(F).join(String.fromCharCode(10)), 'webcad-3d.obj', 'text/plain');
+  dl3d(V.concat(F).join(String.fromCharCode(10)), 'webcad-' + (nameSuffix || '3d') + '.obj', 'text/plain');
   logLine('  ✔ OBJ 내보내기 — 삼각형 ' + tris.length + '개, mm 단위', 'ok');
 }
 // 3D 작업 명령 세트(라이노식) — move3d/copy3d/box/cylinder/settop
@@ -4491,8 +4492,14 @@ const INSTANT_CMDS = {
   box: cmdBox,
   cylinder: cmdCylinder,
   settop: cmdSetTop,
-  exportstl: cmdExportSTL,
-  exportobj: cmdExportOBJ,
+  exportstl: () => cmdExportSTL(),
+  exportobj: () => cmdExportOBJ(),
+  selectedexport: () => { // 선택한 객체만 STL/OBJ로
+    if (!state.selection.size) { logLine('  selectedexport: 내보낼 객체를 먼저 선택하세요.', 'warn'); return; }
+    const ids = new Set(state.selection);
+    const f = String(prompt('형식 — 1: STL  2: OBJ', '1') || '1').trim();
+    if (f === '2') cmdExportOBJ(ids, 'selected'); else cmdExportSTL(ids, 'selected');
+  },
   bimclear: cmdBimClear,
   view3d: open3D,
   roofview: () => {
@@ -4723,6 +4730,7 @@ const CMD_ALIASES = {
   settop: 'settop',
   exportstl: 'exportstl', stl: 'exportstl',
   exportobj: 'exportobj', obj: 'exportobj',
+  selectedexport: 'selectedexport', selexport: 'selectedexport', exportsel: 'selectedexport',
   section: 'section', sec: 'section',
   elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
@@ -5621,6 +5629,8 @@ document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
 document.getElementById('btnGrid').addEventListener('click', (e) => { state.grid.show = !state.grid.show; e.currentTarget.classList.toggle('active', state.grid.show); draw(); });
 document.getElementById('btnZoomFit').addEventListener('click', () => zoomFit());
+document.getElementById('miExpStl').addEventListener('click', () => cmdExportSTL());
+document.getElementById('miExpObj').addEventListener('click', () => cmdExportOBJ());
 document.getElementById('btnOrtho').addEventListener('click', toggleOrtho);
 document.getElementById('btnOsnap').addEventListener('click', toggleOsnap);
 // 토글 버튼 초기 상태 반영 (그리드 표시 ON, 직교 OFF, 객체스냅 ON)
@@ -5781,6 +5791,7 @@ const CMD_HELP = [
     ['cylinder', '원기둥', '중심·반지름·높이 — 작업면 위에 원기둥'],
     ['stl', '3D 저장(STL)', '모든 입체를 STL 파일로 — 라이노·스케치업·3D프린터에서 열기'],
     ['obj', '3D 저장(OBJ)', '모든 입체를 OBJ 파일로 내보내기'],
+    ['selectedexport', '선택 3D 저장', '선택한 객체만 STL/OBJ로 내보내기 (형식 선택)'],
     ['settop', '상단 정렬', '벽·기둥·계단 선택 후 상단 z 입력 — 높이가 그 z에 맞게 조정'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 입력 — 닫힌 곡선=솔리드, 열린 곡선=면. 2D·3D 어디서든'],
     ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
@@ -5861,7 +5872,7 @@ const COMMAND_LIST = [
   { name: 'extrudecrv', ko: '곡선 돌출' }, { name: 'extrudesrf', ko: '면 두께' },
   { name: 'move3d', ko: '3D 이동' }, { name: 'copy3d', ko: '3D 복사' },
   { name: 'box', ko: '상자' }, { name: 'cylinder', ko: '원기둥' }, { name: 'settop', ko: '상단 정렬' },
-  { name: 'stl', ko: '3D 저장 STL' }, { name: 'obj', ko: '3D 저장 OBJ' },
+  { name: 'stl', ko: '3D 저장 STL' }, { name: 'obj', ko: '3D 저장 OBJ' }, { name: 'selectedexport', ko: '선택 3D 저장' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
