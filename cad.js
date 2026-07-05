@@ -3325,6 +3325,35 @@ function entityArea2(e) {
 }
 
 // ====== ROOF — 지붕 지정 (사각 풋프린트: 박공/외쪽/평) ======
+// ExtrudeCrv(라이노식): 곡선을 수직 돌출 — 닫힌 곡선=솔리드, 열린 곡선=두께 없는 면(서피스)
+function cmdExtrudeCrv() {
+  const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
+  if (!sel.length) { logLine('  extrudecrv: 돌출할 곡선(선·폴리라인·원)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const h = bimAskNum('돌출 높이 (mm):', settings.bim.wallH); if (h == null) return;
+  pushUndo();
+  let nOpen = 0, nClosed = 0;
+  for (const e of sel) {
+    const base = lvElev() + (e.zo || 0); // 공중에 띄운 곡선은 그 높이에서 돌출
+    if ((e.type === 'LWPOLYLINE' && e.closed) || e.type === 'CIRCLE') { e.bim = { kind: 'column', h, base }; nClosed++; }
+    else { e.bim = { kind: 'wall', h, t: 2, base }; nOpen++; }
+    delete e.zo;
+  }
+  logLine(`  ✔ ExtrudeCrv: 닫힌 곡선 ${nClosed}개→솔리드, 열린 곡선 ${nOpen}개→서피스 (두께는 extrudesrf로 부여)`, 'ok');
+  renderProps(); draw();
+}
+// ExtrudeSrf(라이노식): 면(서피스)에 두께 부여 — 돌출된 면은 벽 두께, 닫힌 평면 곡선은 슬래브 두께
+function cmdExtrudeSrf() {
+  const sel = selectedEntities();
+  const srf = sel.filter(e => e.bim && e.bim.kind === 'wall');
+  const flat = sel.filter(e => !e.bim && ((e.type === 'LWPOLYLINE' && e.closed) || e.type === 'CIRCLE'));
+  if (!srf.length && !flat.length) { logLine('  extrudesrf: 서피스(돌출된 면) 또는 닫힌 평면 곡선을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const t = bimAskNum('두께 (mm):', settings.bim.wallT); if (t == null) return;
+  pushUndo();
+  for (const e of srf) e.bim.t = t;
+  for (const e of flat) { e.bim = { kind: 'slab', t, top: lvElev() + (e.zo || 0) + t }; delete e.zo; }
+  logLine(`  ✔ ExtrudeSrf: ${srf.length + flat.length}개에 두께 ${t} 적용`, 'ok');
+  renderProps(); draw();
+}
 // 계단: LINE = 진행선(시작=아래, 끝=위). 단수 n = ceil(h/최대단높이), 단별 수직 프리즘.
 function cmdStairTag() {
   const sel = selectedEntities().filter(e => e.type === 'LINE');
@@ -4208,6 +4237,8 @@ const INSTANT_CMDS = {
   slab: cmdSlabTag,
   column: cmdColumnTag,
   stair: cmdStairTag,
+  extrudecrv: cmdExtrudeCrv,
+  extrudesrf: cmdExtrudeSrf,
   bimclear: cmdBimClear,
   view3d: open3D,
   roofview: () => {
@@ -4430,6 +4461,8 @@ const CMD_ALIASES = {
   level: 'level', lv: 'level',
   roof: 'roof',
   stair: 'stair', '계단': 'stair',
+  extrudecrv: 'extrudecrv', extcrv: 'extrudecrv',
+  extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
   section: 'section', sec: 'section',
   elevation: 'elevation', elev: 'elevation', ev: 'elevation',
 };
@@ -5482,6 +5515,8 @@ const CMD_HELP = [
     ['elevation', '입면 추출', '건물 밖에 기준선 → 건물 쪽 클릭 → 새 탭에 입면도 자동 생성'],
     ['level', '층(다층)', '그리기 설정 패널에서 층 전환/추가 — 새 도형은 현재 층에 생성, 다른 층은 흐리게 표시, BIM 높이 자동 반영'],
     ['roof', '지붕 지정', '닫힌 폴리라인 선택 후 → 박공/외쪽/평 + 처마 높이 + 상승 높이 — 3D 경사면·단면 사다리꼴 자동'],
+    ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 입력 — 닫힌 곡선=솔리드, 열린 곡선=면. 2D·3D 어디서든'],
+    ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
     ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
   ]},
   { c: '기타', items: [
@@ -5556,6 +5591,7 @@ const COMMAND_LIST = [
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
   { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' },
+  { name: 'extrudecrv', ko: '곡선 돌출' }, { name: 'extrudesrf', ko: '면 두께' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
