@@ -2189,7 +2189,9 @@ function bimSolids() {
   }
   for (const w of walls) {
     const t = w.bim.t, h = w.bim.h, base = w.bim.base || 0;
-    const segs = w.type === 'LINE'
+    const segs = w.type === 'CIRCLE'
+      ? (() => { const cp = circlePoly(w.cx, w.cy, w.r, 24); return cp.map((p, i) => [p[0], p[1], cp[(i + 1) % 24][0], cp[(i + 1) % 24][1]]); })()
+      : w.type === 'LINE'
       ? [[w.x1, w.y1, w.x2, w.y2]]
       : (w.points || []).map((p, i, arr) => i < arr.length - 1 ? [p[0], p[1], arr[i + 1][0], arr[i + 1][1]] : null).filter(Boolean) // slice(0,-0)은 빈 배열이 되는 버그였음 — 전 세그먼트 사용
           .concat(w.type === 'LWPOLYLINE' && w.closed && w.points.length > 2 ? [[w.points[w.points.length - 1][0], w.points[w.points.length - 1][1], w.points[0][0], w.points[0][1]]] : []);
@@ -3403,45 +3405,6 @@ function cmdExtrudeCrv() {
   const h = bimAskNum('돌출 높이 (mm):', settings.bim.wallH); if (h == null) return;
   const solidOpt = String(prompt('출력 — 1: 서피스(면만)  2: 솔리드(속 채움)', '1') || '1').trim() === '2';
   pushUndo();
-  // 안팎 이중 외곽선(균일 간격 오프셋 쌍, 모양 무관) → 그 간격을 두께로 하는 중심선 벽체로 변환
-  if (sel.length === 2 && sel.every(e => e.type === 'LWPOLYLINE' && e.closed && e.points.length >= 3)) {
-    const inPoly = (p, poly) => { let ins = false;
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
-        if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins;
-      } return ins; };
-    let outer = null, inner = null;
-    if (sel[1].points.every(p => inPoly(p, sel[0].points))) { outer = sel[0]; inner = sel[1]; }
-    else if (sel[0].points.every(p => inPoly(p, sel[1].points))) { outer = sel[1]; inner = sel[0]; }
-    if (outer && inner && outer.points.length === inner.points.length) {
-      const op = outer.points, n2 = op.length;
-      const dists = [], mids = [];
-      for (const p of inner.points) {
-        let bd = Infinity, bx = 0, by = 0;
-        for (let i = 0; i < n2; i++) {
-          const a = op[i], b2 = op[(i + 1) % n2];
-          const q = closestOnSeg(p[0], p[1], a[0], a[1], b2[0], b2[1]);
-          const qx = q.x != null ? q.x : q[0], qy = q.y != null ? q.y : q[1];
-          const d = Math.hypot(p[0] - qx, p[1] - qy);
-          if (d < bd) { bd = d; bx = qx; by = qy; }
-        }
-        dists.push(bd); mids.push([(p[0] + bx) / 2, (p[1] + by) / 2]);
-      }
-      const t = Math.round(dists.reduce((a, b) => a + b, 0) / dists.length);
-      const uniform = Math.max(...dists) - Math.min(...dists) < Math.max(2, t * 0.1);
-      if (t > 0.5 && uniform) {
-        const base = lvElev() + (outer.zo || 0);
-        const ids = new Set([outer.id, inner.id]);
-        state.entities = state.entities.filter(e => !ids.has(e.id));
-        const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mids });
-        ln.bim = { kind: 'wall', h, t, base }; delete ln.zo;
-        state.selection.clear(); state.selection.add(ln.id);
-        logLine(`  ✔ ExtrudeCrv: 이중 외곽선 → 두께 ${t} 벽체 (높이 ${h}, 바닥 z=${base})`, 'ok');
-        renderProps(); draw();
-        return;
-      }
-    }
-  }
   let nOpen = 0, nClosed = 0, nSlant = 0;
   for (const e of sel) {
     let base = lvElev() + (e.zo || 0); // 공중에 띄운 곡선은 그 높이에서 돌출
@@ -3450,13 +3413,13 @@ function cmdExtrudeCrv() {
       if ((e.z1 || 0) !== (e.z2 || 0)) nSlant++;
       delete e.z1; delete e.z2; // 수직 프리즘으로 전환 — 곡선 높이는 base로 이관
     }
-    if (e.type === 'CIRCLE' || (solidOpt && e.type === 'LWPOLYLINE' && e.closed)) {
-      e.bim = { kind: 'column', h, base }; nClosed++; // 원 또는 솔리드 옵션: 캡 있는 기둥체
-    } else { e.bim = { kind: 'wall', h, t: 2, base }; nOpen++; } // 기본: 곡선을 따라가는 튜브 서피스
+    if (solidOpt && (e.type === 'CIRCLE' || (e.type === 'LWPOLYLINE' && e.closed))) {
+      e.bim = { kind: 'column', h, base }; nClosed++; // 솔리드 옵션: 캡 있는 기둥체
+    } else { e.bim = { kind: 'wall', h, t: 0, base }; nOpen++; } // 기본: 두께 0의 진짜 서피스 (라이노 ExtrudeCrv)
     delete e.zo;
   }
   if (nSlant) logLine(`  ⚠ 기울어진 3D 선 ${nSlant}개는 낮은 끝 높이 기준으로 수직 돌출했습니다`, 'warn');
-  logLine(`  ✔ ExtrudeCrv: 닫힌 곡선 ${nClosed}개→솔리드, 열린 곡선 ${nOpen}개→서피스 (두께는 extrudesrf로 부여)`, 'ok');
+  logLine(`  ✔ ExtrudeCrv: 서피스 ${nOpen}개, 솔리드 ${nClosed}개 생성 — 서피스에 두께를 주려면 extrudesrf`, 'ok');
   renderProps(); draw();
 }
 // ExtrudeSrf(라이노식): 면(서피스)에 두께 부여 — 돌출된 면은 벽 두께, 닫힌 평면 곡선은 슬래브 두께
