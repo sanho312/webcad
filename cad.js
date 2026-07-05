@@ -282,6 +282,7 @@ function draw() {
       if (state.ghostLv && e.type !== 'IMAGE') { ctx.save(); ctx.globalAlpha = 0.15; drawEntity(e, false); ctx.restore(); }
       continue;
     }
+    if (e.type === 'MESH') { drawMeshOverlay(e); continue; } // 메시는 윗면 윤곽만
     if (e.bim && e.bim.kind !== 'opening') drawBimOverlay(e); // 벽 밴드는 도형선 아래
     drawEntity(e, state.selection.has(e.id));
     if (e.bim && e.bim.kind === 'opening') drawBimOverlay(e);  // 개구부는 도형선 위
@@ -650,6 +651,7 @@ function entityBBox(e) {
     case 'HATCH': return boundaryBBox(e.boundary);
     case 'INSERT': return insertBBox(e);
     case 'IMAGE': return { xmin: e.x, ymin: e.y, xmax: e.x + e.w, ymax: e.y + e.h };
+    case 'MESH': return meshBBox(e);
   }
   return null;
 }
@@ -2167,6 +2169,20 @@ function drawBimOverlay(e) {
   }
   ctx.restore();
 }
+// 가져온 메시의 평면(윗면) 윤곽 — 삼각형 에지를 위에서 본 투영으로 옅게
+function drawMeshOverlay(e) {
+  ctx.save();
+  ctx.strokeStyle = entityColor(e); ctx.globalAlpha = state.selection.has(e.id) ? 0.85 : 0.3;
+  ctx.lineWidth = state.selection.has(e.id) ? 1.5 : 0.6;
+  ctx.beginPath();
+  for (const t of e.tris) {
+    for (let i = 0; i < 3; i++) {
+      const a = worldToScreen(t[i][0], t[i][1]), b = worldToScreen(t[(i + 1) % 3][0], t[(i + 1) % 3][1]);
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    }
+  }
+  ctx.stroke(); ctx.restore();
+}
 
 // ============================================================
 //  BIM 2단계 — 3D 뷰 (의존성 없는 자체 렌더러)
@@ -2346,6 +2362,7 @@ function fit3D() {
     if (!['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(e.type)) continue;
     try { const b = entityBBox(e); xmin = Math.min(xmin, b.xmin); xmax = Math.max(xmax, b.xmax); ymin = Math.min(ymin, b.ymin); ymax = Math.max(ymax, b.ymax); has++; } catch (_) { continue; }
     zmax = Math.max(zmax, e.zo || 0, e.z1 || 0, e.z2 || 0); // 공중에 띄운 도형·3D 선 높이 포함
+    if (e.type === 'MESH') for (const t of e.tris) for (const p of t) zmax = Math.max(zmax, p[2]);
   }
   v3.hasContent = has > 0;
   if (!has) { v3.cx = 0; v3.cy = 0; v3.cz = 0; v3.fit = 10000; return; } // 빈 모델: 10m 기준
@@ -2541,6 +2558,20 @@ function renderScene(isActive) {
     }
     faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf });
     faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf });
+  }
+  // 가져온 3D 메시(STL/OBJ) — 삼각형별 법선 셰이딩
+  for (const e of state.entities) {
+    if (e.type !== 'MESH') continue;
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    for (const t of e.tris) {
+      const P = t.map(p => proj3D(p[0], p[1], p[2]));
+      const ux = t[1][0] - t[0][0], uy = t[1][1] - t[0][1], uz = t[1][2] - t[0][2];
+      const vx = t[2][0] - t[0][0], vy = t[2][1] - t[0][1], vz = t[2][2] - t[0][2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      const shade = 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
+      faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: e.color || '#b9b2a6', shade, eid: e.id });
+    }
   }
   faces.sort((a, b) => b.d - a.d); // 먼 것부터 (painter)
   const light = document.documentElement.classList.contains('light');
@@ -5600,9 +5631,18 @@ function doNew() {
 }
 document.getElementById('fileInput').addEventListener('change', (ev) => {
   const f = ev.target.files[0]; if (!f) return;
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
   const reader = new FileReader();
-  reader.onload = () => { if (loadDXF(reader.result)) { fileHandle = null; setFileName(f.name, null); } ev.target.value = ''; };
-  reader.readAsText(f);
+  if (ext === 'stl') {
+    reader.onload = () => { if (loadMesh(parseSTL(reader.result), f.name)) { fileHandle = null; } ev.target.value = ''; };
+    reader.readAsArrayBuffer(f);
+  } else if (ext === 'obj') {
+    reader.onload = () => { if (loadMesh(parseOBJ(reader.result), f.name)) { fileHandle = null; } ev.target.value = ''; };
+    reader.readAsText(f);
+  } else {
+    reader.onload = () => { if (loadDXF(reader.result)) { fileHandle = null; setFileName(f.name, null); } ev.target.value = ''; };
+    reader.readAsText(f);
+  }
 });
 // 다른 이름으로 저장 대화상자
 function openSaveAs() {
@@ -6201,14 +6241,7 @@ async function saveAsDXF(name) {
 }
 // 열기: 지원 시 OS 파일 선택기(핸들 확보 → 덮어쓰기 저장 가능), 아니면 기존 input
 async function openFile() {
-  if (window.showOpenFilePicker) {
-    try {
-      const [h] = await showOpenFilePicker({ types: DXF_PICKER_TYPES });
-      const f = await h.getFile(); const t = await f.text();
-      if (loadDXF(t)) { fileHandle = h; setFileName(f.name, 'pc'); }
-      return;
-    } catch (err) { if (err && err.name === 'AbortError') return; }
-  }
+  // 확장자 분기가 필요해 항상 파일 입력(<input accept>)을 사용 — DXF·STL·OBJ 모두 지원
   document.getElementById('fileInput').click();
 }
 
@@ -6430,6 +6463,76 @@ function writeEntity(g, e, H) {
 // ============================================================
 //  DXF 읽기 (R12~ 일반 엔티티 파서)
 // ============================================================
+// ============================================================
+//  3D 메시 가져오기 — STL(ASCII/바이너리)·OBJ → MESH 엔티티(삼각형 집합)
+// ============================================================
+function parseSTL(buf) {
+  const tris = [];
+  const bytes = new Uint8Array(buf);
+  // ASCII 판별: 선두가 'solid'이고 'facet'이 텍스트로 존재
+  let head = '';
+  for (let i = 0; i < Math.min(bytes.length, 256); i++) head += String.fromCharCode(bytes[i]);
+  const looksAscii = /^\s*solid/i.test(head) && head.toLowerCase().indexOf('facet') !== -1;
+  if (looksAscii) {
+    const txt = new TextDecoder().decode(buf);
+    const nums = txt.match(/vertex\s+(-?[\d.eE+]+)\s+(-?[\d.eE+]+)\s+(-?[\d.eE+]+)/g) || [];
+    for (let i = 0; i + 2 < nums.length; i += 3) {
+      const v = j => { const m = nums[i + j].trim().split(/\s+/); return [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])]; };
+      tris.push([v(0), v(1), v(2)]);
+    }
+    if (tris.length) return tris;
+  }
+  // 바이너리 STL: 80바이트 헤더 + uint32 개수 + 삼각형당 50바이트
+  if (buf.byteLength >= 84) {
+    const dv = new DataView(buf);
+    const n = dv.getUint32(80, true);
+    if (84 + n * 50 <= buf.byteLength) {
+      let off = 84;
+      for (let k = 0; k < n; k++) {
+        off += 12; // 법선 스킵
+        const rd = () => { const x = dv.getFloat32(off, true), y = dv.getFloat32(off + 4, true), z = dv.getFloat32(off + 8, true); off += 12; return [x, y, z]; };
+        tris.push([rd(), rd(), rd()]);
+        off += 2; // 속성 바이트
+      }
+    }
+  }
+  return tris;
+}
+function parseOBJ(text) {
+  const V = [], tris = [];
+  const lines = text.split(/\r?\n/);
+  for (const ln of lines) {
+    const t = ln.trim();
+    if (t[0] === 'v' && t[1] === ' ') {
+      const p = t.split(/\s+/); V.push([parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3])]);
+    } else if (t[0] === 'f' && t[1] === ' ') {
+      const idx = t.slice(2).trim().split(/\s+/).map(tok => {
+        const i = parseInt(tok.split('/')[0], 10); return i < 0 ? V.length + i : i - 1;
+      });
+      for (let i = 1; i + 1 < idx.length; i++) { // 팬 삼각화
+        const a = V[idx[0]], b = V[idx[i]], c = V[idx[i + 1]];
+        if (a && b && c) tris.push([a, b, c]);
+      }
+    }
+  }
+  return tris;
+}
+function loadMesh(tris, name) {
+  if (!tris || !tris.length) { logLine('  ' + (name || '메시') + ': 유효한 삼각형이 없습니다.', 'warn'); return false; }
+  pushUndo();
+  const e = addEntity({ type: 'MESH', tris, name: name || 'mesh', color: '#b9b2a6' });
+  logLine('  ✔ 3D 메시 가져오기: ' + tris.length + '개 삼각형 (' + (name || '') + ') — 3D 뷰에서 확인', 'ok');
+  state.selection.clear(); state.selection.add(e.id);
+  const ov = document.getElementById('bim3d');
+  if (ov && ov.style.display !== 'none' && typeof fit3D === 'function') { v3.solids = bimSolids(); fit3D(); v3.zoom = 1; v3.panX = 0; v3.panY = 0; loadVp(v3.act); render3D(); }
+  else { renderProps(); draw(); }
+  return true;
+}
+function meshBBox(e) {
+  let xm = 1e18, xM = -1e18, ym = 1e18, yM = -1e18;
+  for (const t of e.tris) for (const p of t) { xm = Math.min(xm, p[0]); xM = Math.max(xM, p[0]); ym = Math.min(ym, p[1]); yM = Math.max(yM, p[1]); }
+  return { xmin: xm, xmax: xM, ymin: ym, ymax: yM };
+}
 function loadDXF(text) {
   try {
     const pairs = parseDXFPairs(text);
@@ -6983,6 +7086,7 @@ window.__CADTEST__ = {
   T_translate, T_rotate, T_mirror, applyTransform, translateEntity, scaleEntities, stretchEntities,
   // 파서/직렬화
   parsePointOrNumber, buildDXFText, buildSVG, loadDXF, parseDXFPairs, parseDXFEntities,
+  parseSTL, parseOBJ, loadMesh,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)

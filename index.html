@@ -336,7 +336,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <button class="tbtn" id="btnFile">📁 파일 ▾</button>
       <div id="fileMenu" class="dropdown">
         <button class="menuItem" id="miNew">🆕 새로 만들기</button>
-        <button class="menuItem" id="miOpen">📂 열기 (DXF)</button>
+        <button class="menuItem" id="miOpen">📂 열기 (DXF·STL·OBJ)</button>
         <div class="menuSep"></div>
         <button class="menuItem" id="miSave">💾 저장 (DXF)</button>
         <button class="menuItem" id="miSaveAs">📤 다른 이름으로 저장…</button>
@@ -372,7 +372,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <button class="tbtn" id="btnCmdHelp" title="전체 명령어 목록 (help 또는 ? 입력)">❓ 명령어</button>
     <button class="tbtn" id="btnTheme" title="다크/화이트 모드 전환">🌓</button>
     <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
-    <input type="file" id="fileInput" accept=".dxf" style="display:none">
+    <input type="file" id="fileInput" accept=".dxf,.stl,.obj" style="display:none">
     <input type="file" id="imgInput" accept="image/*" style="display:none">
   </div>
 
@@ -686,7 +686,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260706f"></script>
+<script src="cad.js?v=20260706g"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=7"></script>
 <script src="cloud.js?v=5"></script>
