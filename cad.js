@@ -3385,13 +3385,19 @@ function cmdExtrudeCrv() {
   if (!sel.length) { logLine('  extrudecrv: 돌출할 곡선(선·폴리라인·원)을 선택한 뒤 실행하세요.', 'warn'); return; }
   const h = bimAskNum('돌출 높이 (mm):', settings.bim.wallH); if (h == null) return;
   pushUndo();
-  let nOpen = 0, nClosed = 0;
+  let nOpen = 0, nClosed = 0, nSlant = 0;
   for (const e of sel) {
-    const base = lvElev() + (e.zo || 0); // 공중에 띄운 곡선은 그 높이에서 돌출
+    let base = lvElev() + (e.zo || 0); // 공중에 띄운 곡선은 그 높이에서 돌출
+    if (e.type === 'LINE' && (e.z1 != null || e.z2 != null)) { // 3D 선: 실제 곡선 높이에서 돌출
+      base = Math.min(e.z1 || 0, e.z2 || 0);
+      if ((e.z1 || 0) !== (e.z2 || 0)) nSlant++;
+      delete e.z1; delete e.z2; // 수직 프리즘으로 전환 — 곡선 높이는 base로 이관
+    }
     if ((e.type === 'LWPOLYLINE' && e.closed) || e.type === 'CIRCLE') { e.bim = { kind: 'column', h, base }; nClosed++; }
     else { e.bim = { kind: 'wall', h, t: 2, base }; nOpen++; }
     delete e.zo;
   }
+  if (nSlant) logLine(`  ⚠ 기울어진 3D 선 ${nSlant}개는 낮은 끝 높이 기준으로 수직 돌출했습니다`, 'warn');
   logLine(`  ✔ ExtrudeCrv: 닫힌 곡선 ${nClosed}개→솔리드, 열린 곡선 ${nOpen}개→서피스 (두께는 extrudesrf로 부여)`, 'ok');
   renderProps(); draw();
 }
