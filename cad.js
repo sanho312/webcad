@@ -3080,17 +3080,34 @@ function applyBox3D(d) {
   const y0 = Math.min(d.by0, d.by1), y1 = Math.max(d.by0, d.by1);
   if (x1 - x0 < 2 && y1 - y0 < 2) { render3D(); return; }
   const crossing = d.bx1 < d.bx0;
-  const pts = new Map();
-  const add = (eid, p) => { let a = pts.get(eid); if (!a) { a = []; pts.set(eid, a); } a.push(p); };
-  for (const f of (v3.faces || [])) if (f.eid != null) for (const p of f.pts) add(f.eid, p);
-  for (const u of (v3.under || [])) for (const p of u.path) add(u.eid, p);
+  const inBox = (p) => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+  // 선분-사각형 교차 (양끝 밖이어도 박스를 가로지르면 참)
+  const segHitsBox = (a, b) => {
+    if (inBox(a) || inBox(b)) return true;
+    const edges = [[[x0, y0], [x1, y0]], [[x1, y0], [x1, y1]], [[x1, y1], [x0, y1]], [[x0, y1], [x0, y0]]];
+    const cross2 = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+    for (const [c1, c2] of edges) {
+      const d1 = cross2(a, b, c1), d2 = cross2(a, b, c2), d3 = cross2(c1, c2, a), d4 = cross2(c1, c2, b);
+      if (((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))) return true;
+    }
+    return false;
+  };
+  const pts = new Map(), segs = new Map();
+  const addP = (m, eid, v) => { let a = m.get(eid); if (!a) { a = []; m.set(eid, a); } a.push(v); };
+  for (const f of (v3.faces || [])) if (f.eid != null) {
+    for (let i = 0; i < f.pts.length; i++) { addP(pts, f.eid, f.pts[i]); addP(segs, f.eid, [f.pts[i], f.pts[(i + 1) % f.pts.length]]); }
+  }
+  for (const u of (v3.under || [])) {
+    for (let i = 0; i < u.path.length; i++) {
+      addP(pts, u.eid, u.path[i]);
+      if (i < u.path.length - 1 || u.closed) addP(segs, u.eid, [u.path[i], u.path[(i + 1) % u.path.length]]);
+    }
+  }
   state.selection.clear();
   for (const [eid, arr] of pts) {
-    if (crossing) {
-      let xm = 1e18, xM = -1e18, ym = 1e18, yM = -1e18;
-      for (const p of arr) { xm = Math.min(xm, p[0]); xM = Math.max(xM, p[0]); ym = Math.min(ym, p[1]); yM = Math.max(yM, p[1]); }
-      if (xM >= x0 && xm <= x1 && yM >= y0 && ym <= y1) state.selection.add(eid);
-    } else if (arr.every(p => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)) state.selection.add(eid);
+    if (crossing) { // 걸침: 실제로 점이 박스 안에 있거나 선분이 박스를 지나야 선택 (bbox 겹침 오선택 수정)
+      if (arr.some(inBox) || (segs.get(eid) || []).some(([a, b]) => segHitsBox(a, b))) state.selection.add(eid);
+    } else if (arr.every(inBox)) state.selection.add(eid);
   }
   renderProps(); render3D();
   logLine(`  ▷ 3D 박스 선택: ${state.selection.size}개 (${crossing ? '걸침' : '포함'})`, 'info');
@@ -3384,6 +3401,7 @@ function cmdExtrudeCrv() {
   const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
   if (!sel.length) { logLine('  extrudecrv: 돌출할 곡선(선·폴리라인·원)을 선택한 뒤 실행하세요.', 'warn'); return; }
   const h = bimAskNum('돌출 높이 (mm):', settings.bim.wallH); if (h == null) return;
+  const solidOpt = String(prompt('출력 — 1: 서피스(라이노 기본)  2: 솔리드(위아래 캡)', '1') || '1').trim() === '2';
   pushUndo();
   let nOpen = 0, nClosed = 0, nSlant = 0;
   for (const e of sel) {
@@ -3393,8 +3411,9 @@ function cmdExtrudeCrv() {
       if ((e.z1 || 0) !== (e.z2 || 0)) nSlant++;
       delete e.z1; delete e.z2; // 수직 프리즘으로 전환 — 곡선 높이는 base로 이관
     }
-    if ((e.type === 'LWPOLYLINE' && e.closed) || e.type === 'CIRCLE') { e.bim = { kind: 'column', h, base }; nClosed++; }
-    else { e.bim = { kind: 'wall', h, t: 2, base }; nOpen++; }
+    if (e.type === 'CIRCLE' || (solidOpt && e.type === 'LWPOLYLINE' && e.closed)) {
+      e.bim = { kind: 'column', h, base }; nClosed++; // 원 또는 솔리드 옵션: 캡 있는 기둥체
+    } else { e.bim = { kind: 'wall', h, t: 2, base }; nOpen++; } // 기본: 곡선을 따라가는 튜브 서피스
     delete e.zo;
   }
   if (nSlant) logLine(`  ⚠ 기울어진 3D 선 ${nSlant}개는 낮은 끝 높이 기준으로 수직 돌출했습니다`, 'warn');
