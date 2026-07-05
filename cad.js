@@ -2493,6 +2493,78 @@ function render3D() {
   }
 }
 // 한 뷰포트의 장면 렌더 (v3.vp/yaw/pitch/zoom/pan 기준) — isActive면 그립/검볼/미리보기 포함
+// ============================================================
+//  소프트웨어 Z-버퍼 래스터라이저 — 은면 제거(hidden surface)
+//  painter 정렬은 겹치는 면에서 뒤가 새어나옴 → 픽셀 깊이 비교로 해결
+// ============================================================
+function zTri(data, zb, W, H, ox, oy, A, B, C, r, g, b) {
+  const ax = A[0]-ox, ay = A[1]-oy, bx = B[0]-ox, by = B[1]-oy, cx = C[0]-ox, cy = C[1]-oy;
+  const area = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
+  if (Math.abs(area) < 1e-9) return;
+  const minX = Math.max(0, Math.floor(Math.min(ax,bx,cx))), maxX = Math.min(W-1, Math.ceil(Math.max(ax,bx,cx)));
+  const minY = Math.max(0, Math.floor(Math.min(ay,by,cy))), maxY = Math.min(H-1, Math.ceil(Math.max(ay,by,cy)));
+  const ia = 1/area;
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const px = x+0.5, py = y+0.5;
+      const w0 = ((by-cy)*(px-cx) + (cx-bx)*(py-cy)) * ia;
+      const w1 = ((cy-ay)*(px-cx) + (ax-cx)*(py-cy)) * ia;
+      const w2 = 1 - w0 - w1;
+      if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) continue;
+      const z = w0*A[2] + w1*B[2] + w2*C[2];
+      const idx = y*W + x;
+      if (z < zb[idx]) { zb[idx] = z; const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
+    }
+  }
+}
+function zLine(data, zb, W, H, ox, oy, A, B, r, g, b, eps) {
+  const x0 = A[0]-ox, y0 = A[1]-oy, z0 = A[2], x1 = B[0]-ox, y1 = B[1]-oy, z1 = B[2];
+  const dx = x1-x0, dy = y1-y0, steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
+  for (let s = 0; s <= steps; s++) {
+    const t = s/steps, x = Math.round(x0+dx*t), y = Math.round(y0+dy*t);
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const z = z0 + (z1-z0)*t, idx = y*W + x;
+    if (z <= zb[idx] + eps) { const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
+  }
+}
+function rgbTriplet(hexOrRgb) {
+  const m = hexOrRgb.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (m) return [+m[1], +m[2], +m[3]];
+  return [parseInt(hexOrRgb.slice(1,3),16), parseInt(hexOrRgb.slice(3,5),16), parseInt(hexOrRgb.slice(5,7),16)];
+}
+function zRasterFaces(c, faces, vp, light) {
+  const W = vp.w|0, H = vp.h|0, ox = vp.x|0, oy = vp.y|0;
+  if (W <= 0 || H <= 0 || !faces.length) return;
+  const img = c.getImageData(ox, oy, W, H), data = img.data;
+  const zb = (v3._zb && v3._zb.length === W*H) ? v3._zb : (v3._zb = new Float32Array(W*H));
+  zb.fill(Infinity);
+  const opaque = [], overlay = [];
+  for (const f of faces) { (f.glass || (f.rf && v3.roof === 'ghost')) ? overlay.push(f) : opaque.push(f); }
+  // 불투명 면: 채우기(깊이 기록)
+  for (const f of opaque) {
+    const isSel = f.eid != null && state.selection.has(f.eid);
+    const [r, g, b] = rgbTriplet(isSel ? shadeColor('#0A84FF', 0.6 + 0.4*f.shade) : shadeColor(f.color, f.shade));
+    f._r = r; f._g = g; f._b = b; f._sel = isSel;
+    const P = f.pts;
+    for (let i = 1; i+1 < P.length; i++) zTri(data, zb, W, H, ox, oy, P[0], P[i], P[i+1], r, g, b);
+  }
+  // 모서리: 깊이 테스트로 가려진 에지는 숨김
+  const eps = Math.max(1, v3.fit * 0.008);
+  const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
+  for (const f of opaque) {
+    const P = f.pts, sel = f._sel;
+    const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
+    for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+  }
+  c.putImageData(img, ox, oy);
+  // 반투명(유리·지붕 고스트): 합성 위에 알파로
+  overlay.sort((a, b) => b.d - a.d);
+  for (const f of overlay) {
+    c.beginPath(); f.pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath();
+    c.globalAlpha = f.glass ? 0.42 : 0.22; c.fillStyle = shadeColor(f.color, f.shade); c.fill();
+    c.globalAlpha = 1;
+  }
+}
 function renderScene(isActive) {
   const c = v3.ctx;
   const faces = [];
@@ -2573,22 +2645,8 @@ function renderScene(isActive) {
       faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: e.color || '#b9b2a6', shade, eid: e.id });
     }
   }
-  faces.sort((a, b) => b.d - a.d); // 먼 것부터 (painter)
   const light = document.documentElement.classList.contains('light');
-  for (const f of faces) {
-    const isSel = f.eid != null && state.selection.has(f.eid);
-    c.beginPath();
-    f.pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
-    c.closePath();
-    const col = isSel ? shadeColor('#0A84FF', 0.6 + 0.4 * f.shade) : shadeColor(f.color, f.shade);
-    const rfGhost = f.rf && v3.roof === 'ghost';
-    c.globalAlpha = f.glass ? 0.45 : rfGhost ? 0.22 : 1;
-    c.fillStyle = col; c.fill();
-    c.globalAlpha = f.glass ? 0.6 : rfGhost ? 0.3 : 1;
-    c.strokeStyle = isSel ? '#5eb1ff' : (light ? 'rgba(30,40,70,.35)' : 'rgba(10,16,32,.55)');
-    c.lineWidth = isSel ? 2 : 1; c.stroke();
-    c.globalAlpha = 1;
-  }
+  zRasterFaces(c, faces, v3.vp, light); // 은면 제거: 픽셀 단위 Z-버퍼
   // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (활성 뷰에서만, 거의 수직 뷰에서는 숨김)
   if (isActive && state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
     const sid = [...state.selection][0];
@@ -3018,6 +3076,7 @@ function bind3D(ov, cv3) {
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
+    if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); state.selection.clear(); renderProps(); render3D(); return; } // 차집합 2단계 취소
     if (v3.wallMode) { setWallMode(false); }                                          // 0차: 벽 그리기 종료
     else if (state.tool !== 'select') { setTool('select'); state.selection.clear(); renderProps(); render3D(); } // 0.5차: 도구 취소
     else if (state.selection.size) { state.selection.clear(); renderProps(); render3D(); } // 1차: 선택 해제
@@ -3539,26 +3598,44 @@ function entityToTris(e){
   if (e.type==='MESH') return e.tris.map(t=>t.map(p=>p.slice()));
   return solidsToTris(new Set([e.id]));
 }
-function cmdBoolean(op){
-  const sel = selectedEntities().filter(e => e.type==='MESH' || (e.bim && ['wall','column','slab','stair','roof'].includes(e.bim.kind)));
-  if (sel.length < 2) { logLine('  불리언: 입체(솔리드·메시) 2개 이상을 선택하세요. ' + (op==='subtract' ? '(첫 선택 − 나머지)' : ''), 'warn'); return; }
-  let acc = trisToPolys(entityToTris(sel[0]));
-  if (!acc.length) { logLine('  불리언: 첫 객체에서 면을 얻지 못했습니다.', 'warn'); return; }
-  for (let i=1;i<sel.length;i++){
-    const b = trisToPolys(entityToTris(sel[i]));
-    if (b.length) acc = csgOp(acc, b, op);
-  }
+let boolPending = null; // 라이노식 차집합 2단계: {keepIds}
+function isBoolable(e){ return e.type==='MESH' || (e.bim && ['wall','column','slab','stair','roof'].includes(e.bim.kind)); }
+function boolRefresh(){ const ov = document.getElementById('bim3d'); if (ov && ov.style.display !== 'none') { v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); } }
+// keepEnts를 union한 뒤 op(union/intersect/subtract)로 cutterEnts 적용 → 결과 메시
+function runBoolean(op, keepEnts, cutterEnts){
+  let acc = null;
+  for (const e of keepEnts){ const p = trisToPolys(entityToTris(e)); if (p.length) acc = acc ? csgOp(acc, p, 'union') : p; }
+  if (!acc || !acc.length){ logLine('  불리언: 베이스 입체에서 면을 얻지 못했습니다.', 'warn'); return; }
+  for (const e of cutterEnts){ const p = trisToPolys(entityToTris(e)); if (p.length) acc = csgOp(acc, p, op); }
   const tris = polysToTris(acc);
-  if (!tris.length) { logLine('  불리언 결과가 비었습니다 — 두 입체가 겹치는지 확인하세요.', 'warn'); return; }
+  if (!tris.length){ logLine('  불리언 결과가 비었습니다 — 입체가 겹치는지 확인하세요.', 'warn'); return; }
   pushUndo();
-  const ids = new Set(sel.map(e=>e.id));
+  const ids = new Set(keepEnts.concat(cutterEnts).map(e=>e.id));
   state.entities = state.entities.filter(e=>!ids.has(e.id));
   const m = addEntity({ type:'MESH', tris, color:'#a7b0c4' });
   const koOp = op==='union' ? '합집합' : op==='intersect' ? '교집합' : '차집합';
-  logLine('  ✔ ' + koOp + ' — ' + sel.length + '개 입체 → 메시 ' + tris.length + '개 삼각형', 'ok');
-  state.selection.clear(); state.selection.add(m.id);
-  const ov = document.getElementById('bim3d');
-  if (ov && ov.style.display !== 'none') { v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); }
+  logLine('  ✔ ' + koOp + ' 완료 → 메시 ' + tris.length + '개 삼각형', 'ok');
+  state.selection.clear(); state.selection.add(m.id); boolRefresh();
+}
+function cmdBoolean(op){
+  const sel = selectedEntities().filter(isBoolable);
+  if (op==='subtract'){ // 라이노 BooleanDifference: 남길 입체 선택 → 명령 → 잘라낼 입체 선택 → Enter
+    if (!sel.length){ logLine('  차집합: 먼저 남길(베이스) 입체를 선택한 뒤 실행하세요.', 'warn'); return; }
+    boolPending = { keepIds: sel.map(e=>e.id) };
+    state.selection.clear();
+    logLine('  ▷ 차집합: 이제 잘라낼(빼낼) 입체를 선택한 뒤 Enter (Esc=취소)', 'info');
+    boolRefresh(); return;
+  }
+  if (sel.length < 2){ logLine('  ' + (op==='union'?'합집합':'교집합') + ': 입체 2개 이상을 선택하세요.', 'warn'); return; }
+  runBoolean(op, [sel[0]], sel.slice(1)); // union/intersect는 순서 무관 (누적)
+}
+function boolFinish(){ // Enter 시 차집합 2단계 마무리
+  const cutters = selectedEntities().filter(isBoolable);
+  const keep = boolPending.keepIds.map(id => state.entities.find(e=>e.id===id)).filter(Boolean);
+  boolPending = null;
+  if (!keep.length){ logLine('  차집합 취소 — 베이스 입체가 없습니다.', 'warn'); boolRefresh(); return; }
+  if (!cutters.length){ logLine('  차집합 취소 — 잘라낼 입체가 선택되지 않았습니다.', 'warn'); boolRefresh(); return; }
+  runBoolean('subtract', keep, cutters);
 }
 // 3D 내보내기 — 모든 입체(bimSolids)를 삼각형화해 STL/OBJ 파일로 (mm 단위)
 function solidsToTris(onlyIds) {
@@ -4936,6 +5013,7 @@ function repeatLastCommand() {
 }
 // 빈 칸에서 Enter/스페이스: 폴리라인 작도 중이면 종료, 아니면 직전 명령 반복
 function emptyEnterAction() {
+  if (typeof boolPending !== 'undefined' && boolPending) { boolFinish(); return; } // 차집합 2단계 완료
   if (state.tool === 'pline') {
     if (pts.length >= 2) { finishPolyline(); return; }
     pts = []; draw(); return;
@@ -5566,7 +5644,7 @@ window.addEventListener('keydown', (ev) => {
   if (ev.ctrlKey && ev.key.toLowerCase() === 'c') { ev.preventDefault(); copySelection(); return; }
   if (ev.ctrlKey && ev.key.toLowerCase() === 'v') { ev.preventDefault(); startPaste(); return; }
   switch (ev.key) {
-    case 'Escape': setTool('select'); state.selection.clear(); renderProps(); draw(); break;
+    case 'Escape': if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); } setTool('select'); state.selection.clear(); renderProps(); draw(); break;
     case 'Enter': if (state.tool === 'pline') finishPolyline(); break;
     case 'Delete': case 'Backspace': deleteSelection(); break;
     case 'l': case 'L': setTool('line'); break;
@@ -5952,7 +6030,7 @@ const CMD_HELP = [
     ['selectedexport', '선택 3D 저장', '선택한 객체만 STL/OBJ로 내보내기 (형식 선택)'],
     ['settop', '상단 정렬', '벽·기둥·계단 선택 후 상단 z 입력 — 높이가 그 z에 맞게 조정'],
     ['union', '합집합(불리언)', '입체 2개+ 선택 → 하나로 합침 (결과 메시)'],
-    ['difference', '차집합(불리언)', '입체 2개+ 선택 → 첫 것에서 나머지를 뺌'],
+    ['difference', '차집합(불리언)', '남길 입체 선택 → difference → 잘라낼 입체 선택 → Enter (라이노식)'],
     ['intersect3d', '교집합(불리언)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 입력 — 닫힌 곡선=솔리드, 열린 곡선=면. 2D·3D 어디서든'],
     ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
@@ -7204,7 +7282,8 @@ window.__CADTEST__ = {
   T_translate, T_rotate, T_mirror, applyTransform, translateEntity, scaleEntities, stretchEntities,
   // 파서/직렬화
   parsePointOrNumber, buildDXFText, buildSVG, loadDXF, parseDXFPairs, parseDXFEntities,
-  parseSTL, parseOBJ, loadMesh, csgOp, trisToPolys, polysToTris, cmdBoolean,
+  parseSTL, parseOBJ, loadMesh, csgOp, trisToPolys, polysToTris, cmdBoolean, runBoolean, boolFinish,
+  get boolPending(){return boolPending;}, zTri, zRasterFaces,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
