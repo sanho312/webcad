@@ -35,21 +35,11 @@
   html.light #lobby .lbTile{background:rgba(255,255,255,0.62);border-color:rgba(30,60,140,0.10);box-shadow:0 8px 24px rgba(30,50,110,0.12);}
   #lobby .lbTile:hover{transform:translateY(-2px);background:rgba(150,180,255,0.16);box-shadow:0 12px 32px rgba(2,6,20,0.5),inset 0 .5px 0 0 rgba(200,220,255,.24);}
   #lobby .lbTile:active{transform:translateY(0);}
-  #lobby .lbTile.primary{grid-column:1 / -1;flex-direction:row;align-items:center;gap:16px;padding:20px 22px;
-    background:linear-gradient(120deg,rgba(10,132,255,0.95),rgba(90,90,255,0.9));border-color:transparent;box-shadow:0 12px 34px rgba(10,90,220,0.42);}
-  #lobby .lbTile.primary:hover{background:linear-gradient(120deg,rgba(30,150,255,1),rgba(110,110,255,0.96));}
+  /* 작업하기는 색이 아니라 크기·너비·화살표로만 강조 (다른 타일과 같은 글래스 색) */
+  #lobby .lbTile.primary{grid-column:1 / -1;flex-direction:row;align-items:center;gap:16px;padding:20px 22px;}
   #lobby .lbTile.primary .lbIco{font-size:30px;}
-  #lobby .lbTile.primary .lbT{font-size:18px;color:#fff;}
-  #lobby .lbTile.primary .lbD{color:rgba(255,255,255,0.82);}
-  #lobby .lbTile.primary .lbGoArrow{margin-left:auto;font-size:22px;color:#fff;opacity:.9;}
-  /* 라이트 모드: 기본 타일이 흰 배경으로 덮이므로 primary는 옅은 파랑 배경 + 어두운 글씨로 되살림 */
-  html.light #lobby .lbTile.primary{background:linear-gradient(120deg,rgba(10,132,255,0.16),rgba(99,102,241,0.12));
-    border:0.5px solid rgba(10,132,255,0.5);box-shadow:0 10px 28px rgba(10,90,220,0.16);}
-  html.light #lobby .lbTile.primary:hover{background:linear-gradient(120deg,rgba(10,132,255,0.26),rgba(99,102,241,0.2));}
-  html.light #lobby .lbTile.primary .lbT{color:#0b1a38;}
-  html.light #lobby .lbTile.primary .lbD{color:rgba(20,40,90,0.72);}
-  html.light #lobby .lbTile.primary .lbIco{color:#0b1a38;}
-  html.light #lobby .lbTile.primary .lbGoArrow{color:var(--accent,#0A84FF);}
+  #lobby .lbTile.primary .lbT{font-size:18px;}
+  #lobby .lbTile.primary .lbGoArrow{margin-left:auto;font-size:22px;color:inherit;opacity:.4;}
   #lobby .lbIco{font-size:22px;line-height:1;}
   #lobby .lbT{font-size:15px;font-weight:650;letter-spacing:-0.01em;}
   #lobby .lbD{font-size:11.5px;color:rgba(210,222,250,0.55);line-height:1.4;}
