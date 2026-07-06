@@ -289,6 +289,13 @@
     document.body.classList.toggle('authLocked', open); // cad.js가 명령창 자동 포커스를 멈추도록
     if (open) { view = 'login'; render(); }
   }
+  // 로비 화면(lobby.js)이 호출하는 API — 로그인 게이트 열고/닫기, 로그아웃
+  window.WEBCAD_AUTH_API = {
+    showLogin: () => setGate(true),
+    hideLogin: () => setGate(false),
+    isGateOpen: () => !gate.classList.contains('hidden'),
+    signOut: async () => { if (sb) { await sb.auth.signOut(); } location.reload(); },
+  };
 
   async function init() {
     if (cfg.url) {
