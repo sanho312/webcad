@@ -2500,7 +2500,7 @@ function render3D() {
   if (qb) { qb.style.background = v3.quad ? 'var(--accent)' : 'transparent'; qb.style.color = v3.quad ? '#fff' : ''; }
   if (window.__BIM3D_DEBUG) {
     window.__BIM3D_STATS = { solids: v3.solids.length, faces: v3.faces.length };
-    window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D, unproj3D, wall3DClick, vpAt, loadVp, vpRect };
+    window.__BIM3D_TEST = { v3, render3D, pick3DAt, size3D, unproj3D, proj3D, wall3DClick, vpAt, loadVp, vpRect };
   }
 }
 // 한 뷰포트의 장면 렌더 (v3.vp/yaw/pitch/zoom/pan 기준) — isActive면 그립/검볼/미리보기 포함
@@ -2904,6 +2904,7 @@ function bind3D(ov, cv3) {
   let drag = null;
   cv3.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    if (v3.extrude) { if (e.button === 2) extrudeCancel(); else extrudeConfirm(); return; } // 돌출 중: 좌클릭=확정, 우클릭=취소
     { // 사분할: 클릭한 뷰포트를 활성화
       const rv = cv3.getBoundingClientRect();
       const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
@@ -2984,6 +2985,7 @@ function bind3D(ov, cv3) {
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
+    if (v3.extrude) { extrudeHover(e); return; } // 돌출 중: 커서 높이 라이브 프리뷰
     if (!drag && (v3.wallMode || state.tool !== 'select' || osnapEnabled)) { // 작도 가선 + 스냅 마커 (선택 도구에서도 마커 표시)
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
@@ -3140,6 +3142,7 @@ function bind3D(ov, cv3) {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
     if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); state.selection.clear(); renderProps(); render3D(); return; } // 차집합 2단계 취소
+    if (v3.extrude) { extrudeCancel(); return; }                                       // 0차: 돌출 취소
     if (v3.wallMode) { setWallMode(false); }                                          // 0차: 벽 그리기 종료
     else if (state.tool !== 'select') { setTool('select'); state.selection.clear(); renderProps(); render3D(); } // 0.5차: 도구 취소
     else if (state.selection.size) { state.selection.clear(); renderProps(); render3D(); } // 1차: 선택 해제
@@ -3926,6 +3929,78 @@ function cmdCone() {
   newMesh(meshCone(c[0], c[1], cplaneZ(), r, h, 32), 'cone', '#c0a890');
   logLine(`  ✔ Cone: 바닥(${c[0]},${c[1]}) r=${r} 높이 ${h} · 바닥 z=${cplaneZ()} — 메시 생성`, 'ok');
   boolRefresh();
+}
+// ── 인터랙티브 돌출(Extrude) — 라이노식: ①마우스로 높이 끌기  ②명령창에 수치 입력 ─────
+function footprintCentroid(sel) { // 선택 곡선들의 평면 무게중심 (커서 높이 기준축)
+  let sx = 0, sy = 0, n = 0;
+  for (const e of sel) {
+    if (e.type === 'CIRCLE') { sx += e.cx; sy += e.cy; n++; }
+    else if (e.type === 'LINE') { sx += (e.x1 + e.x2) / 2; sy += (e.y1 + e.y2) / 2; n++; }
+    else if (e.points) { for (const p of e.points) { sx += p[0]; sy += p[1]; n++; } }
+  }
+  return n ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
+}
+function extrudeItems() { return v3.extrude.items.map(it => state.entities.find(e => e.id === it.id)).filter(Boolean); }
+function extrudeSetH(h) { const ex = v3.extrude; ex.h = Math.max(10, Math.round(h / 10) * 10); for (const e of extrudeItems()) if (e.bim) e.bim.h = ex.h; }
+// 커서 광선을 곡선 중심을 지나는 수직축에 최근접 투영 → 그 높이가 돌출 상단 (정투영이라 광선은 z에 선형)
+function extrudeCursorH(px, py) {
+  const ex = v3.extrude, A = unproj3D(px, py, 0), B = unproj3D(px, py, 1000);
+  if (!A || !B) return null;
+  const ax = (B[0] - A[0]) / 1000, ay = (B[1] - A[1]) / 1000, den = ax * ax + ay * ay;
+  if (den < 1e-9) return null; // 탑뷰: 커서로 높이 조절 불가 (수치 입력 사용)
+  const ze = -((A[0] - ex.cx) * ax + (A[1] - ex.cy) * ay) / den;
+  return ze - ex.base;
+}
+function extrudeHover(e) {
+  const r = v3.cv.getBoundingClientRect();
+  const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
+  const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
+  const vi = vpAt(px, py); if (vi !== v3.act) { v3.act = vi; loadVp(vi); v3.vp = vpRect(vi); }
+  const h = extrudeCursorH(px, py);
+  if (h != null) extrudeSetH(h);
+  setPrompt(`돌출 높이 ${v3.extrude.h}mm — 클릭=확정 · 숫자 입력 후 Enter · Esc=취소`);
+  v3.solids = bimSolids(); markInteract();
+}
+function extrudeConfirm() {
+  const ex = v3.extrude; if (!ex) return;
+  extrudeSetH(ex.h);
+  const n = extrudeItems().length; v3.extrude = null;
+  setPrompt(''); logLine(`  ✔ Extrude: 서피스 ${n}개 · 높이 ${ex.h}mm`, 'ok');
+  boolRefresh();
+}
+function extrudeCancel() {
+  if (!v3 || !v3.extrude) return;
+  v3.extrude = null;
+  if (undoStack.length) restore(undoStack.pop()); // 돌출 전 상태로 복원
+  if (v3) { v3.solids = bimSolids(); render3D(); }
+  setPrompt(''); logLine('  Extrude 취소', 'info');
+}
+// Extrude 명령: 3D 뷰(기울어진)면 인터랙티브, 아니면 수치 입력 프롬프트
+function cmdExtrude() {
+  const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
+  if (!sel.length) { logLine('  extrude: 돌출할 곡선(선·폴리라인·원)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const ov = document.getElementById('bim3d'), in3D = ov && ov.style.display !== 'none';
+  pushUndo();
+  const items = [];
+  for (const e of sel) {
+    let base = lvElev() + (e.zo || 0);
+    if (e.type === 'LINE' && (e.z1 != null || e.z2 != null)) { base = Math.min(e.z1 || 0, e.z2 || 0); delete e.z1; delete e.z2; }
+    e.bim = { kind: 'wall', h: 10, t: 0, base }; delete e.zo; // 두께 0 = 진짜 서피스
+    items.push({ id: e.id, base });
+  }
+  if (in3D && v3 && Math.abs(Math.sin(v3.pitch)) >= 0.2) { // 기울어진 시점: 커서로 높이 끌기
+    const c = footprintCentroid(sel);
+    v3.extrude = { items, cx: c.x, cy: c.y, base: Math.min(...items.map(i => i.base)), h: 10 };
+    v3.solids = bimSolids(); render3D();
+    logLine('  ▷ Extrude: 마우스를 위·아래로 움직여 높이를 정하고 클릭 — 또는 명령창에 높이 입력 후 Enter (Esc 취소)', 'info');
+    setPrompt('돌출 높이: 마우스로 조절 후 클릭 / 숫자 입력 후 Enter');
+  } else { // 평면·탑뷰: 정확한 수치 입력
+    const h = bimAskNum('돌출 높이 (mm):', settings.bim.wallH);
+    if (h == null) { if (undoStack.length) restore(undoStack.pop()); logLine('  Extrude 취소', 'info'); return; }
+    for (const e of sel) e.bim.h = h;
+    logLine(`  ✔ Extrude: 서피스 ${sel.length}개 · 높이 ${h}mm`, 'ok');
+    boolRefresh();
+  }
 }
 // ExtrudeCrv(라이노식): 곡선을 수직 돌출 — 닫힌 곡선=솔리드, 열린 곡선=두께 없는 면(서피스)
 function cmdExtrudeCrv() {
@@ -4886,6 +4961,7 @@ const INSTANT_CMDS = {
   slab: cmdSlabTag,
   column: cmdColumnTag,
   stair: cmdStairTag,
+  extrude: cmdExtrude,
   extrudecrv: cmdExtrudeCrv,
   extrudesrf: cmdExtrudeSrf,
   move3d: () => cmdMove3D(false),
@@ -5132,6 +5208,7 @@ const CMD_ALIASES = {
   level: 'level', lv: 'level',
   roof: 'roof',
   stair: 'stair', '계단': 'stair',
+  extrude: 'extrude', ext: 'extrude', 돌출: 'extrude',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
   move3d: 'move3d', m3: 'move3d',
@@ -5179,6 +5256,7 @@ function runCommandInput(raw) {
   // 숫자 입력 → 진행 중 명령의 수치 인자
   const num = parseFloat(v);
   if (!isNaN(num) && /^-?[\d.]+$/.test(v)) {
+    if (typeof v3 !== 'undefined' && v3 && v3.extrude) { extrudeSetH(num); logLine(`  돌출 높이 = ${v3.extrude.h}mm`, 'info'); extrudeConfirm(); return; } // 돌출: 수치 확정
     if (state.tool === 'offset') { offsetDist = Math.abs(num) || offsetDist; setPrompt(`오프셋: 도형을 선택하세요. (거리 ${offsetDist})`); logLine(`  오프셋 거리 = ${offsetDist}`, 'info'); return; }
     if (state.tool === 'rotate' && cmdOp && cmdOp.step === 'angle') { logLine(`  회전 각도 = ${num}°`, 'info'); applyRotate(num); return; }
     if (state.tool === 'fillet') { filletRadius = Math.abs(num); setPrompt(`모깎기: 반지름 ${filletRadius}. 첫 번째 선을 클릭하세요.`); logLine(`  모깎기 반지름 = ${filletRadius}`, 'info'); return; }
@@ -6234,6 +6312,7 @@ const CMD_HELP = [
     ['union', '합집합(불리언)', '입체 2개+ 선택 → 하나로 합침 (결과 메시)'],
     ['difference', '차집합(불리언)', '남길 입체 선택 → difference → 잘라낼 입체 선택 → Enter (라이노식)'],
     ['intersect3d', '교집합(불리언)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
+    ['extrude', '돌출(라이노)', '곡선 선택 후 실행 — 3D 뷰에선 마우스로 높이 끌기, 명령창에 숫자 입력 후 Enter도 가능. 클릭=확정, Esc=취소'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 입력 — 닫힌 곡선=솔리드, 열린 곡선=면. 2D·3D 어디서든'],
     ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
     ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
@@ -6310,7 +6389,7 @@ const COMMAND_LIST = [
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
   { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' },
-  { name: 'extrudecrv', ko: '곡선 돌출' }, { name: 'extrudesrf', ko: '면 두께' },
+  { name: 'extrude', ko: '돌출(마우스·수치)' }, { name: 'extrudecrv', ko: '곡선 돌출' }, { name: 'extrudesrf', ko: '면 두께' },
   { name: 'move3d', ko: '3D 이동' }, { name: 'copy3d', ko: '3D 복사' },
   { name: 'box', ko: '상자' }, { name: 'cylinder', ko: '원기둥' }, { name: 'settop', ko: '상단 정렬' },
   { name: 'stl', ko: '3D 저장 STL' }, { name: 'obj', ko: '3D 저장 OBJ' }, { name: 'selectedexport', ko: '선택 3D 저장' },
@@ -7488,7 +7567,8 @@ window.__CADTEST__ = {
   parsePointOrNumber, buildDXFText, buildSVG, loadDXF, parseDXFPairs, parseDXFEntities,
   parseSTL, parseOBJ, loadMesh, csgOp, trisToPolys, polysToTris, cmdBoolean,
   meshSphere, meshCone, meshXform, move3DEnt, dupEnts,
-  cmdRotate3D, cmdMirror3D, cmdArray3D, cmdScale3D, cmdSphere, cmdCone, runBoolean, boolFinish,
+  cmdRotate3D, cmdMirror3D, cmdArray3D, cmdScale3D, cmdSphere, cmdCone,
+  cmdExtrude, extrudeCursorH, extrudeSetH, extrudeConfirm, extrudeCancel, footprintCentroid, runBoolean, boolFinish,
   get boolPending(){return boolPending;}, zTri, zRasterFaces,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
