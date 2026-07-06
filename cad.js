@@ -3771,10 +3771,10 @@ function cmdMove3D(copy) {
     if (zo != null) n.zo = zo; else delete n.zo;
     return n;
   });
-  for (const e of targets) { translateEntity(e, dx, dy); zShift3(e, dz); }
+  for (const e of targets) move3DEnt(e, dx, dy, dz);
   state.selection.clear(); targets.forEach(e => state.selection.add(e.id));
   logLine(`  ✔ ${copy ? 'Copy3D' : 'Move3D'} (${dx}, ${dy}, ${dz}) — ${targets.length}개`, 'ok');
-  renderProps(); draw();
+  boolRefresh();
 }
 function cmdBox() {
   const a = ask3('상자 모서리1 x,y:', '0,0'); if (!a) return;
@@ -3804,6 +3804,128 @@ function cmdSetTop() {
   for (const e of sel) e.bim.h = Math.max(10, Math.round(z - (e.bim.base || 0)));
   logLine(`  ✔ SetTop: ${sel.length}개 상단을 z=${z}(으)로 정렬`, 'ok');
   renderProps(); draw();
+}
+// ── 3D 변환·프리미티브 공용 헬퍼 ──────────────────────────────
+function meshXform(e, fn, flip) { // fn:(x,y,z)->[x,y,z]; flip=삼각형 winding 뒤집기(대칭용)
+  e.tris = e.tris.map(t => { const nt = t.map(p => fn(p[0], p[1], p[2])); return flip ? [nt[0], nt[2], nt[1]] : nt; });
+}
+function dupEnts(sel) { // 선택 객체 복제(새 id) — z 오프셋 보존
+  return sel.map(e => { const c = JSON.parse(JSON.stringify(e)); delete c.id; const zo = c.zo; const n = addEntity(c); if (zo != null) n.zo = zo; else delete n.zo; return n; });
+}
+function move3DEnt(e, dx, dy, dz) { // 메시는 정점 이동, 그 외는 평면 이동 + z 시프트
+  if (e.type === 'MESH') meshXform(e, (x, y, z) => [x + dx, y + dy, z + dz]);
+  else { translateEntity(e, dx, dy); zShift3(e, dz); }
+}
+function meshSphere(cx, cy, cz, r, seg, rings) { // UV 구
+  const tris = [], pt = (i, j) => { const th = Math.PI * j / rings, ph = 2 * Math.PI * i / seg;
+    return [cx + r * Math.sin(th) * Math.cos(ph), cy + r * Math.sin(th) * Math.sin(ph), cz + r * Math.cos(th)]; };
+  for (let j = 0; j < rings; j++) for (let i = 0; i < seg; i++) {
+    const a = pt(i, j), b = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
+    if (j !== 0) tris.push([a, b, c]);
+    if (j !== rings - 1) tris.push([a, c, d]);
+  }
+  return tris;
+}
+function meshCone(cx, cy, z0, r, h, seg) { // 원뿔(꼭짓점 위)
+  const tris = [], apex = [cx, cy, z0 + h], base = [cx, cy, z0];
+  const ring = i => [cx + r * Math.cos(2 * Math.PI * i / seg), cy + r * Math.sin(2 * Math.PI * i / seg), z0];
+  for (let i = 0; i < seg; i++) { const a = ring(i), b = ring(i + 1); tris.push([a, b, apex]); tris.push([b, a, base]); }
+  return tris;
+}
+function newMesh(tris, name, color) { const e = addEntity({ type: 'MESH', tris, name, color: color || '#c7b6a0' }); state.selection.clear(); state.selection.add(e.id); return e; }
+// Rotate3D: 선택 객체를 수직(Z)축 기준으로 회전 (평면 회전 + 메시 정점 회전, z 보존)
+function cmdRotate3D() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  rotate3d: 객체를 선택한 뒤 실행하세요.', 'warn'); return; }
+  const b = ask3('회전 중심 x,y:', '0,0'); if (!b) return;
+  const av = prompt('회전 각도 (도, 반시계 +):', '90'); if (av == null) return;
+  const deg = parseFloat(av); if (!isFinite(deg)) { logLine('  rotate3d: 각도가 올바르지 않습니다.', 'warn'); return; }
+  pushUndo();
+  const T = T_rotate(b[0], b[1], deg), a = deg * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
+  for (const e of sel) {
+    if (e.type === 'MESH') meshXform(e, (x, y, z) => { const dx = x - b[0], dy = y - b[1]; return [b[0] + dx * cs - dy * sn, b[1] + dx * sn + dy * cs, z]; });
+    else applyTransform(e, T);
+  }
+  logLine(`  ✔ Rotate3D: ${sel.length}개 · 중심(${b[0]},${b[1]}) · ${deg}°`, 'ok');
+  boolRefresh();
+}
+// Mirror3D: 수직 평면(2점으로 정의)에 대칭 — 기본은 원본 유지 + 대칭 복사
+function cmdMirror3D() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  mirror3d: 객체를 선택한 뒤 실행하세요.', 'warn'); return; }
+  const p1 = ask3('대칭축 점1 x,y:', '0,0'); if (!p1) return;
+  const p2 = ask3('대칭축 점2 x,y:', '0,1000'); if (!p2) return;
+  const keep = String(prompt('1: 대칭 복사(원본 유지)  2: 대칭 이동(원본 제거)', '1') || '1').trim() !== '2';
+  pushUndo();
+  const T = T_mirror(p1[0], p1[1], p2[0], p2[1]);
+  const targets = keep ? dupEnts(sel) : sel;
+  for (const e of targets) {
+    if (e.type === 'MESH') meshXform(e, (x, y, z) => { const q = T.pt(x, y); return [q[0], q[1], z]; }, true);
+    else applyTransform(e, T);
+  }
+  state.selection.clear(); targets.forEach(e => state.selection.add(e.id));
+  logLine(`  ✔ Mirror3D: ${targets.length}개 ${keep ? '대칭 복사' : '대칭 이동'}`, 'ok');
+  boolRefresh();
+}
+// Array3D: 직선 배열 — 개수 + 간격(dx,dy,dz)
+function cmdArray3D() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  array3d: 객체를 선택한 뒤 실행하세요.', 'warn'); return; }
+  const cv = prompt('개수 (원본 포함):', '3'); if (cv == null) return;
+  const n = parseInt(cv, 10); if (!(n >= 2)) { logLine('  array3d: 개수는 2 이상이어야 합니다.', 'warn'); return; }
+  const d = ask3('간격 dx,dy,dz (mm):', '1000,0,0'); if (!d) return;
+  pushUndo();
+  const added = [];
+  for (let k = 1; k < n; k++) { const cs = dupEnts(sel); for (const e of cs) move3DEnt(e, (d[0] || 0) * k, (d[1] || 0) * k, (d[2] || 0) * k); added.push(...cs); }
+  state.selection.clear(); [...sel, ...added].forEach(e => state.selection.add(e.id));
+  logLine(`  ✔ Array3D: ${n}개 (간격 ${d[0] || 0},${d[1] || 0},${d[2] || 0}) — 총 ${sel.length * n}개`, 'ok');
+  boolRefresh();
+}
+// Scale3D: 기준점 기준 균일 배율 (평면·높이·두께 모두 배율 적용)
+function cmdScale3D() {
+  const sel = selectedEntities();
+  if (!sel.length) { logLine('  scale3d: 객체를 선택한 뒤 실행하세요.', 'warn'); return; }
+  const b = ask3('기준점 x,y:', '0,0'); if (!b) return;
+  const bzs = prompt('기준 z (mm):', String(cplaneZ())); if (bzs == null) return;
+  const bz = parseFloat(bzs) || 0;
+  const fs = prompt('배율 (>0):', '2'); if (fs == null) return;
+  const f = parseFloat(fs); if (!(f > 0)) { logLine('  scale3d: 배율은 0보다 커야 합니다.', 'warn'); return; }
+  pushUndo();
+  for (const e of sel) {
+    if (e.type === 'MESH') { meshXform(e, (x, y, z) => [b[0] + (x - b[0]) * f, b[1] + (y - b[1]) * f, bz + (z - bz) * f]); continue; }
+    scaleEntities([e], { x: b[0], y: b[1] }, f);
+    if (e.bim) {
+      const bm = e.bim;
+      if (bm.h != null) bm.h = Math.max(1, Math.round(bm.h * f));
+      if (bm.t != null) bm.t = Math.max(0, Math.round(bm.t * f));
+      if (bm.base != null) bm.base = Math.round(bz + (bm.base - bz) * f);
+      if (bm.top != null) bm.top = Math.round(bz + (bm.top - bz) * f);
+      if (bm.sill != null) bm.sill = Math.round(bm.sill * f);
+    } else if (e.zo != null) { e.zo = Math.round(bz + ((lvElev() + e.zo) - bz) * f - lvElev()); }
+  }
+  logLine(`  ✔ Scale3D: ${sel.length}개 · 기준(${b[0]},${b[1]},${bz}) · ×${f}`, 'ok');
+  boolRefresh();
+}
+// Sphere: 구 메시 생성
+function cmdSphere() {
+  const c = ask3('구 중심 x,y:', '0,0'); if (!c) return;
+  const zs = prompt('중심 z (mm):', String(cplaneZ() + 1000)); if (zs == null) return;
+  const cz = parseFloat(zs); if (!isFinite(cz)) return;
+  const r = bimAskNum('반지름 (mm):', 1000); if (r == null) return;
+  pushUndo();
+  newMesh(meshSphere(c[0], c[1], cz, r, 24, 16), 'sphere');
+  logLine(`  ✔ Sphere: 중심(${c[0]},${c[1]},${cz}) r=${r} — 메시 생성`, 'ok');
+  boolRefresh();
+}
+// Cone: 원뿔 메시 생성
+function cmdCone() {
+  const c = ask3('원뿔 바닥 중심 x,y:', '0,0'); if (!c) return;
+  const r = bimAskNum('바닥 반지름 (mm):', 800); if (r == null) return;
+  const h = bimAskNum('높이 (mm):', 1600); if (h == null) return;
+  pushUndo();
+  newMesh(meshCone(c[0], c[1], cplaneZ(), r, h, 32), 'cone', '#c0a890');
+  logLine(`  ✔ Cone: 바닥(${c[0]},${c[1]}) r=${r} 높이 ${h} · 바닥 z=${cplaneZ()} — 메시 생성`, 'ok');
+  boolRefresh();
 }
 // ExtrudeCrv(라이노식): 곡선을 수직 돌출 — 닫힌 곡선=솔리드, 열린 곡선=두께 없는 면(서피스)
 function cmdExtrudeCrv() {
@@ -4770,7 +4892,13 @@ const INSTANT_CMDS = {
   copy3d: () => cmdMove3D(true),
   box: cmdBox,
   cylinder: cmdCylinder,
+  sphere: cmdSphere,
+  cone: cmdCone,
   settop: cmdSetTop,
+  rotate3d: cmdRotate3D,
+  mirror3d: cmdMirror3D,
+  array3d: cmdArray3D,
+  scale3d: cmdScale3D,
   union: () => cmdBoolean('union'),
   difference: () => cmdBoolean('subtract'),
   intersect3d: () => cmdBoolean('intersect'),
@@ -5009,7 +5137,12 @@ const CMD_ALIASES = {
   move3d: 'move3d', m3: 'move3d',
   copy3d: 'copy3d', c3: 'copy3d',
   box: 'box', cylinder: 'cylinder', cyl: 'cylinder',
+  sphere: 'sphere', 구: 'sphere', cone: 'cone', 원뿔: 'cone',
   settop: 'settop',
+  rotate3d: 'rotate3d', rot3: 'rotate3d', 회전3d: 'rotate3d',
+  mirror3d: 'mirror3d', mir3: 'mirror3d', 대칭3d: 'mirror3d',
+  array3d: 'array3d', ar3: 'array3d', 배열3d: 'array3d',
+  scale3d: 'scale3d', sc3: 'scale3d', 크기3d: 'scale3d',
   union: 'union', boolunion: 'union', 합집합: 'union',
   difference: 'difference', boolsub: 'difference', subtract: 'difference', 차집합: 'difference',
   intersect3d: 'intersect3d', boolint: 'intersect3d', 교집합: 'intersect3d',
@@ -6088,6 +6221,12 @@ const CMD_HELP = [
     ['copy3d', '3D 복사', '선택 후 dx,dy,dz — 복제본을 3D로 이동'],
     ['box', '상자', '모서리 2점 + 높이 — 작업면 위에 솔리드 상자'],
     ['cylinder', '원기둥', '중심·반지름·높이 — 작업면 위에 원기둥'],
+    ['sphere', '구', '중심·반지름 — 구 메시 생성 (불리언·STL 가능)'],
+    ['cone', '원뿔', '바닥 중심·반지름·높이 — 원뿔 메시 생성'],
+    ['rotate3d', '3D 회전', '선택 후 중심·각도 — 수직(Z)축 기준 회전'],
+    ['mirror3d', '3D 대칭', '선택 후 축 2점 — 대칭 복사/이동'],
+    ['array3d', '3D 배열', '선택 후 개수·간격(dx,dy,dz) — 직선 배열'],
+    ['scale3d', '3D 크기', '선택 후 기준점·배율 — 평면·높이·두께 균일 확대/축소'],
     ['stl', '3D 저장(STL)', '모든 입체를 STL 파일로 — 라이노·스케치업·3D프린터에서 열기'],
     ['obj', '3D 저장(OBJ)', '모든 입체를 OBJ 파일로 내보내기'],
     ['selectedexport', '선택 3D 저장', '선택한 객체만 STL/OBJ로 내보내기 (형식 선택)'],
@@ -6176,6 +6315,8 @@ const COMMAND_LIST = [
   { name: 'box', ko: '상자' }, { name: 'cylinder', ko: '원기둥' }, { name: 'settop', ko: '상단 정렬' },
   { name: 'stl', ko: '3D 저장 STL' }, { name: 'obj', ko: '3D 저장 OBJ' }, { name: 'selectedexport', ko: '선택 3D 저장' },
   { name: 'union', ko: '합집합' }, { name: 'difference', ko: '차집합' }, { name: 'intersect3d', ko: '교집합' },
+  { name: 'sphere', ko: '구' }, { name: 'cone', ko: '원뿔' },
+  { name: 'rotate3d', ko: '3D 회전' }, { name: 'mirror3d', ko: '3D 대칭' }, { name: 'array3d', ko: '3D 배열' }, { name: 'scale3d', ko: '3D 크기' },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -7345,7 +7486,9 @@ window.__CADTEST__ = {
   T_translate, T_rotate, T_mirror, applyTransform, translateEntity, scaleEntities, stretchEntities,
   // 파서/직렬화
   parsePointOrNumber, buildDXFText, buildSVG, loadDXF, parseDXFPairs, parseDXFEntities,
-  parseSTL, parseOBJ, loadMesh, csgOp, trisToPolys, polysToTris, cmdBoolean, runBoolean, boolFinish,
+  parseSTL, parseOBJ, loadMesh, csgOp, trisToPolys, polysToTris, cmdBoolean,
+  meshSphere, meshCone, meshXform, move3DEnt, dupEnts,
+  cmdRotate3D, cmdMirror3D, cmdArray3D, cmdScale3D, cmdSphere, cmdCone, runBoolean, boolFinish,
   get boolPending(){return boolPending;}, zTri, zRasterFaces,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
