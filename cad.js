@@ -2266,7 +2266,7 @@ function bimSolids() {
         let B1 = [bx + nx, by + ny], B2 = [bx - nx, by - ny];
         if (s0 <= 0.01) { A1 = mitO[k]; A2 = mitI[k]; }            // 세그 시작 = 마이터 코너
         if (s1 >= L - 0.01) { B1 = mitO[k2]; B2 = mitI[k2]; }      // 세그 끝 = 마이터 코너
-        solids.push({ poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id });
+        solids.push({ poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id, open: t <= 2 || glass });
       };
       let cur = 0;
       for (const c of cuts) {
@@ -2653,24 +2653,35 @@ function renderScene(isActive) {
   }
   c.restore();
   // 면 수집: 측면(모서리별 사각) + 상/하면
+  const epsW = Math.max(1, v3.fit * 0.01); // 백페이스 판정용 월드 오프셋
   for (const s of v3.solids) {
     if (s.rf && v3.roof === 'hide') continue; // 지붕 숨김 모드
     const n = s.poly.length;
     const zt = s.zt || s.poly.map(() => s.z1);
     const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
     const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
+    const cull = !s.open; // 닫힌 솔리드만 백페이스 컬링 (서피스·유리는 양면 표시)
+    let ccx = 0, ccy = 0; for (const p of s.poly) { ccx += p[0]; ccy += p[1]; } ccx /= n; ccy /= n;
+    const midz = (s.z0 + (Math.max(...zt))) / 2;
+    // 면이 카메라를 향하는가: 법선 방향으로 살짝 이동 시 깊이가 줄면(가까워지면) 정면
+    const facesCam = (wx, wy, wz, nx, ny, nz) => proj3D(wx + nx * epsW, wy + ny * epsW, wz + nz * epsW)[2] < proj3D(wx, wy, wz)[2];
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const quad = [bot[i], bot[j], top[j], top[i]];
-      // 월드 법선(수평)으로 셰이딩
       const ex = s.poly[j][0] - s.poly[i][0], ey = s.poly[j][1] - s.poly[i][1];
       const el = Math.hypot(ex, ey) || 1;
-      const nx = ey / el, ny = -ex / el; // 바깥 방향(다각형 방향에 따라 뒤집힐 수 있음 — 절대값 셰이딩)
-      const lightA = Math.abs(nx * 0.8 + ny * 0.35); // 광원 방향과의 정렬
+      let onx = ey / el, ony = -ex / el; // 바깥 방향 후보
+      const mx = (s.poly[i][0] + s.poly[j][0]) / 2, my = (s.poly[i][1] + s.poly[j][1]) / 2;
+      if ((mx - ccx) * onx + (my - ccy) * ony < 0) { onx = -onx; ony = -ony; } // 중심 반대쪽 = 바깥
+      if (cull && !facesCam(mx, my, midz, onx, ony, 0)) continue; // 안쪽 면(카메라 반대) 제외
+      const lightA = Math.abs(onx * 0.8 + ony * 0.35);
       faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf });
     }
-    faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf });
-    faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf });
+    const tcz = Math.max(...zt);
+    if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1))   // 상면 (위 향함)
+      faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf });
+    if (!cull || facesCam(ccx, ccy, s.z0, 0, 0, -1))  // 하면 (아래 향함)
+      faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf });
   }
   // 가져온 3D 메시(STL/OBJ) — 삼각형별 법선 셰이딩
   for (const e of state.entities) {
