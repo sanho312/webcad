@@ -103,6 +103,14 @@ function tests(){
 
   group('편집 — 오프셋/모깎기/모따기/자르기');
   { const e={type:'LINE',x1:0,y1:0,x2:10,y2:0}; const o=C.offsetEntity(e,5,{x:5,y:100}); pt([o.x1,o.y1],0,5,'선 오프셋 +5(위쪽)'); }
+  { // 닫힌 폴리라인 오프셋: 4모서리 모두 마이터 (정상 케이스)
+    const dia=[[0,100],[100,0],[0,-100],[-100,0]];
+    const o=C.offsetEntity({type:'LWPOLYLINE',closed:true,points:dia},10,{x:0,y:0});
+    pt(o.points[0],0,86,'닫힌 오프셋: 첫 모서리 마이터',1.5); ok(o.points.length===4&&o.closed,'닫힌 오프셋: 4점 닫힘'); }
+  { // 시작점 중복으로 닫은 폴리라인 오프셋 — 0-길이 세그먼트로 모서리 깨지던 회귀
+    const dia=[[0,100],[100,0],[0,-100],[-100,0],[0,100]];
+    const o=C.offsetEntity({type:'LWPOLYLINE',closed:true,points:dia},10,{x:0,y:0});
+    pt(o.points[0],0,86,'중복점 닫힌 오프셋: 첫 모서리 마이터',1.5); ok(o.points.length===4&&o.closed,'중복점 닫힌 오프셋: 중복 제거+닫힘 유지'); }
   { setEnts([{type:'LINE',x1:0,y1:0,x2:10,y2:0}]);
     S0.currentLayer='0';
     const l1={type:'LINE',x1:0,y1:0,x2:10,y2:0}, l2={type:'LINE',x1:10,y1:0,x2:10,y2:10};

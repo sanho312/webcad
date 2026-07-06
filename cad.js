@@ -1014,7 +1014,12 @@ function offsetEntity(e, dist, side) {
   return null; // TEXT 등은 오프셋 대상 아님
 }
 function offsetPolyline(e, dist, side) {
-  const pts = e.points, n = pts.length, closed = e.closed;
+  // 점 정리: 연속 중복점 제거 + 닫는 점(=시작점 중복) 제거 → 0-길이 세그먼트로 인한 모서리 깨짐 방지
+  let pts = [];
+  for (const p of e.points) { const q = pts[pts.length - 1]; if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6) pts.push([p[0], p[1]]); }
+  let closed = e.closed;
+  if (pts.length >= 3 && Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) <= 1e-6) { pts.pop(); closed = true; } // 시작점으로 되돌아와 닫은 경우
+  const n = pts.length;
   if (n < 2) return null;
   const segCount = closed ? n : n - 1;
   // 가장 가까운 세그먼트로 오프셋 방향(부호) 결정
@@ -1050,7 +1055,7 @@ function offsetPolyline(e, dist, side) {
     const ip = lineLineIntersect(L1.p, L1.d, L2.p, L2.d);
     out.push(ip || [L2.p[0], L2.p[1]]);
   }
-  return { ...cloneEntity(e), points: out };
+  return { ...cloneEntity(e), points: out, closed };
 }
 
 // ============================================================
