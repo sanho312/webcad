@@ -42,6 +42,14 @@
   #lobby .lbTile.primary .lbT{font-size:18px;color:#fff;}
   #lobby .lbTile.primary .lbD{color:rgba(255,255,255,0.82);}
   #lobby .lbTile.primary .lbGoArrow{margin-left:auto;font-size:22px;color:#fff;opacity:.9;}
+  /* 라이트 모드: 기본 타일이 흰 배경으로 덮이므로 primary는 옅은 파랑 배경 + 어두운 글씨로 되살림 */
+  html.light #lobby .lbTile.primary{background:linear-gradient(120deg,rgba(10,132,255,0.16),rgba(99,102,241,0.12));
+    border:0.5px solid rgba(10,132,255,0.5);box-shadow:0 10px 28px rgba(10,90,220,0.16);}
+  html.light #lobby .lbTile.primary:hover{background:linear-gradient(120deg,rgba(10,132,255,0.26),rgba(99,102,241,0.2));}
+  html.light #lobby .lbTile.primary .lbT{color:#0b1a38;}
+  html.light #lobby .lbTile.primary .lbD{color:rgba(20,40,90,0.72);}
+  html.light #lobby .lbTile.primary .lbIco{color:#0b1a38;}
+  html.light #lobby .lbTile.primary .lbGoArrow{color:var(--accent,#0A84FF);}
   #lobby .lbIco{font-size:22px;line-height:1;}
   #lobby .lbT{font-size:15px;font-weight:650;letter-spacing:-0.01em;}
   #lobby .lbD{font-size:11.5px;color:rgba(210,222,250,0.55);line-height:1.4;}
