@@ -2518,22 +2518,38 @@ function markInteract() {
   clearTimeout(v3._settle);
   v3._settle = setTimeout(() => { v3.fast = false; render3D(); }, 140);
 }
+// 스캔라인 래스터: 각 행에서 삼각형과 교차하는 x-구간만 순회 (bbox 낭비 제거 → 얇은 삼각형에서 특히 빠름)
 function zTri(data, zb, W, H, ox, oy, A, B, C, r, g, b) {
   const ax = A[0]-ox, ay = A[1]-oy, bx = B[0]-ox, by = B[1]-oy, cx = C[0]-ox, cy = C[1]-oy;
   const area = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
   if (Math.abs(area) < 1e-9) return;
-  const minX = Math.max(0, Math.floor(Math.min(ax,bx,cx))), maxX = Math.min(W-1, Math.ceil(Math.max(ax,bx,cx)));
-  const minY = Math.max(0, Math.floor(Math.min(ay,by,cy))), maxY = Math.min(H-1, Math.ceil(Math.max(ay,by,cy)));
   const ia = 1/area;
+  const minY = Math.max(0, Math.floor(Math.min(ay,by,cy)));
+  const maxY = Math.min(H-1, Math.ceil(Math.max(ay,by,cy)));
+  const E = [[ax,ay],[bx,by],[cx,cy]];
   for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      const px = x+0.5, py = y+0.5;
+    const py = y + 0.5;
+    // 세 모서리와 수평선 py의 교차 x 수집
+    let lo = Infinity, hi = -Infinity;
+    for (let e = 0; e < 3; e++) {
+      const p1 = E[e], p2 = E[(e+1)%3];
+      const y1 = p1[1], y2 = p2[1];
+      if ((py >= y1 && py < y2) || (py >= y2 && py < y1)) {
+        const x = p1[0] + (p2[0]-p1[0]) * (py - y1) / (y2 - y1);
+        if (x < lo) lo = x; if (x > hi) hi = x;
+      }
+    }
+    if (lo > hi) continue;
+    let xs = Math.max(0, Math.floor(lo)), xe = Math.min(W-1, Math.ceil(hi));
+    const rowBase = y*W;
+    for (let x = xs; x <= xe; x++) {
+      const px = x + 0.5;
       const w0 = ((by-cy)*(px-cx) + (cx-bx)*(py-cy)) * ia;
       const w1 = ((cy-ay)*(px-cx) + (ax-cx)*(py-cy)) * ia;
       const w2 = 1 - w0 - w1;
       if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) continue;
       const z = w0*A[2] + w1*B[2] + w2*C[2];
-      const idx = y*W + x;
+      const idx = rowBase + x;
       if (z < zb[idx]) { zb[idx] = z; const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
     }
   }
@@ -2561,18 +2577,22 @@ function zRasterFaces(c, faces, vp, light) {
   zb.fill(Infinity);
   const opaque = [], overlay = [];
   for (const f of faces) { (f.glass || (f.rf && v3.roof === 'ghost')) ? overlay.push(f) : opaque.push(f); }
-  // 불투명 면: 채우기(깊이 기록)
+  // 불투명 면: 채우기(깊이 기록). 화면 밖으로 완전히 벗어난 면은 건너뜀
   for (const f of opaque) {
+    const P = f.pts;
+    let pminX = Infinity, pmaxX = -Infinity, pminY = Infinity, pmaxY = -Infinity;
+    for (const p of P) { const sx = p[0]-ox, sy = p[1]-oy; if (sx<pminX) pminX=sx; if (sx>pmaxX) pmaxX=sx; if (sy<pminY) pminY=sy; if (sy>pmaxY) pmaxY=sy; }
+    if (pmaxX < 0 || pminX > W || pmaxY < 0 || pminY > H) continue; // 뷰포트 밖
     const isSel = f.eid != null && state.selection.has(f.eid);
     const [r, g, b] = rgbTriplet(isSel ? shadeColor('#0A84FF', 0.6 + 0.4*f.shade) : shadeColor(f.color, f.shade));
-    f._r = r; f._g = g; f._b = b; f._sel = isSel;
-    const P = f.pts;
+    f._r = r; f._g = g; f._b = b; f._sel = isSel; f._vis = true;
     for (let i = 1; i+1 < P.length; i++) zTri(data, zb, W, H, ox, oy, P[0], P[i], P[i+1], r, g, b);
   }
   // 모서리: 깊이 테스트로 가려진 에지는 숨김
   const eps = Math.max(1, v3.fit * 0.008);
   const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
   for (const f of opaque) {
+    if (!f._vis) continue; // 화면 밖 면의 모서리는 생략
     const P = f.pts, sel = f._sel;
     const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
     for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
