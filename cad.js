@@ -2485,6 +2485,17 @@ function render3D() {
   }
   loadVp(v3.act); v3.vp = vpRect(v3.act);
   v3.faces = v3.views[v3.act]._faces; v3.under = v3.views[v3.act]._under;
+  if (v3.boxRect) { // 선택 박스 러버밴드 (드래그 중)
+    const b = v3.boxRect, crossing = b.x1 < b.x0;
+    c.save();
+    c.strokeStyle = crossing ? '#30d158' : '#0A84FF';
+    c.fillStyle = crossing ? 'rgba(48,209,88,.08)' : 'rgba(10,132,255,.08)';
+    c.setLineDash(crossing ? [5, 4] : []); c.lineWidth = 1.5;
+    const rx = Math.min(b.x0, b.x1), ry = Math.min(b.y0, b.y1);
+    c.fillRect(rx, ry, Math.abs(b.x1 - b.x0), Math.abs(b.y1 - b.y0));
+    c.strokeRect(rx, ry, Math.abs(b.x1 - b.x0), Math.abs(b.y1 - b.y0));
+    c.restore();
+  }
   const qb = document.getElementById('vwQuad');
   if (qb) { qb.style.background = v3.quad ? 'var(--accent)' : 'transparent'; qb.style.color = v3.quad ? '#fff' : ''; }
   if (window.__BIM3D_DEBUG) {
@@ -2511,12 +2522,11 @@ function paintFaces(c, faces, light) {
     c.lineWidth = isSel ? 2 : 1; c.stroke(); c.globalAlpha = 1;
   }
 }
-// 조작 감지: 움직이는 동안 빠른 모드, 멈추면(140ms) 정확한 Z-버퍼로 한 번 더 렌더
+// 조작 중 렌더 코얼레싱 — 프레임당 최대 1회만 render3D (과도한 렌더로 인한 렉 방지)
 function markInteract() {
-  if (!v3) return;
-  v3.fast = true;
-  clearTimeout(v3._settle);
-  v3._settle = setTimeout(() => { v3.fast = false; render3D(); }, 140);
+  if (!v3 || v3._rafPending) return;
+  v3._rafPending = true;
+  requestAnimationFrame(() => { v3._rafPending = false; render3D(); });
 }
 // 스캔라인 래스터: 각 행에서 삼각형과 교차하는 x-구간만 순회 (bbox 낭비 제거 → 얇은 삼각형에서 특히 빠름)
 function zTri(data, zb, W, H, ox, oy, A, B, C, r, g, b) {
@@ -2570,34 +2580,37 @@ function rgbTriplet(hexOrRgb) {
   return [parseInt(hexOrRgb.slice(1,3),16), parseInt(hexOrRgb.slice(3,5),16), parseInt(hexOrRgb.slice(5,7),16)];
 }
 function zRasterFaces(c, faces, vp, light) {
-  const W = vp.w|0, H = vp.h|0, ox = vp.x|0, oy = vp.y|0;
-  if (W <= 0 || H <= 0 || !faces.length) return;
-  const img = c.getImageData(ox, oy, W, H), data = img.data;
-  const zb = (v3._zb && v3._zb.length === W*H) ? v3._zb : (v3._zb = new Float32Array(W*H));
-  zb.fill(Infinity);
   const opaque = [], overlay = [];
   for (const f of faces) { (f.glass || (f.rf && v3.roof === 'ghost')) ? overlay.push(f) : opaque.push(f); }
-  // 불투명 면: 채우기(깊이 기록). 화면 밖으로 완전히 벗어난 면은 건너뜀
-  for (const f of opaque) {
-    const P = f.pts;
-    let pminX = Infinity, pmaxX = -Infinity, pminY = Infinity, pmaxY = -Infinity;
-    for (const p of P) { const sx = p[0]-ox, sy = p[1]-oy; if (sx<pminX) pminX=sx; if (sx>pmaxX) pmaxX=sx; if (sy<pminY) pminY=sy; if (sy>pmaxY) pmaxY=sy; }
-    if (pmaxX < 0 || pminX > W || pmaxY < 0 || pminY > H) continue; // 뷰포트 밖
-    const isSel = f.eid != null && state.selection.has(f.eid);
-    const [r, g, b] = rgbTriplet(isSel ? shadeColor('#0A84FF', 0.6 + 0.4*f.shade) : shadeColor(f.color, f.shade));
-    f._r = r; f._g = g; f._b = b; f._sel = isSel; f._vis = true;
-    for (let i = 1; i+1 < P.length; i++) zTri(data, zb, W, H, ox, oy, P[0], P[i], P[i+1], r, g, b);
+  // 불투명 면들의 실제 화면 영역만 처리 (부분 화면 모델에서 크게 빠름)
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const f of opaque) for (const p of f.pts) { if (p[0] < bx0) bx0 = p[0]; if (p[0] > bx1) bx1 = p[0]; if (p[1] < by0) by0 = p[1]; if (p[1] > by1) by1 = p[1]; }
+  const ox = Math.max(vp.x, Math.floor(bx0)) | 0, oy = Math.max(vp.y, Math.floor(by0)) | 0;
+  const ex = Math.min(vp.x + vp.w, Math.ceil(bx1)) | 0, ey = Math.min(vp.y + vp.h, Math.ceil(by1)) | 0;
+  const W = ex - ox, H = ey - oy;
+  if (W > 0 && H > 0 && opaque.length) {
+    const img = c.getImageData(ox, oy, W, H), data = img.data;
+    const zb = (v3._zb && v3._zb.length === W*H) ? v3._zb : (v3._zb = new Float32Array(W*H));
+    zb.fill(Infinity);
+    const cache = v3._rgbCache || (v3._rgbCache = new Map()); // 색상(색+명암) 캐시 — 매 면 정규식 회피
+    for (const f of opaque) {
+      const isSel = f.eid != null && state.selection.has(f.eid);
+      const key = (isSel ? 'S' : f.color) + '|' + Math.round(f.shade * 24);
+      let rgb = cache.get(key);
+      if (!rgb) { rgb = rgbTriplet(isSel ? shadeColor('#0A84FF', 0.6 + 0.4*f.shade) : shadeColor(f.color, f.shade)); cache.set(key, rgb); }
+      f._r = rgb[0]; f._g = rgb[1]; f._b = rgb[2]; f._sel = isSel; f._vis = true;
+      const P = f.pts;
+      for (let i = 1; i+1 < P.length; i++) zTri(data, zb, W, H, ox, oy, P[0], P[i], P[i+1], rgb[0], rgb[1], rgb[2]);
+    }
+    const eps = Math.max(1, v3.fit * 0.008);
+    const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
+    for (const f of opaque) {
+      const P = f.pts, sel = f._sel;
+      const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
+      for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+    }
+    c.putImageData(img, ox, oy);
   }
-  // 모서리: 깊이 테스트로 가려진 에지는 숨김
-  const eps = Math.max(1, v3.fit * 0.008);
-  const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
-  for (const f of opaque) {
-    if (!f._vis) continue; // 화면 밖 면의 모서리는 생략
-    const P = f.pts, sel = f._sel;
-    const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
-    for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
-  }
-  c.putImageData(img, ox, oy);
   // 반투명(유리·지붕 고스트): 합성 위에 알파로
   overlay.sort((a, b) => b.d - a.d);
   for (const f of overlay) {
@@ -2698,8 +2711,7 @@ function renderScene(isActive) {
     }
   }
   const light = document.documentElement.classList.contains('light');
-  if (v3.fast) paintFaces(c, faces, light);            // 조작 중: 빠른 painter (즉각 반응)
-  else zRasterFaces(c, faces, v3.vp, light);           // 멈춤: 정확한 Z-버퍼 은면 제거
+  zRasterFaces(c, faces, v3.vp, light);                // 항상 정확한 Z-버퍼 은면 제거 (회전·호버·정지 모두)
   // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (활성 뷰에서만, 거의 수직 뷰에서는 숨김)
   if (isActive && state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
     const sid = [...state.selection][0];
@@ -2994,8 +3006,8 @@ function bind3D(ov, cv3) {
         const snapKey = v3.snapHit ? (v3.snapHit.x + ',' + v3.snapHit.y + ',' + v3.snapHit.z) : '';
         if (!drawing && snapKey === v3._lastSnapKey) return; // 단순 호버·스냅 변화 없음 → 재렌더 생략(정확 모드 호버 렉 방지)
         v3._lastSnapKey = snapKey;
-        if (drawing) markInteract();  // 작도 중이면 빠른 모드(가선 부드럽게), 단순 호버는 정확 은면
-        render3D();
+        if (drawing) markInteract();  // 작도 중 = rAF 코얼레싱(가선 부드럽게)
+        else render3D();              // 단순 호버·스냅 변화 = 즉시 정확 렌더(마커)
       }
       return;
     }
@@ -3011,7 +3023,7 @@ function bind3D(ov, cv3) {
         if (!drag.pushed) { pushUndo(); drag.pushed = true; }
         gumMove(drag.ent, drag.ax, delta);
         drag.applied = want;
-        v3.solids = bimSolids(); render3D();
+        v3.solids = bimSolids(); markInteract();
       }
       return;
     }
@@ -3022,7 +3034,7 @@ function bind3D(ov, cv3) {
       if (nh !== drag.ent.bim.h) {
         if (!drag.pushed) { pushUndo(); drag.pushed = true; } // 드래그 1회 = undo 1단계
         drag.ent.bim.h = nh;
-        v3.solids = bimSolids(); render3D();
+        v3.solids = bimSolids(); markInteract();
       }
       return;
     }
@@ -3030,19 +3042,10 @@ function bind3D(ov, cv3) {
     drag.moved += Math.abs(dx) + Math.abs(dy);
     drag.x = e.clientX; drag.y = e.clientY;
     if (drag.mode === 'wallpt') return;
-    if (drag.mode === 'box') { // 선택 박스 러버밴드
+    if (drag.mode === 'box') { // 선택 박스 러버밴드 (렌더 안에서 그림)
       drag.bx1 += dx * drag.kx; drag.by1 += dy * drag.ky;
-      render3D();
-      const c = v3.ctx, crossing = drag.bx1 < drag.bx0;
-      c.save();
-      c.strokeStyle = crossing ? '#30d158' : '#0A84FF';
-      c.fillStyle = crossing ? 'rgba(48,209,88,.08)' : 'rgba(10,132,255,.08)';
-      c.setLineDash(crossing ? [5, 4] : []);
-      c.lineWidth = 1.5;
-      const rx = Math.min(drag.bx0, drag.bx1), ry = Math.min(drag.by0, drag.by1);
-      c.fillRect(rx, ry, Math.abs(drag.bx1 - drag.bx0), Math.abs(drag.by1 - drag.by0));
-      c.strokeRect(rx, ry, Math.abs(drag.bx1 - drag.bx0), Math.abs(drag.by1 - drag.by0));
-      c.restore();
+      v3.boxRect = { x0: drag.bx0, y0: drag.by0, x1: drag.bx1, y1: drag.by1 };
+      markInteract();
       return;
     }
     if (drag.mode === 'orbit') {
@@ -3053,9 +3056,10 @@ function bind3D(ov, cv3) {
       v3.panX += dx * (devicePixelRatio || 1) / k;
       v3.panY -= dy * (devicePixelRatio || 1) / k;
     }
-    render3D();
+    markInteract();
   });
   const end = (e) => {
+    if (v3.boxRect) v3.boxRect = null; // 러버밴드 상태 해제 (최종 렌더에서 사라짐)
     if (drag && drag.mode === 'gum') {
       if (drag.moved < 4 && e && e.type === 'pointerup') { // 축 클릭 = 수치 입력 (라이노식)
         const v = parseFloat(prompt(`${drag.ax.name.toUpperCase()}축 이동 거리 (mm, +방향/-방향):`, '0'));
@@ -3094,7 +3098,6 @@ function bind3D(ov, cv3) {
     }
     // 델타 크기에 비례한 부드러운 줌 (한 칸 ≈ ×1.06)
     v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * Math.pow(1.06, -(e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY) / 100)));
-    render3D();
   }, { passive: false });
   // 더블클릭: 사분할 ↔ 해당 뷰 최대화 (라이노식)
   cv3.addEventListener('dblclick', (e) => {
@@ -3112,7 +3115,7 @@ function bind3D(ov, cv3) {
   cv3.addEventListener('touchmove', (e) => {
     if (pinch && e.touches.length === 2) {
       const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; markInteract(); render3D();
+      v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; markInteract();
     }
   }, { passive: true });
   const setWallMode = (on) => {
