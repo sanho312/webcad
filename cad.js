@@ -2972,7 +2972,6 @@ function bind3D(ov, cv3) {
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
-    markInteract(); // 조작 중 빠른 렌더 → 멈추면 정확 렌더
     if (!drag && (v3.wallMode || state.tool !== 'select' || osnapEnabled)) { // 작도 가선 + 스냅 마커 (선택 도구에서도 마커 표시)
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
@@ -2991,11 +2990,17 @@ function bind3D(ov, cv3) {
         updateDraft();
         const co = document.getElementById('coords');
         if (co) co.textContent = `X: ${cur.x.toFixed(2)}  Y: ${cur.y.toFixed(2)}  Z: ${cur.z != null ? cur.z : cplaneZ()}`;
+        const drawing = draft || pts.length || (v3.wallMode && v3.wallP1) || v3.line3d;
+        const snapKey = v3.snapHit ? (v3.snapHit.x + ',' + v3.snapHit.y + ',' + v3.snapHit.z) : '';
+        if (!drawing && snapKey === v3._lastSnapKey) return; // 단순 호버·스냅 변화 없음 → 재렌더 생략(정확 모드 호버 렉 방지)
+        v3._lastSnapKey = snapKey;
+        if (drawing) markInteract();  // 작도 중이면 빠른 모드(가선 부드럽게), 단순 호버는 정확 은면
         render3D();
       }
       return;
     }
     if (!drag) { if (v3.snapHit) { v3.snapHit = null; render3D(); } return; }
+    markInteract(); // 실제 드래그(회전·이동·검볼·박스) 중 빠른 렌더 → 멈추면 정확 렌더
     if (drag.mode === 'gum') {
       const dxc = (e.clientX - drag.x0) * drag.kx, dyc = (e.clientY - drag.y0) * drag.ky;
       drag.moved = Math.max(drag.moved, Math.abs(dxc) + Math.abs(dyc));
