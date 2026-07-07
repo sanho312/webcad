@@ -1280,8 +1280,26 @@ function filletArcPts(apex, far1, far2, radius) {
   for (let k = 0; k <= steps; k++) { const a = a1 + da * k / steps; arc.push([cen[0] + effR * Math.cos(a), cen[1] + effR * Math.sin(a)]); }
   return arc; // arc[0]≈t1, arc[끝]≈t2
 }
-// 폴리라인의 두 변을 모깎기 — 인접(꼭짓점 공유)이든 아니든 지원. 비인접이면 두 변의 직선 교점까지 연장/트림 후 사이 정점 제거
+// 결과 점들이 원래 형태의 경계상자를 크게 벗어나면(뒤집힘/스파이크) true
+function filletFlipped(orig, now) {
+  if (!orig.length) return false;
+  let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+  for (const p of orig) { if (p[0] < bx0) bx0 = p[0]; if (p[0] > bx1) bx1 = p[0]; if (p[1] < by0) by0 = p[1]; if (p[1] > by1) by1 = p[1]; }
+  const mx = (bx1 - bx0) * 0.3 + 1, my = (by1 - by0) * 0.3 + 1;
+  return now.some(p => p[0] < bx0 - mx || p[0] > bx1 + mx || p[1] < by0 - my || p[1] > by1 + my);
+}
+// 폴리라인 두 변 모깎기 래퍼 — 결과가 형태를 크게 뒤집으면 되돌림(인접·비인접 무관 안전장치)
 function filletPolyCorner(e, segA, segB, radius) {
+  const orig = e.points.map(p => p.slice()), origClosed = e.closed;
+  const ok = filletPolyCore(e, segA, segB, radius);
+  if (ok && filletFlipped(orig, e.points)) {
+    e.points = orig; e.closed = origClosed;
+    logLine('  모깎기: 결과가 원래 형태를 크게 벗어나(뒤집힘) 취소했습니다. 한 꼭짓점에서 만나는(붙어 있는) 두 변을 선택하세요.', 'warn');
+    return false;
+  }
+  return ok;
+}
+function filletPolyCore(e, segA, segB, radius) {
   const P = e.points, n = P.length;
   if (segA === segB) { logLine('  모깎기: 서로 다른 두 변을 클릭하세요.', 'warn'); return false; }
   // radius=0 이면 뾰족한 코너(연장/트림), radius>0 이면 둥근 모깎기 — 둘 다 허용(오토캐드식)
