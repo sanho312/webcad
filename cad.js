@@ -1896,12 +1896,14 @@ function clickFillet(w, rawW) {
     logLine(`  ▷ 첫 번째 변 선택됨 — 두 번째 변을 클릭 (반지름 R=${filletRadius})`, 'info');
     return;
   }
-  // 두 번째 변 — 반지름 확보(0이면 라이노/오토캐드처럼 물어봄) 후 적용
+  // 두 번째 변 — 반지름이 0이면 팝업 없이 명령창으로 유도(오토캐드식: r 또는 숫자 입력)
   let R = filletRadius;
   if (R <= 0) {
-    const v = prompt('모깎기 반지름 (mm)  —  0 = 직각(연장) 코너:', '100');
-    if (v === null) { cmdOp = null; setTool('select'); return; } // 취소
-    R = Math.max(0, parseFloat(v) || 0); filletRadius = R;
+    logLine('  모깎기: 반지름이 0입니다. 명령창에 r 을 입력해 반지름 조정 모드로 가거나, 숫자를 바로 입력해 반지름을 정한 뒤 두 변을 다시 클릭하세요.', 'warn');
+    setPrompt('모깎기 반지름을 먼저 설정: 명령창에 r(반지름 모드) 또는 숫자 입력 → 두 변 클릭');
+    cmdOp = { name: 'fillet', step: 'l1', l1: null }; // 처음부터 다시 선택
+    state.selection.clear(); renderProps();
+    return;
   }
   const done = (okDone) => {
     if (okDone) logLine(`  ✔ 모깎기 R=${R} 완료`, 'ok');
@@ -5351,13 +5353,24 @@ function runCommandInput(raw) {
   }
   // 진행 중 작도 도구의 좌표/치수 입력을 우선 처리
   if (feedDrawInput(v)) return;
+  // 모깎기/모따기 'r'(반지름) 옵션 — 오토캐드식: r 입력 → 반지름 조정 모드, 이어서 숫자 입력
+  if (state.tool === 'fillet' && (v === 'r' || v === 'radius' || v === '반지름')) {
+    setPrompt(`모깎기 반지름 조정: 값을 입력하고 Enter (현재 R=${filletRadius})`);
+    logLine(`  ▷ 반지름 조정 모드 — 숫자를 입력하세요 (현재 R=${filletRadius})`, 'info');
+    return;
+  }
+  if (state.tool === 'chamfer' && (v === 'd' || v === 'r' || v === '거리')) {
+    setPrompt(`모따기 거리 조정: 값을 입력하고 Enter (현재 ${chamferDist})`);
+    logLine(`  ▷ 거리 조정 모드 — 숫자를 입력하세요 (현재 ${chamferDist})`, 'info');
+    return;
+  }
   // 숫자 입력 → 진행 중 명령의 수치 인자
   const num = parseFloat(v);
   if (!isNaN(num) && /^-?[\d.]+$/.test(v)) {
     if (typeof v3 !== 'undefined' && v3 && v3.extrude) { extrudeSetH(num); logLine(`  돌출 높이 = ${v3.extrude.h}mm`, 'info'); extrudeConfirm(); return; } // 돌출: 수치 확정
     if (state.tool === 'offset') { offsetDist = Math.abs(num) || offsetDist; setPrompt(`오프셋: 도형을 선택하세요. (거리 ${offsetDist})`); logLine(`  오프셋 거리 = ${offsetDist}`, 'info'); return; }
     if (state.tool === 'rotate' && cmdOp && cmdOp.step === 'angle') { logLine(`  회전 각도 = ${num}°`, 'info'); applyRotate(num); return; }
-    if (state.tool === 'fillet') { filletRadius = Math.abs(num); setPrompt(`모깎기: 반지름 ${filletRadius}. 첫 번째 선을 클릭하세요.`); logLine(`  모깎기 반지름 = ${filletRadius}`, 'info'); return; }
+    if (state.tool === 'fillet') { filletRadius = Math.abs(num); setPrompt(`모깎기 R=${filletRadius} — 두 변(선·폴리라인)을 차례로 클릭하세요. (반지름 변경: r 또는 숫자)`); logLine(`  ✔ 모깎기 반지름 = ${filletRadius}`, 'ok'); return; }
     if (state.tool === 'chamfer') { chamferDist = Math.abs(num); setPrompt(`모따기: 거리 ${chamferDist}. 첫 번째 선을 클릭하세요.`); logLine(`  모따기 거리 = ${chamferDist}`, 'info'); return; }
     if (state.tool === 'lengthen') { lengthenDelta = num; setPrompt(`길이조정: ${num > 0 ? '+' : ''}${num}. 조정할 선의 끝쪽을 클릭하세요.`); logLine(`  증감 길이 = ${num > 0 ? '+' : ''}${num}`, 'info'); return; }
     if (state.tool === 'hatch') { hatchSpacing = Math.abs(num) || hatchSpacing; setPrompt(`해치: 간격 ${hatchSpacing}. 원/닫힌 폴리라인을 클릭하세요.`); logLine(`  해치 간격 = ${hatchSpacing}`, 'info'); return; }
@@ -5686,7 +5699,7 @@ function setTool(t) {
     array: '배열: 도형을 선택하면 배열 설정 창이 열립니다.',
     trim: '자르기: 기준 객체들을 클릭하고 Space로 확정 → 걸치는 부분 클릭. (기준 없이 바로 Space=빠른 모드)',
     extend: '연장: 늘릴 선의 끝쪽을 클릭하면 가장 가까운 경계까지 연장됩니다.',
-    fillet: `모깎기 R=${filletRadius} — 반지름을 숫자로 입력(Enter) 후 두 변(선·폴리라인)을 차례로 클릭. R=0이면 클릭 시 반지름을 물어봅니다.`,
+    fillet: `모깎기 R=${filletRadius} — 명령창에 r(반지름 조정) 또는 숫자 입력으로 반지름 설정 후, 두 변(선·폴리라인)을 차례로 클릭.`,
     scale: '배율: 도형을 선택하고 기준점 → 배율(숫자) 또는 참조 두 점을 지정하세요.',
     stretch: '신축: 걸침 영역의 두 모서리를 클릭하고, 기준점 → 이동점을 지정하세요.',
     polygon: `다각형: 변 개수(숫자, 현재 ${polygonSides}) 입력 → 중심 → 반지름/꼭짓점.`,
