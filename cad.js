@@ -1868,30 +1868,44 @@ function clickExtend(w, rawW) {
 }
 
 // ====== FILLET (모깎기) ======
+// 폴리라인 중복 정점 정리(모양 불변) — 필렛 세그먼트 판정 안정화
+function dedupePoly(e) {
+  if (e.type !== 'LWPOLYLINE' || !e.points) return;
+  const out = [];
+  for (const p of e.points) { const q = out[out.length - 1]; if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6) out.push([p[0], p[1]]); }
+  if (out.length >= 3 && Math.hypot(out[0][0] - out[out.length - 1][0], out[0][1] - out[out.length - 1][1]) <= 1e-6) { out.pop(); e.closed = true; }
+  if (out.length !== e.points.length) e.points = out;
+}
 function clickFillet(w, rawW) {
   if (!cmdOp || cmdOp.name !== 'fillet') cmdOp = { name: 'fillet', step: 'l1', l1: null };
   const hit = pick(w, rawW);
-  if (!hit || (hit.type !== 'LINE' && hit.type !== 'LWPOLYLINE')) { logLine('  모깎기: 두 선, 또는 폴리라인의 이웃한 두 변을 클릭하세요.', 'warn'); return; }
+  if (!hit || (hit.type !== 'LINE' && hit.type !== 'LWPOLYLINE')) { logLine('  모깎기: 선 또는 폴리라인의 변을 클릭하세요. (선택 도구 아님 — [모깎기] 활성 상태여야 함)', 'warn'); return; }
+  if (hit.type === 'LWPOLYLINE') dedupePoly(hit);
   const seg = hit.type === 'LWPOLYLINE' ? nearestPolySeg(hit, w) : null;
-  if (cmdOp.step === 'l1') {
+  if (cmdOp.step === 'l1') { // 첫 번째 변
     cmdOp.l1 = hit; cmdOp.seg1 = seg; cmdOp.step = 'l2';
     state.selection.clear(); state.selection.add(hit.id); renderProps();
-    setPrompt('모깎기: 두 번째 변을 클릭하세요.');
+    setPrompt(`모깎기 R=${filletRadius}: 두 번째 변을 클릭하세요. (반지름 변경: 숫자 입력 후 Enter)`);
+    logLine(`  ▷ 첫 번째 변 선택됨 — 두 번째 변을 클릭 (반지름 R=${filletRadius})`, 'info');
     return;
   }
-  const done = () => { cmdOp = null; updateStat(); renderProps(); setTool('select'); };
-  if (hit.type === 'LWPOLYLINE' && cmdOp.l1 === hit) { // 같은 폴리라인의 이웃 두 변 → 모서리 둥글게
-    pushUndo();
-    if (filletPolyCorner(hit, cmdOp.seg1, seg, filletRadius)) logLine(`  ✔ 모깎기 R=${filletRadius}`, 'ok');
-    done(); return;
+  // 두 번째 변 — 반지름 확보(0이면 라이노/오토캐드처럼 물어봄) 후 적용
+  let R = filletRadius;
+  if (R <= 0) {
+    const v = prompt('모깎기 반지름 (mm)  —  0 = 직각(연장) 코너:', '100');
+    if (v === null) { cmdOp = null; setTool('select'); return; } // 취소
+    R = Math.max(0, parseFloat(v) || 0); filletRadius = R;
   }
-  if (hit.type === 'LINE' && cmdOp.l1.type === 'LINE') { // 두 개의 선
-    if (hit === cmdOp.l1) return;
-    pushUndo();
-    if (doFillet(cmdOp.l1, hit, filletRadius)) logLine(`  ✔ 모깎기 R=${filletRadius}`, 'ok');
-    done(); return;
-  }
-  logLine('  모깎기: 같은 폴리라인의 이웃한 두 변, 또는 두 개의 선을 선택하세요.', 'warn'); // 선+폴리라인 혼합 등
+  const done = (okDone) => {
+    if (okDone) logLine(`  ✔ 모깎기 R=${R} 완료`, 'ok');
+    cmdOp = null; updateStat(); renderProps();
+    const ov = document.getElementById('bim3d');
+    if (ov && ov.style.display !== 'none' && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); } // 3D 뷰 즉시 갱신
+    setTool('select');
+  };
+  if (hit.type === 'LWPOLYLINE' && cmdOp.l1 === hit) { pushUndo(); done(filletPolyCorner(hit, cmdOp.seg1, seg, R)); return; } // 같은 폴리라인의 두 변
+  if (hit.type === 'LINE' && cmdOp.l1.type === 'LINE') { if (hit === cmdOp.l1) return; pushUndo(); done(doFillet(cmdOp.l1, hit, R)); return; } // 두 개의 선
+  logLine('  모깎기: 같은 폴리라인의 두 변, 또는 두 개의 선을 선택하세요. (선↔폴리라인 혼합은 아직 미지원)', 'warn');
 }
 
 // ====== SCALE (배율) ======
@@ -5665,7 +5679,7 @@ function setTool(t) {
     array: '배열: 도형을 선택하면 배열 설정 창이 열립니다.',
     trim: '자르기: 기준 객체들을 클릭하고 Space로 확정 → 걸치는 부분 클릭. (기준 없이 바로 Space=빠른 모드)',
     extend: '연장: 늘릴 선의 끝쪽을 클릭하면 가장 가까운 경계까지 연장됩니다.',
-    fillet: `모깎기: 반지름 ${filletRadius}. 첫 번째 선 → 두 번째 선을 클릭하세요. (숫자로 반지름 변경)`,
+    fillet: `모깎기 R=${filletRadius} — 반지름을 숫자로 입력(Enter) 후 두 변(선·폴리라인)을 차례로 클릭. R=0이면 클릭 시 반지름을 물어봅니다.`,
     scale: '배율: 도형을 선택하고 기준점 → 배율(숫자) 또는 참조 두 점을 지정하세요.',
     stretch: '신축: 걸침 영역의 두 모서리를 클릭하고, 기준점 → 이동점을 지정하세요.',
     polygon: `다각형: 변 개수(숫자, 현재 ${polygonSides}) 입력 → 중심 → 반지름/꼭짓점.`,
