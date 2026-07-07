@@ -1244,6 +1244,51 @@ function doFillet(line1, line2, radius) {
   addEntity({ type: 'ARC', layer: state.currentLayer, cx: cen[0], cy: cen[1], r: radius, startAngle: sa, endAngle: ea });
   return true;
 }
+// 폴리라인에서 클릭 지점에 가장 가까운 변(세그먼트) 인덱스 — 세그먼트 i는 points[i]~points[(i+1)%n]
+function nearestPolySeg(e, w) {
+  const pts = e.points, n = pts.length, segCount = e.closed ? n : n - 1;
+  let best = Infinity, bi = 0;
+  for (let i = 0; i < segCount; i++) {
+    const a = pts[i], b = pts[(i + 1) % n];
+    const d = distToSeg(w.x, w.y, a[0], a[1], b[0], b[1]);
+    if (d < best) { best = d; bi = i; }
+  }
+  return bi;
+}
+// 폴리라인의 이웃한 두 변이 공유하는 꼭짓점을 반지름 radius로 둥글게 (직선 세그먼트로 테셀레이션 — 하나의 폴리라인 유지)
+function filletPolyCorner(e, segA, segB, radius) {
+  const pts = e.points, n = pts.length;
+  if (segA === segB) { logLine('  모깎기: 서로 다른 두 변을 클릭하세요.', 'warn'); return false; }
+  const setA = new Set([segA, (segA + 1) % n]);
+  const shared = [segB, (segB + 1) % n].filter(v => setA.has(v));
+  if (shared.length !== 1) { logLine('  모깎기: 한 꼭짓점을 공유하는 이웃한 두 변을 선택하세요.', 'warn'); return false; }
+  const vi = shared[0], prevIdx = (vi - 1 + n) % n, nextIdx = (vi + 1) % n;
+  const V = pts[vi], Pp = pts[prevIdx], Pn = pts[nextIdx];
+  let u1 = [Pp[0] - V[0], Pp[1] - V[1]], l1 = Math.hypot(u1[0], u1[1]);
+  let u2 = [Pn[0] - V[0], Pn[1] - V[1]], l2 = Math.hypot(u2[0], u2[1]);
+  if (l1 < 1e-6 || l2 < 1e-6) { logLine('  모깎기할 수 없는 꼭짓점입니다.', 'warn'); return false; }
+  u1 = [u1[0] / l1, u1[1] / l1]; u2 = [u2[0] / l2, u2[1] / l2];
+  const dot = Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1]));
+  const theta = Math.acos(dot);
+  if (theta < 1e-4 || Math.abs(theta - Math.PI) < 1e-4) { logLine('  두 변이 일직선이라 모깎기할 수 없습니다.', 'warn'); return false; }
+  if (radius <= 0) { logLine('  모깎기 반지름을 입력하세요 (명령창에 숫자 입력).', 'warn'); return false; }
+  let tanDist = radius / Math.tan(theta / 2);
+  const maxT = Math.min(l1, l2) * 0.999;
+  if (tanDist > maxT) tanDist = maxT; // 변 길이를 넘지 않게 클램프
+  const effR = tanDist * Math.tan(theta / 2);
+  const t1 = [V[0] + u1[0] * tanDist, V[1] + u1[1] * tanDist];
+  const t2 = [V[0] + u2[0] * tanDist, V[1] + u2[1] * tanDist];
+  let bis = [u1[0] + u2[0], u1[1] + u2[1]]; const bl = Math.hypot(bis[0], bis[1]) || 1; bis = [bis[0] / bl, bis[1] / bl];
+  const cen = [V[0] + bis[0] * effR / Math.sin(theta / 2), V[1] + bis[1] * effR / Math.sin(theta / 2)];
+  const a1 = Math.atan2(t1[1] - cen[1], t1[0] - cen[0]);
+  const a2 = Math.atan2(t2[1] - cen[1], t2[0] - cen[0]);
+  let da = a2 - a1; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+  const steps = Math.max(2, Math.round(Math.abs(da) / (Math.PI / 16))); // ~11° 간격
+  const arc = [];
+  for (let k = 0; k <= steps; k++) { const a = a1 + da * k / steps; arc.push([cen[0] + effR * Math.cos(a), cen[1] + effR * Math.sin(a)]); }
+  const np = pts.slice(); np.splice(vi, 1, ...arc); e.points = np; // 꼭짓점을 둥근 호(직선 근사)로 교체
+  return true;
+}
 
 // ============================================================
 //  SCALE (배율)
@@ -1812,18 +1857,27 @@ function clickExtend(w, rawW) {
 function clickFillet(w, rawW) {
   if (!cmdOp || cmdOp.name !== 'fillet') cmdOp = { name: 'fillet', step: 'l1', l1: null };
   const hit = pick(w, rawW);
-  if (!hit || hit.type !== 'LINE') { logLine('  모깎기는 두 개의 선을 선택해야 합니다.', 'warn'); return; }
+  if (!hit || (hit.type !== 'LINE' && hit.type !== 'LWPOLYLINE')) { logLine('  모깎기: 두 선, 또는 폴리라인의 이웃한 두 변을 클릭하세요.', 'warn'); return; }
+  const seg = hit.type === 'LWPOLYLINE' ? nearestPolySeg(hit, w) : null;
   if (cmdOp.step === 'l1') {
-    cmdOp.l1 = hit; cmdOp.step = 'l2';
+    cmdOp.l1 = hit; cmdOp.seg1 = seg; cmdOp.step = 'l2';
     state.selection.clear(); state.selection.add(hit.id); renderProps();
-    setPrompt('모깎기: 두 번째 선을 클릭하세요.');
-  } else {
+    setPrompt('모깎기: 두 번째 변을 클릭하세요.');
+    return;
+  }
+  const done = () => { cmdOp = null; updateStat(); renderProps(); setTool('select'); };
+  if (hit.type === 'LWPOLYLINE' && cmdOp.l1 === hit) { // 같은 폴리라인의 이웃 두 변 → 모서리 둥글게
+    pushUndo();
+    if (filletPolyCorner(hit, cmdOp.seg1, seg, filletRadius)) logLine(`  ✔ 모깎기 R=${filletRadius}`, 'ok');
+    done(); return;
+  }
+  if (hit.type === 'LINE' && cmdOp.l1.type === 'LINE') { // 두 개의 선
     if (hit === cmdOp.l1) return;
     pushUndo();
     if (doFillet(cmdOp.l1, hit, filletRadius)) logLine(`  ✔ 모깎기 R=${filletRadius}`, 'ok');
-    cmdOp = null; updateStat(); renderProps();
-    setTool('select');
+    done(); return;
   }
+  logLine('  모깎기: 같은 폴리라인의 이웃한 두 변, 또는 두 개의 선을 선택하세요.', 'warn'); // 선+폴리라인 혼합 등
 }
 
 // ====== SCALE (배율) ======
@@ -6257,7 +6311,7 @@ const CMD_HELP = [
     ['align', '정렬', '선택 → 원본 2점 → 목표 2점 (이동+회전, 배율 선택)'],
     ['trim', '자르기', '기준선들 클릭 → Space → 잘라낼 부분 클릭 (바로 Space=빠른 모드)'],
     ['extend', '연장', '늘릴 선의 끝쪽 클릭 → 가까운 경계까지 연장'],
-    ['fillet', '모깎기', '반지름 입력 → 두 선 클릭 (0이면 직각 코너)'],
+    ['fillet', '모깎기', '반지름 입력 → 두 선(또는 폴리라인의 이웃한 두 변) 클릭 — 평면·3D 동일'],
     ['chamfer', '모따기', '거리 입력 → 두 선 클릭'],
     ['break', '끊기', '대상 → 두 점 클릭 → 사이 구간 제거'],
     ['breakpt', '한 점 끊기', '대상 → 한 점 클릭 → 그 지점에서 둘로 분리'],
@@ -7581,7 +7635,7 @@ window.__CADTEST__ = {
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
-  trimLine, extendLine, doFillet, doChamfer, offsetEntity, insertChildren,
+  trimLine, extendLine, doFillet, filletPolyCorner, nearestPolySeg, clickFillet, doChamfer, offsetEntity, insertChildren,
   // 유틸
   dxfColorIndex, aci2hex, rgbHex,
   // 링크 공유

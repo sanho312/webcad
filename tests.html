@@ -116,6 +116,16 @@ function tests(){
     const l1={type:'LINE',x1:0,y1:0,x2:10,y2:0}, l2={type:'LINE',x1:10,y1:0,x2:10,y2:10};
     S0.entities=[{id:1,...l1},{id:2,...l2}]; C.doFillet(S0.entities[0],S0.entities[1],0);
     pt([S0.entities[0].x2,S0.entities[0].y2],10,0,'모깎기 R0: 코너 정합'); }
+  { // 폴리라인 모서리 모깎기 (평면·3D 공통) — 사각형 꼭짓점(1000,0)을 반지름 100 호로
+    const e={type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,600],[0,600]]};
+    const r=C.filletPolyCorner(e,0,1,100); // seg0(아래)+seg1(오른쪽) 공유 꼭짓점
+    ok(r && e.points.length>4 && e.closed, '폴리라인 모깎기: 꼭짓점→호 치환 + 닫힘 유지');
+    const has=(x,y)=>e.points.some(p=>Math.abs(p[0]-x)<=2&&Math.abs(p[1]-y)<=2);
+    ok(has(900,0)&&has(1000,100)&&!has(1000,0),'폴리라인 모깎기: 접점 생성 + 원 꼭짓점 제거');
+    const cen=[900,100], arc=e.points.filter(p=>p[0]>850&&p[1]<150);
+    ok(arc.length&&arc.every(p=>Math.abs(Math.hypot(p[0]-cen[0],p[1]-cen[1])-100)<1),'폴리라인 모깎기: 호가 반지름 100');
+    const fresh={type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,600],[0,600]]};
+    ok(C.nearestPolySeg(fresh,{x:0,y:300})===3 && C.nearestPolySeg(fresh,{x:1000,y:300})===1,'nearestPolySeg: 변 인덱스(좌=3,우=1)'); }
   { const l1={id:1,type:'LINE',x1:0,y1:0,x2:100,y2:0}, l2={id:2,type:'LINE',x1:100,y1:0,x2:100,y2:100};
     reset(); S0.entities=[l1,l2]; C.doChamfer(l1,l2,10);
     pt([l1.x2,l1.y2],90,0,'모따기: 첫 선 끝 90'); pt([l2.x1,l2.y1],100,10,'모따기: 둘째 선 시작 (100,10)'); }
