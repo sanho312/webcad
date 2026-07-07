@@ -1301,12 +1301,18 @@ function filletPolyCorner(e, segA, segB, radius) {
   const A0 = P[sA], A1 = P[(sA + 1) % n], B0 = P[sB], B1 = P[(sB + 1) % n];
   const X = lineInfIntersect(A0, A1, B0, B1);
   if (!X) { logLine('  두 변이 평행하여 모깎기할 수 없습니다.', 'warn'); return false; }
+  const proj = (S0, S1, pt) => { const dx = S1[0] - S0[0], dy = S1[1] - S0[1]; const L2 = dx * dx + dy * dy || 1; return ((pt[0] - S0[0]) * dx + (pt[1] - S0[1]) * dy) / L2; };
   const fwd = sB - sA, wrap = n - fwd; // 정방향 P[sA+1..sB] vs 반대(래핑) 경로의 정점 수
   if (!e.closed || fwd <= wrap) { // 정방향(짧은 쪽): far끝 A0·B1 유지, 사이 정점 제거
+    // 두 변 모두 far끝 너머로 "연장"해야 만나면(교점이 발산 쪽 먼 곳) → 형태가 뒤집힘 → 거부
+    const tA = proj(A0, A1, X), tB = proj(B0, B1, X); // A0=0/A1=1, B0=0/B1=1
+    if (tA > 1.001 && tB < -0.001) { logLine('  모깎기: 두 변이 도형 밖 먼 곳에서 만나 형태가 뒤집힙니다. 코너를 이루는(붙어 있는) 두 변, 또는 서로 교차하는 두 변을 선택하세요.', 'warn'); return false; }
     const arc = filletArcPts(X, A0, B1, radius);
     if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
     e.points = [...P.slice(0, sA + 1), ...arc, ...P.slice(sB + 1)];
   } else { // 래핑 경로가 더 짧음: far끝 A1·B0 유지, 래핑 정점 제거
+    const tA = proj(A1, A0, X), tB = proj(B1, B0, X);
+    if (tA > 1.001 && tB < -0.001) { logLine('  모깎기: 두 변이 도형 밖 먼 곳에서 만나 형태가 뒤집힙니다. 코너를 이루는(붙어 있는) 두 변을 선택하세요.', 'warn'); return false; }
     const arc = filletArcPts(X, B0, A1, radius);
     if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
     e.points = [...P.slice(sA + 1, sB + 1), ...arc]; e.closed = true;
