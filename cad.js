@@ -1327,16 +1327,19 @@ function filletPolyCore(e, segA, segB, radius) {
     logLine('  모깎기: 한 꼭짓점에서 만나는(붙어 있는) 두 변, 또는 서로 교차하는 두 변을 선택하세요. (서로 떨어진 두 변은 형태가 뒤집혀 지원하지 않습니다)', 'warn');
     return false;
   }
-  const fwd = sB - sA, wrap = n - fwd; // 정방향 P[sA+1..sB] vs 반대(래핑) 경로의 정점 수
-  if (!e.closed || fwd <= wrap) { // 정방향(짧은 쪽): far끝 A0·B1 유지, 사이 정점 제거
+  // 교차: 큰 쪽(본체)을 남기고 교차점 X를 코너로. 작은 쪽(교차 꼬리)만 제거 → 형태 유지(뒤집힘 없음)
+  const middleCount = sB - sA;                                   // 중간 경로 P[sA+1..sB] 정점 수
+  const outerCount = e.closed ? (n - middleCount) : (sA + 1 + (n - 1 - sB)); // 바깥 경로 정점 수
+  if (outerCount >= middleCount) { // 바깥쪽이 큼 → 바깥 유지, 중간(작은 교차 루프) 제거
     const arc = filletArcPts(X, A0, B1, radius);
     if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
     e.points = [...P.slice(0, sA + 1), ...arc, ...P.slice(sB + 1)];
-  } else { // 래핑 경로가 더 짧음: far끝 A1·B0 유지, 래핑 정점 제거
+  } else { // 중간(본체)이 큼 → 중간 유지, 바깥(작은 꼬리) 제거하고 X에서 닫음
     const arc = filletArcPts(X, B0, A1, radius);
     if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
     e.points = [...P.slice(sA + 1, sB + 1), ...arc]; e.closed = true;
   }
+  logLine(`  · 교차점 (${Math.round(X[0])}, ${Math.round(X[1])})에서 모깎기 (교차 정리)`, 'info');
   return true;
 }
 
