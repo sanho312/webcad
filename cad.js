@@ -1256,7 +1256,9 @@ function nearestPolySeg(e, w) {
   return bi;
 }
 // 꼭짓점(apex)에서 far1·far2 방향의 두 변을 반지름 radius로 둥글게 — 접점 t1(far1쪽)~t2(far2쪽) 호를 직선 근사로 반환
+// radius<=0 이면 뾰족한 코너(apex 한 점만) — 오토캐드 R=0 필렛
 function filletArcPts(apex, far1, far2, radius) {
+  if (radius <= 0) return [[apex[0], apex[1]]]; // R=0: 두 변이 apex에서 뾰족하게 만남
   let u1 = [far1[0] - apex[0], far1[1] - apex[1]], l1 = Math.hypot(u1[0], u1[1]);
   let u2 = [far2[0] - apex[0], far2[1] - apex[1]], l2 = Math.hypot(u2[0], u2[1]);
   if (l1 < 1e-6 || l2 < 1e-6) return null;
@@ -1282,7 +1284,7 @@ function filletArcPts(apex, far1, far2, radius) {
 function filletPolyCorner(e, segA, segB, radius) {
   const P = e.points, n = P.length;
   if (segA === segB) { logLine('  모깎기: 서로 다른 두 변을 클릭하세요.', 'warn'); return false; }
-  if (radius <= 0) { logLine('  모깎기 반지름을 입력하세요 (명령창에 숫자 입력).', 'warn'); return false; }
+  // radius=0 이면 뾰족한 코너(연장/트림), radius>0 이면 둥근 모깎기 — 둘 다 허용(오토캐드식)
   // 인접: 한 꼭짓점을 공유 → 그 꼭짓점을 호로 교체
   const setA = new Set([segA, (segA + 1) % n]);
   const shared = [segB, (segB + 1) % n].filter(v => setA.has(v));
@@ -1896,17 +1898,10 @@ function clickFillet(w, rawW) {
     logLine(`  ▷ 첫 번째 변 선택됨 — 두 번째 변을 클릭 (반지름 R=${filletRadius})`, 'info');
     return;
   }
-  // 두 번째 변 — 반지름이 0이면 팝업 없이 명령창으로 유도(오토캐드식: r 또는 숫자 입력)
-  let R = filletRadius;
-  if (R <= 0) {
-    logLine('  모깎기: 반지름이 0입니다. 명령창에 r 을 입력해 반지름 조정 모드로 가거나, 숫자를 바로 입력해 반지름을 정한 뒤 두 변을 다시 클릭하세요.', 'warn');
-    setPrompt('모깎기 반지름을 먼저 설정: 명령창에 r(반지름 모드) 또는 숫자 입력 → 두 변 클릭');
-    cmdOp = { name: 'fillet', step: 'l1', l1: null }; // 처음부터 다시 선택
-    state.selection.clear(); renderProps();
-    return;
-  }
+  // 두 번째 변 — R=0이면 뾰족한 코너, R>0이면 둥글게 (오토캐드식: r 입력 전 기본은 뾰족)
+  const R = filletRadius;
   const done = (okDone) => {
-    if (okDone) logLine(`  ✔ 모깎기 R=${R} 완료`, 'ok');
+    if (okDone) logLine(`  ✔ 모깎기 ${R > 0 ? 'R=' + R + ' (둥글게)' : 'R=0 (뾰족한 코너)'} 완료`, 'ok');
     cmdOp = null; updateStat(); renderProps();
     const ov = document.getElementById('bim3d');
     if (ov && ov.style.display !== 'none' && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); } // 3D 뷰 즉시 갱신
@@ -5699,7 +5694,7 @@ function setTool(t) {
     array: '배열: 도형을 선택하면 배열 설정 창이 열립니다.',
     trim: '자르기: 기준 객체들을 클릭하고 Space로 확정 → 걸치는 부분 클릭. (기준 없이 바로 Space=빠른 모드)',
     extend: '연장: 늘릴 선의 끝쪽을 클릭하면 가장 가까운 경계까지 연장됩니다.',
-    fillet: `모깎기 R=${filletRadius} — 명령창에 r(반지름 조정) 또는 숫자 입력으로 반지름 설정 후, 두 변(선·폴리라인)을 차례로 클릭.`,
+    fillet: `모깎기 R=${filletRadius}${filletRadius > 0 ? '(둥글게)' : '(뾰족한 코너)'} — 두 변(선·폴리라인)을 차례로 클릭. 둥글게 하려면 r 또는 숫자로 반지름 입력.`,
     scale: '배율: 도형을 선택하고 기준점 → 배율(숫자) 또는 참조 두 점을 지정하세요.',
     stretch: '신축: 걸침 영역의 두 모서리를 클릭하고, 기준점 → 이동점을 지정하세요.',
     polygon: `다각형: 변 개수(숫자, 현재 ${polygonSides}) 입력 → 중심 → 반지름/꼭짓점.`,
