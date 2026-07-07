@@ -1301,18 +1301,21 @@ function filletPolyCorner(e, segA, segB, radius) {
   const A0 = P[sA], A1 = P[(sA + 1) % n], B0 = P[sB], B1 = P[(sB + 1) % n];
   const X = lineInfIntersect(A0, A1, B0, B1);
   if (!X) { logLine('  두 변이 평행하여 모깎기할 수 없습니다.', 'warn'); return false; }
-  const proj = (S0, S1, pt) => { const dx = S1[0] - S0[0], dy = S1[1] - S0[1]; const L2 = dx * dx + dy * dy || 1; return ((pt[0] - S0[0]) * dx + (pt[1] - S0[1]) * dy) / L2; };
+  // 교점 X가 두 변의 경계상자를 크게 벗어나면(=두 변이 도형 밖 먼 곳에서 만남) 형태가 뒤집힘 → 거부
+  // 코너를 이루는(인접) 두 변은 위에서 처리됨. 여기(비인접)는 교차하거나 가까이 만나는 경우만 허용.
+  const bx0 = Math.min(A0[0], A1[0], B0[0], B1[0]), bx1 = Math.max(A0[0], A1[0], B0[0], B1[0]);
+  const by0 = Math.min(A0[1], A1[1], B0[1], B1[1]), by1 = Math.max(A0[1], A1[1], B0[1], B1[1]);
+  const mx = (bx1 - bx0) * 0.25 + 1, my = (by1 - by0) * 0.25 + 1;
+  if (X[0] < bx0 - mx || X[0] > bx1 + mx || X[1] < by0 - my || X[1] > by1 + my) {
+    logLine('  모깎기: 두 변이 서로 멀리 떨어져 도형 밖에서 만나 형태가 뒤집힙니다. 한 꼭짓점에서 만나는(붙어 있는) 두 변, 또는 서로 교차하는 두 변을 선택하세요.', 'warn');
+    return false;
+  }
   const fwd = sB - sA, wrap = n - fwd; // 정방향 P[sA+1..sB] vs 반대(래핑) 경로의 정점 수
   if (!e.closed || fwd <= wrap) { // 정방향(짧은 쪽): far끝 A0·B1 유지, 사이 정점 제거
-    // 두 변 모두 far끝 너머로 "연장"해야 만나면(교점이 발산 쪽 먼 곳) → 형태가 뒤집힘 → 거부
-    const tA = proj(A0, A1, X), tB = proj(B0, B1, X); // A0=0/A1=1, B0=0/B1=1
-    if (tA > 1.001 && tB < -0.001) { logLine('  모깎기: 두 변이 도형 밖 먼 곳에서 만나 형태가 뒤집힙니다. 코너를 이루는(붙어 있는) 두 변, 또는 서로 교차하는 두 변을 선택하세요.', 'warn'); return false; }
     const arc = filletArcPts(X, A0, B1, radius);
     if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
     e.points = [...P.slice(0, sA + 1), ...arc, ...P.slice(sB + 1)];
   } else { // 래핑 경로가 더 짧음: far끝 A1·B0 유지, 래핑 정점 제거
-    const tA = proj(A1, A0, X), tB = proj(B1, B0, X);
-    if (tA > 1.001 && tB < -0.001) { logLine('  모깎기: 두 변이 도형 밖 먼 곳에서 만나 형태가 뒤집힙니다. 코너를 이루는(붙어 있는) 두 변을 선택하세요.', 'warn'); return false; }
     const arc = filletArcPts(X, B0, A1, radius);
     if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
     e.points = [...P.slice(sA + 1, sB + 1), ...arc]; e.closed = true;
@@ -7776,5 +7779,13 @@ window.WEBCAD_API = {
   // cloud.js가 설정하는 훅
   onUsage: null, onSettingsChange: null, onDocChange: null,
 };
+
+// 로드된 cad.js 버전을 명령 로그에 표시 (캐시로 예전 버전 로딩 여부 확인용)
+try {
+  const sc = [...document.scripts].find(s => /cad\.js/.test(s.src || ''));
+  const m = sc && (sc.src || '').match(/v=([0-9a-z.]+)/);
+  window.WEBCAD_VERSION = m ? m[1] : 'unknown';
+} catch (e) { window.WEBCAD_VERSION = 'unknown'; }
+setTimeout(() => { try { logLine(`WebCAD · cad.js 버전 ${window.WEBCAD_VERSION}`, 'info'); } catch (e) {} }, 900);
 
 })();
