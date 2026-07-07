@@ -1319,13 +1319,12 @@ function filletPolyCore(e, segA, segB, radius) {
   const A0 = P[sA], A1 = P[(sA + 1) % n], B0 = P[sB], B1 = P[(sB + 1) % n];
   const X = lineInfIntersect(A0, A1, B0, B1);
   if (!X) { logLine('  두 변이 평행하여 모깎기할 수 없습니다.', 'warn'); return false; }
-  // 교점 X가 두 변의 경계상자를 크게 벗어나면(=두 변이 도형 밖 먼 곳에서 만남) 형태가 뒤집힘 → 거부
-  // 코너를 이루는(인접) 두 변은 위에서 처리됨. 여기(비인접)는 교차하거나 가까이 만나는 경우만 허용.
-  const bx0 = Math.min(A0[0], A1[0], B0[0], B1[0]), bx1 = Math.max(A0[0], A1[0], B0[0], B1[0]);
-  const by0 = Math.min(A0[1], A1[1], B0[1], B1[1]), by1 = Math.max(A0[1], A1[1], B0[1], B1[1]);
-  const mx = (bx1 - bx0) * 0.25 + 1, my = (by1 - by0) * 0.25 + 1;
-  if (X[0] < bx0 - mx || X[0] > bx1 + mx || X[1] < by0 - my || X[1] > by1 + my) {
-    logLine('  모깎기: 두 변이 서로 멀리 떨어져 도형 밖에서 만나 형태가 뒤집힙니다. 한 꼭짓점에서 만나는(붙어 있는) 두 변, 또는 서로 교차하는 두 변을 선택하세요.', 'warn');
+  // 비인접은 두 변이 실제로 "교차"(교점이 두 변 위, 매개변수 0~1)할 때만 허용.
+  // 떨어져서 연장해야 만나는 두 변은 형태가 뒤집힘 → 거부하고 인접 두 변을 쓰도록 안내.
+  const proj = (S0, S1, pt) => { const dx = S1[0] - S0[0], dy = S1[1] - S0[1]; const L2 = dx * dx + dy * dy || 1; return ((pt[0] - S0[0]) * dx + (pt[1] - S0[1]) * dy) / L2; };
+  const tA = proj(A0, A1, X), tB = proj(B0, B1, X);
+  if (!(tA > 0.02 && tA < 0.98 && tB > 0.02 && tB < 0.98)) {
+    logLine('  모깎기: 한 꼭짓점에서 만나는(붙어 있는) 두 변, 또는 서로 교차하는 두 변을 선택하세요. (서로 떨어진 두 변은 형태가 뒤집혀 지원하지 않습니다)', 'warn');
     return false;
   }
   const fwd = sB - sA, wrap = n - fwd; // 정방향 P[sA+1..sB] vs 반대(래핑) 경로의 정점 수
