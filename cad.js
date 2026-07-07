@@ -3199,7 +3199,8 @@ function bind3D(ov, cv3) {
     } else if (drag && e && e.type === 'pointerup') {
       if (drag.mode === 'box' && drag.moved >= 4) applyBox3D(drag);
       else if (drag.moved < 4 && (e.button === 0 || e.pointerType === 'touch')) {
-        if (v3.wallMode) wall3DClick(e);
+        if (v3.srfPick) srfPickClick(e); // ExtrudeSrf: 클릭한 면을 돌출
+        else if (v3.wallMode) wall3DClick(e);
         else if (state.tool === 'line') line3DClick(e); // 3D 선: 정점별 높이 지원
         else if (state.tool !== 'select') tool3DClick(e); // 나머지 평면 도구
         else pick3D(e, drag.shift);
@@ -3263,6 +3264,7 @@ function bind3D(ov, cv3) {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
     if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); state.selection.clear(); renderProps(); render3D(); return; } // 차집합 2단계 취소
+    if (v3.srfPick) { v3.srfPick = false; setPrompt(''); logLine('  ExtrudeSrf 취소', 'info'); render3D(); return; } // 면 클릭 대기 취소
     if (v3.extrude) { extrudeCancel(); return; }                                       // 0차: 돌출 취소
     if (v3.wallMode) { setWallMode(false); }                                          // 0차: 벽 그리기 종료
     else if (state.tool !== 'select') { setTool('select'); state.selection.clear(); renderProps(); render3D(); } // 0.5차: 도구 취소
@@ -4180,11 +4182,37 @@ function cmdExtrudeCrv() {
   renderProps(); draw();
 }
 // ExtrudeSrf(라이노식): 면(서피스)에 두께 부여 — 돌출된 면은 벽 두께, 닫힌 평면 곡선은 슬래브 두께
+// ExtrudeSrf 면 클릭 — 클릭한 면의 엔티티를 선택해 돌출(라이노식)
+function srfPickClick(e) {
+  v3.srfPick = false; setPrompt('');
+  pick3D(e, false); // 앞면 엔티티(면·모서리)를 선택
+  let hit = selectedEntities()[0];
+  if (!hit) { // 닫힌 평면 곡선: 내부(채워지지 않은 밑그림) 클릭도 허용 — 폴리곤 안이면 선택
+    const r = v3.cv.getBoundingClientRect();
+    const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
+    const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
+    const inPoly = (path) => { let ins = false; for (let i = 0, j = path.length - 1; i < path.length; j = i++) { const xi = path[i][0], yi = path[i][1], xj = path[j][0], yj = path[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+    let best = null, bestDepth = Infinity;
+    for (const u of (v3.under || [])) if (u.closed && u.path.length >= 3 && inPoly(u.path)) { const dmin = Math.min(...u.path.map(p => p[2])); if (dmin < bestDepth) { bestDepth = dmin; best = u; } }
+    if (best) { state.selection.clear(); state.selection.add(best.eid); hit = state.entities.find(x => x.id === best.eid); renderProps(); }
+  }
+  if (!hit) { logLine('  ExtrudeSrf: 면을 찾지 못했습니다. 서피스(두께 0 면)나 닫힌 곡선(또는 그 모서리)을 클릭하세요.', 'warn'); return; }
+  logLine(`  ▷ 면 선택: ${hit.type}${hit.bim ? '(' + hit.bim.kind + ')' : ''} — 두께 지정`, 'info');
+  cmdExtrudeSrf(); // 선택된 엔티티로 두께 돌출
+}
 function cmdExtrudeSrf() {
+  const ov = document.getElementById('bim3d'), in3D = ov && ov.style.display !== 'none';
   const sel = selectedEntities();
+  // 라이노식: 3D에서 선택 없이 실행 → "돌출할 면을 클릭" 모드
+  if (in3D && typeof v3 !== 'undefined' && v3 && sel.length === 0) {
+    v3.srfPick = true;
+    logLine('  ▷ ExtrudeSrf: 돌출할 면(서피스=두께 0 면 · 닫힌 곡선)을 클릭하세요. (Esc 취소)', 'info');
+    setPrompt('ExtrudeSrf: 돌출할 면을 클릭하세요 (Esc 취소)');
+    render3D(); return;
+  }
   const srf = sel.filter(e => e.bim && e.bim.kind === 'wall');
   const flat = sel.filter(e => !e.bim && ((e.type === 'LWPOLYLINE' && e.closed) || e.type === 'CIRCLE'));
-  if (!srf.length && !flat.length) { logLine('  extrudesrf: 서피스(돌출된 면) 또는 닫힌 평면 곡선을 선택한 뒤 실행하세요.', 'warn'); return; }
+  if (!srf.length && !flat.length) { logLine('  extrudesrf: 서피스(두께 0 면) 또는 닫힌 평면 곡선을 클릭/선택하세요. (솔리드는 대상 아님)', 'warn'); return; }
   const interactive = extrudeInteractive(); // 기울어진 3D 뷰: 마우스로 두께 끌기 + 수치 입력
   let t = settings.bim.wallT;
   if (!interactive) { t = bimAskNum('두께 (mm):', settings.bim.wallT); if (t == null) return; }
@@ -6449,7 +6477,7 @@ const CMD_HELP = [
     ['difference', '차집합(불리언)', '남길 입체 선택 → difference → 잘라낼 입체 선택 → Enter (라이노식)'],
     ['intersect3d', '교집합(불리언)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
-    ['extrudesrf', '면 두께(라이노)', '돌출된 면·닫힌 곡선 선택 후 두께 입력 — 면을 솔리드로'],
+    ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
     ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
   ]},
   { c: '기타', items: [
