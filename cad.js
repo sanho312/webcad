@@ -1255,38 +1255,52 @@ function nearestPolySeg(e, w) {
   }
   return bi;
 }
-// 폴리라인의 이웃한 두 변이 공유하는 꼭짓점을 반지름 radius로 둥글게 (직선 세그먼트로 테셀레이션 — 하나의 폴리라인 유지)
-function filletPolyCorner(e, segA, segB, radius) {
-  const pts = e.points, n = pts.length;
-  if (segA === segB) { logLine('  모깎기: 서로 다른 두 변을 클릭하세요.', 'warn'); return false; }
-  const setA = new Set([segA, (segA + 1) % n]);
-  const shared = [segB, (segB + 1) % n].filter(v => setA.has(v));
-  if (shared.length !== 1) { logLine('  모깎기: 한 꼭짓점을 공유하는 이웃한 두 변을 선택하세요.', 'warn'); return false; }
-  const vi = shared[0], prevIdx = (vi - 1 + n) % n, nextIdx = (vi + 1) % n;
-  const V = pts[vi], Pp = pts[prevIdx], Pn = pts[nextIdx];
-  let u1 = [Pp[0] - V[0], Pp[1] - V[1]], l1 = Math.hypot(u1[0], u1[1]);
-  let u2 = [Pn[0] - V[0], Pn[1] - V[1]], l2 = Math.hypot(u2[0], u2[1]);
-  if (l1 < 1e-6 || l2 < 1e-6) { logLine('  모깎기할 수 없는 꼭짓점입니다.', 'warn'); return false; }
+// 꼭짓점(apex)에서 far1·far2 방향의 두 변을 반지름 radius로 둥글게 — 접점 t1(far1쪽)~t2(far2쪽) 호를 직선 근사로 반환
+function filletArcPts(apex, far1, far2, radius) {
+  let u1 = [far1[0] - apex[0], far1[1] - apex[1]], l1 = Math.hypot(u1[0], u1[1]);
+  let u2 = [far2[0] - apex[0], far2[1] - apex[1]], l2 = Math.hypot(u2[0], u2[1]);
+  if (l1 < 1e-6 || l2 < 1e-6) return null;
   u1 = [u1[0] / l1, u1[1] / l1]; u2 = [u2[0] / l2, u2[1] / l2];
   const dot = Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1]));
   const theta = Math.acos(dot);
-  if (theta < 1e-4 || Math.abs(theta - Math.PI) < 1e-4) { logLine('  두 변이 일직선이라 모깎기할 수 없습니다.', 'warn'); return false; }
-  if (radius <= 0) { logLine('  모깎기 반지름을 입력하세요 (명령창에 숫자 입력).', 'warn'); return false; }
+  if (theta < 1e-4 || Math.abs(theta - Math.PI) < 1e-4) return null; // 일직선
   let tanDist = radius / Math.tan(theta / 2);
-  const maxT = Math.min(l1, l2) * 0.999;
-  if (tanDist > maxT) tanDist = maxT; // 변 길이를 넘지 않게 클램프
+  const maxT = Math.min(l1, l2) * 0.999; if (tanDist > maxT) tanDist = maxT; // 변 길이 초과 클램프
   const effR = tanDist * Math.tan(theta / 2);
-  const t1 = [V[0] + u1[0] * tanDist, V[1] + u1[1] * tanDist];
-  const t2 = [V[0] + u2[0] * tanDist, V[1] + u2[1] * tanDist];
+  const t1 = [apex[0] + u1[0] * tanDist, apex[1] + u1[1] * tanDist];
+  const t2 = [apex[0] + u2[0] * tanDist, apex[1] + u2[1] * tanDist];
   let bis = [u1[0] + u2[0], u1[1] + u2[1]]; const bl = Math.hypot(bis[0], bis[1]) || 1; bis = [bis[0] / bl, bis[1] / bl];
-  const cen = [V[0] + bis[0] * effR / Math.sin(theta / 2), V[1] + bis[1] * effR / Math.sin(theta / 2)];
-  const a1 = Math.atan2(t1[1] - cen[1], t1[0] - cen[0]);
-  const a2 = Math.atan2(t2[1] - cen[1], t2[0] - cen[0]);
+  const cen = [apex[0] + bis[0] * effR / Math.sin(theta / 2), apex[1] + bis[1] * effR / Math.sin(theta / 2)];
+  const a1 = Math.atan2(t1[1] - cen[1], t1[0] - cen[0]), a2 = Math.atan2(t2[1] - cen[1], t2[0] - cen[0]);
   let da = a2 - a1; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
   const steps = Math.max(2, Math.round(Math.abs(da) / (Math.PI / 16))); // ~11° 간격
   const arc = [];
   for (let k = 0; k <= steps; k++) { const a = a1 + da * k / steps; arc.push([cen[0] + effR * Math.cos(a), cen[1] + effR * Math.sin(a)]); }
-  const np = pts.slice(); np.splice(vi, 1, ...arc); e.points = np; // 꼭짓점을 둥근 호(직선 근사)로 교체
+  return arc; // arc[0]≈t1, arc[끝]≈t2
+}
+// 폴리라인의 두 변을 모깎기 — 인접(꼭짓점 공유)이든 아니든 지원. 비인접이면 두 변의 직선 교점까지 연장/트림 후 사이 정점 제거
+function filletPolyCorner(e, segA, segB, radius) {
+  const P = e.points, n = P.length;
+  if (segA === segB) { logLine('  모깎기: 서로 다른 두 변을 클릭하세요.', 'warn'); return false; }
+  if (radius <= 0) { logLine('  모깎기 반지름을 입력하세요 (명령창에 숫자 입력).', 'warn'); return false; }
+  // 인접: 한 꼭짓점을 공유 → 그 꼭짓점을 호로 교체
+  const setA = new Set([segA, (segA + 1) % n]);
+  const shared = [segB, (segB + 1) % n].filter(v => setA.has(v));
+  if (shared.length === 1) {
+    const vi = shared[0], Pp = P[(vi - 1 + n) % n], V = P[vi], Pn = P[(vi + 1) % n];
+    const arc = filletArcPts(V, Pp, Pn, radius);
+    if (!arc) { logLine('  이 꼭짓점은 모깎기할 수 없습니다.', 'warn'); return false; }
+    const np = P.slice(); np.splice(vi, 1, ...arc); e.points = np;
+    return true;
+  }
+  // 비인접: 두 변의 무한 직선 교점 X에서 모깎기. 사이(정방향 P[sA+1..sB])의 정점들을 없애고 far끝(A0·B1) 사이를 호로 연결
+  let sA = Math.min(segA, segB), sB = Math.max(segA, segB);
+  const A0 = P[sA], A1 = P[(sA + 1) % n], B0 = P[sB], B1 = P[(sB + 1) % n];
+  const X = lineInfIntersect(A0, A1, B0, B1);
+  if (!X) { logLine('  두 변이 평행하여 모깎기할 수 없습니다.', 'warn'); return false; }
+  const arc = filletArcPts(X, A0, B1, radius);
+  if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
+  e.points = [...P.slice(0, sA + 1), ...arc, ...P.slice(sB + 1)]; // A0 → (호) → B1, 사이 정점 제거
   return true;
 }
 

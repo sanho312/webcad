@@ -126,6 +126,15 @@ function tests(){
     ok(arc.length&&arc.every(p=>Math.abs(Math.hypot(p[0]-cen[0],p[1]-cen[1])-100)<1),'폴리라인 모깎기: 호가 반지름 100');
     const fresh={type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,600],[0,600]]};
     ok(C.nearestPolySeg(fresh,{x:0,y:300})===3 && C.nearestPolySeg(fresh,{x:1000,y:300})===1,'nearestPolySeg: 변 인덱스(좌=3,우=1)'); }
+  { // 폴리라인 비인접 두 변 모깎기 — 꼭짓점을 공유하지 않는 변도 교점까지 연장/트림
+    // seg0 수평(0,0)-(1000,0), seg3 수직(600,400)-(600,1000) → 교점 (600,0), 사이 정점 제거
+    const e={type:'LWPOLYLINE',closed:false,points:[[0,0],[1000,0],[1000,400],[600,400],[600,1000]]};
+    const r=C.filletPolyCorner(e,0,3,100);
+    const has=(x,y)=>e.points.some(p=>Math.abs(p[0]-x)<=2&&Math.abs(p[1]-y)<=2);
+    ok(r && has(0,0) && has(600,1000) && !has(1000,400) && !has(600,400),'비인접 모깎기: 사이 정점 제거 + 양 끝 유지');
+    ok(has(500,0) && has(600,100),'비인접 모깎기: 접점 (500,0),(600,100)');
+    const eP={type:'LWPOLYLINE',closed:false,points:[[0,0],[1000,0],[1000,400],[0,400]]};
+    ok(C.filletPolyCorner(eP,0,2,100)===false,'비인접 모깎기: 평행 두 변 거부'); }
   { const l1={id:1,type:'LINE',x1:0,y1:0,x2:100,y2:0}, l2={id:2,type:'LINE',x1:100,y1:0,x2:100,y2:100};
     reset(); S0.entities=[l1,l2]; C.doChamfer(l1,l2,10);
     pt([l1.x2,l1.y2],90,0,'모따기: 첫 선 끝 90'); pt([l2.x1,l2.y1],100,10,'모따기: 둘째 선 시작 (100,10)'); }
