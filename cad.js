@@ -1293,6 +1293,7 @@ function filletPolyCorner(e, segA, segB, radius) {
     const arc = filletArcPts(V, Pp, Pn, radius);
     if (!arc) { logLine('  이 꼭짓점은 모깎기할 수 없습니다.', 'warn'); return false; }
     const np = P.slice(); np.splice(vi, 1, ...arc); e.points = np;
+    logLine(`  · 코너 (${Math.round(V[0])}, ${Math.round(V[1])}) 모깎기`, 'info');
     return true;
   }
   // 비인접: 두 변의 무한 직선 교점 X에서 모깎기. 두 변 사이의 "더 짧은 경로"(의도한 코너)를 접는다
