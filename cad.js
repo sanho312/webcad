@@ -1293,14 +1293,21 @@ function filletPolyCorner(e, segA, segB, radius) {
     const np = P.slice(); np.splice(vi, 1, ...arc); e.points = np;
     return true;
   }
-  // 비인접: 두 변의 무한 직선 교점 X에서 모깎기. 사이(정방향 P[sA+1..sB])의 정점들을 없애고 far끝(A0·B1) 사이를 호로 연결
+  // 비인접: 두 변의 무한 직선 교점 X에서 모깎기. 두 변 사이의 "더 짧은 경로"(의도한 코너)를 접는다
   let sA = Math.min(segA, segB), sB = Math.max(segA, segB);
   const A0 = P[sA], A1 = P[(sA + 1) % n], B0 = P[sB], B1 = P[(sB + 1) % n];
   const X = lineInfIntersect(A0, A1, B0, B1);
   if (!X) { logLine('  두 변이 평행하여 모깎기할 수 없습니다.', 'warn'); return false; }
-  const arc = filletArcPts(X, A0, B1, radius);
-  if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
-  e.points = [...P.slice(0, sA + 1), ...arc, ...P.slice(sB + 1)]; // A0 → (호) → B1, 사이 정점 제거
+  const fwd = sB - sA, wrap = n - fwd; // 정방향 P[sA+1..sB] vs 반대(래핑) 경로의 정점 수
+  if (!e.closed || fwd <= wrap) { // 정방향(짧은 쪽): far끝 A0·B1 유지, 사이 정점 제거
+    const arc = filletArcPts(X, A0, B1, radius);
+    if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
+    e.points = [...P.slice(0, sA + 1), ...arc, ...P.slice(sB + 1)];
+  } else { // 래핑 경로가 더 짧음: far끝 A1·B0 유지, 래핑 정점 제거
+    const arc = filletArcPts(X, B0, A1, radius);
+    if (!arc) { logLine('  이 두 변으로는 모깎기할 수 없습니다.', 'warn'); return false; }
+    e.points = [...P.slice(sA + 1, sB + 1), ...arc]; e.closed = true;
+  }
   return true;
 }
 
@@ -1881,7 +1888,7 @@ function clickFillet(w, rawW) {
   const hit = pick(w, rawW);
   if (!hit || (hit.type !== 'LINE' && hit.type !== 'LWPOLYLINE')) { logLine('  모깎기: 선 또는 폴리라인의 변을 클릭하세요. (선택 도구 아님 — [모깎기] 활성 상태여야 함)', 'warn'); return; }
   if (hit.type === 'LWPOLYLINE') dedupePoly(hit);
-  const seg = hit.type === 'LWPOLYLINE' ? nearestPolySeg(hit, w) : null;
+  const seg = hit.type === 'LWPOLYLINE' ? nearestPolySeg(hit, rawW || w) : null; // 스냅 전 실제 클릭점으로 변 판정 (꼭짓점 스냅 시 오선택 방지)
   if (cmdOp.step === 'l1') { // 첫 번째 변
     cmdOp.l1 = hit; cmdOp.seg1 = seg; cmdOp.step = 'l2';
     state.selection.clear(); state.selection.add(hit.id); renderProps();
@@ -3370,7 +3377,7 @@ function tool3DClick(e) {
     setCplane(w.z);
     logLine(`  ▷ 작업면을 스냅점 높이 ${Math.round(w.z)}(으)로 이동 — 이 높이에 작도됩니다`, 'info');
   }
-  handleClick(w, w, e);
+  handleClick(w, { x: Math.round(u[0]), y: Math.round(u[1]) }, e); // rawW=스냅 전 실제 클릭점 (변 판정 정확도)
   v3.solids = bimSolids(); render3D();
 }
 // 3D 벽 그리기: 클릭 → 층 바닥면에 언프로젝션 → 2점째에 벽(LINE+bim) 생성, 연속 체인
