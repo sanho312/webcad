@@ -4109,47 +4109,60 @@ function footprintCentroid(sel) { // 선택 곡선들의 평면 무게중심
 }
 function is3DActive() { const ov = document.getElementById('bim3d'); return !!(ov && ov.style.display !== 'none'); }
 function extrudeRefresh() { if (is3DActive()) { if (typeof v3 !== 'undefined' && v3) v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); } }
-// extrudesrf 스냅 — 꼭짓점/모서리/중점/중심(snap3D) 우선, 없으면 솔리드 윗/아랫면 '표면'에 흡착.
-// extrudesrf에서는 전역 스냅 토글(osnapEnabled)과 무관하게 항상 스냅 잡히도록 강제.
+// extrudesrf 스냅 — 대상 외 모든 객체(벽·기둥 솔리드 + 불리언/구/원뿔/STL 메시)의 꼭짓점·모서리·표면에 흡착.
+// 우선순위: 꼭짓점 > 모서리 > 표면 > (솔리드)수직변. 전역 스냅 토글과 무관하게 항상.
 function srfSurfaceSnap(px, py, exclude) {
-  const wasOsnap = osnapEnabled; osnapEnabled = true;
-  const v = snap3D(px, py, null, exclude); // 꼭짓점·중점·중심·솔리드 코너
-  osnapEnabled = wasOsnap;
-  if (v && v.z != null) return v;
-  if (typeof v3 === 'undefined' || !v3 || !v3.solids) return null;
+  if (typeof v3 === 'undefined' || !v3) return null;
   const dpr = devicePixelRatio || 1;
-  const nearestOnSeg = (A, B) => { const pa = proj3D(A[0], A[1], A[2]), pb = proj3D(B[0], B[1], B[2]); const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy; const t = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0; return { d: Math.hypot(px - (pa[0] + dx * t), py - (pa[1] + dy * t)), t }; };
-  // 모서리 스냅: 수평변(윗·아랫변)은 표면보다 우선, 수직변은 표면보다 후순위(면 위에서 오스냅 방지)
-  let hBest = null, hBestD = 10 * dpr, vBest = null, vBestD = 10 * dpr;
-  for (const s of v3.solids) {
+  const wasOsnap = osnapEnabled; osnapEnabled = true;
+  const sv = snap3D(px, py, null, exclude); // 솔리드 꼭짓점·중점·중심·nearest
+  osnapEnabled = wasOsnap;
+  const svVertex = (sv && sv.z != null && ['endpoint', 'center', 'midpoint'].includes(sv.kind)) ? sv : null;
+  const svEdge = (sv && sv.z != null && sv.kind === 'nearest') ? sv : null;
+  const segNear = (A, B) => { const pa = proj3D(A[0], A[1], A[2]), pb = proj3D(B[0], B[1], B[2]); const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy; const t = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0; return { d: Math.hypot(px - (pa[0] + dx * t), py - (pa[1] + dy * t)), t }; };
+  const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+  // 솔리드(벽·기둥): 수평 모서리 hBest, 표면 sfBest, 수직 모서리 vBest
+  let hBest = null, hBestD = 10 * dpr, vBest = null, vBestD = 10 * dpr, sfBest = null, sfDepth = Infinity;
+  for (const s of (v3.solids || [])) {
     if (exclude && exclude.has(s.eid)) continue;
     const n = s.poly.length, zt = s.zt || s.poly.map(() => s.z1);
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
-      for (const zz of [[zt[i], zt[j]], [s.z0, s.z0]]) { // 윗변·아랫변
+      for (const zz of [[zt[i], zt[j]], [s.z0, s.z0]]) {
         const A = [s.poly[i][0], s.poly[i][1], zz[0]], B = [s.poly[j][0], s.poly[j][1], zz[1]];
-        const rr = nearestOnSeg(A, B);
+        const rr = segNear(A, B);
         if (rr.d < hBestD) { hBestD = rr.d; hBest = { x: Math.round(A[0] + (B[0] - A[0]) * rr.t), y: Math.round(A[1] + (B[1] - A[1]) * rr.t), z: Math.round(A[2] + (B[2] - A[2]) * rr.t), kind: '모서리' }; }
       }
-      const Av = [s.poly[i][0], s.poly[i][1], s.z0], Bv = [s.poly[i][0], s.poly[i][1], zt[i]]; // 수직변
-      const rv = nearestOnSeg(Av, Bv);
+      const rv = segNear([s.poly[i][0], s.poly[i][1], s.z0], [s.poly[i][0], s.poly[i][1], zt[i]]);
       if (rv.d < vBestD) { vBestD = rv.d; vBest = { x: s.poly[i][0], y: s.poly[i][1], z: Math.round(s.z0 + (zt[i] - s.z0) * rv.t), kind: '모서리' }; }
     }
-  }
-  if (hBest) return hBest;
-  const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
-  let best = null, bestDepth = Infinity;
-  for (const s of v3.solids) {
-    if (exclude && exclude.has(s.eid)) continue;
-    const zt = s.zt || s.poly.map(() => s.z1);
-    for (const zf of [Math.max(...zt), s.z0]) { // 윗면·아랫면
+    for (const zf of [Math.max(...zt), s.z0]) {
       const proj = s.poly.map(p => proj3D(p[0], p[1], zf));
       if (!inPoly(proj)) continue;
       const depth = proj.reduce((a, p) => a + p[2], 0) / proj.length;
-      if (depth < bestDepth) { const w = unproj3D(px, py, zf); bestDepth = depth; best = { x: w ? Math.round(w[0]) : s.poly[0][0], y: w ? Math.round(w[1]) : s.poly[0][1], z: zf, kind: '표면' }; }
+      if (depth < sfDepth) { const w = unproj3D(px, py, zf); sfDepth = depth; sfBest = { x: w ? Math.round(w[0]) : s.poly[0][0], y: w ? Math.round(w[1]) : s.poly[0][1], z: zf, kind: '표면' }; }
     }
   }
-  return best || vBest; // 표면 없으면 수직변
+  // 메시(불리언 결과·구·원뿔·STL): 삼각형 꼭짓점 mV, 모서리 mE, 면 mF
+  let mV = null, mVD = 12 * dpr, mE = null, mED = 10 * dpr, mF = null, mFDepth = Infinity;
+  for (const e of state.entities) {
+    if (e.type !== 'MESH' || !e.tris) continue;
+    if (exclude && exclude.has(e.id)) continue;
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    if (e.tris.length > 4000) continue; // 과대 메시는 성능상 생략
+    for (const t of e.tris) {
+      const P = [proj3D(t[0][0], t[0][1], t[0][2]), proj3D(t[1][0], t[1][1], t[1][2]), proj3D(t[2][0], t[2][1], t[2][2])];
+      for (let i = 0; i < 3; i++) { const d = Math.hypot(px - P[i][0], py - P[i][1]); if (d < mVD) { mVD = d; mV = { x: Math.round(t[i][0]), y: Math.round(t[i][1]), z: Math.round(t[i][2]), kind: '꼭짓점' }; } }
+      for (let i = 0; i < 3; i++) { const j = (i + 1) % 3, pa = P[i], pb = P[j]; const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy; const tt = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0; const d = Math.hypot(px - (pa[0] + dx * tt), py - (pa[1] + dy * tt)); if (d < mED) { mED = d; mE = { x: Math.round(t[i][0] + (t[j][0] - t[i][0]) * tt), y: Math.round(t[i][1] + (t[j][1] - t[i][1]) * tt), z: Math.round(t[i][2] + (t[j][2] - t[i][2]) * tt), kind: '모서리' }; } }
+      const a = P[0], b = P[1], cc = P[2];
+      const v0x = cc[0] - a[0], v0y = cc[1] - a[1], v1x = b[0] - a[0], v1y = b[1] - a[1], v2x = px - a[0], v2y = py - a[1];
+      const d00 = v0x * v0x + v0y * v0y, d01 = v0x * v1x + v0y * v1y, d02 = v0x * v2x + v0y * v2y, d11 = v1x * v1x + v1y * v1y, d12 = v1x * v2x + v1y * v2y;
+      const den = d00 * d11 - d01 * d01; if (Math.abs(den) < 1e-9) continue;
+      const uu = (d11 * d02 - d01 * d12) / den, ww = (d00 * d12 - d01 * d02) / den;
+      if (uu >= -0.001 && ww >= -0.001 && uu + ww <= 1.001) { const depth = (a[2] + b[2] + cc[2]) / 3; if (depth < mFDepth) { mFDepth = depth; const wz = t[0][2] + (t[2][2] - t[0][2]) * uu + (t[1][2] - t[0][2]) * ww; const w = unproj3D(px, py, wz); mF = { x: w ? Math.round(w[0]) : Math.round(t[0][0]), y: w ? Math.round(w[1]) : Math.round(t[0][1]), z: Math.round(wz), kind: '표면' }; } }
+    }
+  }
+  return svVertex || mV || hBest || svEdge || mE || sfBest || mF || vBest || null;
 }
 function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (10 스냅, 최소 10)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
