@@ -352,13 +352,22 @@ function tests(){
     C.reset(); C.beginExtrude('extrudecrv');
     ok(C.extrudePend && C.extrudePend.stage==='pickSel', '선택 없이 extrudecrv → 객체 선택 대기(pickSel)');
     C.extrudePendCancel(); ok(!C.extrudePend, '  취소로 pickSel 해제');
-    // extrudesrf: 면(서피스)에서도 동일 로직
+    // extrudesrf(면 밀당): 솔리드(기둥) 허용 + 현재 높이에서 시작 → 숫자로 밀거나 당김
+    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,1000],[0,1000]],layer:'0',bim:{kind:'column',h:500,base:0}}]);
+    S0.selection.clear(); S0.selection.add(1);
+    ok(C.extrudeValidSel('extrudesrf').length===1, 'extrudesrf validSel이 솔리드(기둥) 허용 (이전엔 무시→반응없음 버그)');
+    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0',bim:{kind:'column',h:2000,base:0}}]);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeSrf();
+    ok(C.extrudePend && C.extrudePend.stage==='height' && C.extrudePend.srf, 'extrudesrf 솔리드 선택 → 면 밀당(srf) height 단계');
+    eq(C.extrudePend.val, 2000, '  현재 높이(2000)에서 시작');
+    C.extrudeSetVal(3500); C.extrudeFinish();
+    ok(S0.entities[0].bim.kind==='column' && S0.entities[0].bim.h===3500, '  숫자로 높이 3500으로 당김(솔리드 유지)');
+    // 면(t0 wall)을 밀당 → 솔리드로
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0',bim:{kind:'wall',h:100,t:0,base:0}}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeSrf();
-    ok(C.extrudePend && C.extrudePend.stage==='height', 'extrudesrf(면 선택) → 바로 height 단계');
+    ok(C.extrudePend && C.extrudePend.stage==='height', 'extrudesrf(면 t0) → height 단계');
     C.extrudeSetVal(2800); C.extrudeFinish();
-    ok(S0.entities[0].bim.kind==='column', '  extrudesrf 캡 있음 → 솔리드');
-    eq(S0.entities[0].bim.h, 2800, '  높이 2800');
+    ok(S0.entities[0].bim.kind==='column' && S0.entities[0].bim.h===2800, '  extrudesrf 면→솔리드 높이 2800');
     // height 단계 Esc → 만든 입체 되돌림
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,1000],[0,1000]],layer:'0'}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
