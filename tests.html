@@ -306,26 +306,40 @@ function tests(){
     if(m) eq(Math.abs(meshVol(m.tris)), 1.75e9, '합집합 부피 = 두 상자 − 겹침 (winding 반대여도)', 1e6);
   }
 
-  group('돌출 — extrudecrv 팝업 없음 + 닫힘=솔리드/열림=서피스, extrudesrf 두께');
+  group('돌출 — 선택→cap(y/n)→높이, 두 선택순서, 팝업 없음 (extrudecrv/extrudesrf 공용)');
   { const APP = document.getElementById('app').contentWindow; const oldPrompt = APP.prompt;
-    // 서피스/솔리드 팝업이 남아있으면 이 stub이 null을 돌려줘 흐름이 끊기고 kind 검사가 실패 → 팝업 제거를 강제 검증
-    APP.prompt = (msg)=> /높이|두께|height/.test(String(msg)) ? '3000' : null;
+    APP.prompt = ()=>{ record(false,'돌출 중 prompt() 호출됨 — 팝업이 남아있음'); return null; }; // 팝업 나오면 실패로 표시
+    // (b) 객체 선택 후 명령 → cap 질문 단계 (팝업 없이)
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
-    const b1=S0.entities[0].bim;
-    ok(b1 && b1.kind==='column', '닫힌 곡선 extrudecrv → 솔리드(column) 기본 (팝업 없이)');
-    if(b1) eq(b1.h, 3000, '  돌출 높이 반영');
+    ok(C.extrudePend && C.extrudePend.stage==='capAsk', '닫힌 곡선 선택+extrudecrv → cap 질문(capAsk)');
+    C.extrudeRun(true); // cap=y
+    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='column', '  cap=y → 솔리드(column)');
+    ok(C.extrudePend && C.extrudePend.stage==='heightNum', '  높이 입력 대기(heightNum)');
+    C.extrudeApplyHeightNum(3000);
+    eq(S0.entities[0].bim.h, 3000, '  높이값 3000 반영');
+    ok(!C.extrudePend, '  완료 후 대기 없음');
+    // cap=n → 캡 없는 면(wall t0)
+    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(false);
+    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall' && S0.entities[0].bim.t===0, 'cap=n → 캡 없는 면(wall t0)');
+    C.extrudeApplyHeightNum(2500); eq(S0.entities[0].bim.h, 2500, '  면 높이 2500');
+    // 열린 곡선은 cap=y여도 면(닫혀야 캡 가능)
     setEnts([{type:'LWPOLYLINE',closed:false,points:[[0,0],[3000,0],[3000,2000]],layer:'0'}]);
-    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
-    const b2=S0.entities[0].bim;
-    ok(b2 && b2.kind==='wall' && b2.t===0, '열린 곡선 extrudecrv → 서피스(wall t0)');
-    // extrudesrf: 서피스(wall t0)에 두께 부여
-    APP.prompt = (msg)=> /두께|높이|height/.test(String(msg)) ? '200' : null;
-    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0',bim:{kind:'wall',h:3000,t:0,base:0}}]);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(true);
+    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall', '열린 곡선 → cap=y여도 면(wall)');
+    C.extrudeApplyHeightNum(2000);
+    // (a) 명령 후 선택: 선택 없이 실행 → pickSel 대기
+    C.reset(); C.beginExtrude('extrudecrv');
+    ok(C.extrudePend && C.extrudePend.stage==='pickSel', '선택 없이 extrudecrv → 객체 선택 대기(pickSel)');
+    C.extrudePendCancel(); ok(!C.extrudePend, '  취소로 pickSel 해제');
+    // extrudesrf: 면(서피스 wall t0)에서 → cap → 높이 (로직 동일)
+    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0',bim:{kind:'wall',h:100,t:0,base:0}}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeSrf();
-    const b3=S0.entities[0].bim;
-    ok(b3 && b3.kind==='wall', 'extrudesrf 대상 = 서피스(wall) 유지');
-    if(b3) eq(b3.t, 200, '  extrudesrf → 두께 200 부여');
+    ok(C.extrudePend && C.extrudePend.stage==='capAsk', 'extrudesrf(면 선택) → cap 질문');
+    C.extrudeRun(true); C.extrudeApplyHeightNum(2800);
+    ok(S0.entities[0].bim.kind==='column', '  extrudesrf cap=y → 솔리드');
+    eq(S0.entities[0].bim.h, 2800, '  높이 2800');
     APP.prompt = oldPrompt;
   }
 }
