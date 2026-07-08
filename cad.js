@@ -4126,7 +4126,7 @@ function srfSurfaceSnap(px, py, exclude) {
   const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   // BIM 객체(벽·기둥·슬래브·지붕 등): 각 엔티티 footprint를 '바닥/윗면' 높이에서 스냅.
   // v3.solids 밴드가 아니라 원본 footprint(선/폴리라인/원)를 쓰므로 두께 0 면(surface)도 실제 선이라 잡힘.
-  let bV = null, bVD = 13 * dpr, hBest = null, hBestD = 11 * dpr, sfBest = null, sfDepth = Infinity;
+  let bV = null, bVD = 13 * dpr, mMid = null, mMidD = 12 * dpr, hBest = null, hBestD = 11 * dpr, sfBest = null, sfDepth = Infinity;
   for (const e of state.entities) {
     if (!e.bim) continue;
     if (exclude && exclude.has(e.id)) continue;
@@ -4144,7 +4144,12 @@ function srfSurfaceSnap(px, py, exclude) {
       const proj = fp.map(p => proj3D(p[0], p[1], zf));
       for (let i = 0; i < fp.length; i++) { const d = Math.hypot(px - proj[i][0], py - proj[i][1]); if (d < bVD) { bVD = d; bV = { x: Math.round(fp[i][0]), y: Math.round(fp[i][1]), z: Math.round(zf), kind: '꼭짓점' }; } }
       const nE = closed ? fp.length : fp.length - 1;
-      for (let i = 0; i < nE; i++) { const j = (i + 1) % fp.length; const rr = segNear([fp[i][0], fp[i][1], zf], [fp[j][0], fp[j][1], zf]); if (rr.d < hBestD) { hBestD = rr.d; hBest = { x: Math.round(fp[i][0] + (fp[j][0] - fp[i][0]) * rr.t), y: Math.round(fp[i][1] + (fp[j][1] - fp[i][1]) * rr.t), z: Math.round(zf), kind: '모서리' }; } }
+      for (let i = 0; i < nE; i++) {
+        const j = (i + 1) % fp.length;
+        const mx = (fp[i][0] + fp[j][0]) / 2, my = (fp[i][1] + fp[j][1]) / 2, mp = proj3D(mx, my, zf); // 모서리 중점
+        const dm = Math.hypot(px - mp[0], py - mp[1]); if (dm < mMidD) { mMidD = dm; mMid = { x: Math.round(mx), y: Math.round(my), z: Math.round(zf), kind: '중점' }; }
+        const rr = segNear([fp[i][0], fp[i][1], zf], [fp[j][0], fp[j][1], zf]); if (rr.d < hBestD) { hBestD = rr.d; hBest = { x: Math.round(fp[i][0] + (fp[j][0] - fp[i][0]) * rr.t), y: Math.round(fp[i][1] + (fp[j][1] - fp[i][1]) * rr.t), z: Math.round(zf), kind: '모서리' }; }
+      }
       if (closed && inPoly(proj)) { const depth = proj.reduce((a, p) => a + p[2], 0) / proj.length; if (depth < sfDepth) { const w = unproj3D(px, py, zf); sfDepth = depth; sfBest = { x: w ? Math.round(w[0]) : Math.round(fp[0][0]), y: w ? Math.round(w[1]) : Math.round(fp[0][1]), z: Math.round(zf), kind: '표면' }; } }
     }
   }
@@ -4167,8 +4172,8 @@ function srfSurfaceSnap(px, py, exclude) {
       if (uu >= -0.001 && ww >= -0.001 && uu + ww <= 1.001) { const depth = (a[2] + b[2] + cc[2]) / 3; if (depth < mFDepth) { mFDepth = depth; const wz = t[0][2] + (t[2][2] - t[0][2]) * uu + (t[1][2] - t[0][2]) * ww; const w = unproj3D(px, py, wz); mF = { x: w ? Math.round(w[0]) : Math.round(t[0][0]), y: w ? Math.round(w[1]) : Math.round(t[0][1]), z: Math.round(wz), kind: '표면' }; } }
     }
   }
-  // 우선순위: 꼭짓점(솔리드코너·BIM footprint·메시) > 모서리 > 표면
-  return svVertex || bV || mV || hBest || svEdge || mE || sfBest || mF || null;
+  // 우선순위: 꼭짓점 > 중점 > 모서리 > 표면
+  return svVertex || bV || mV || mMid || hBest || svEdge || mE || sfBest || mF || null;
 }
 function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (10 스냅, 최소 10)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
@@ -4214,8 +4219,8 @@ function extrudeSetBase(px, py) {
   const vi = vpAt(px, py), rct = vpRect(vi), w = v3.views ? v3.views[vi] : null;
   ex.k = (Math.min(rct.w, rct.h) / (v3.fit * 1.4) * (w ? w.zoom : v3.zoom)) || 1;
   let apy = py, h0 = (ex.srf && ex.applied) ? ex.val : 0;
-  if (ex.srf) { // 면 밀당은 기준점도 스냅(꼭짓점·모서리·객체 표면) — 그 점의 화면위치/높이를 기준으로
-    const sn = srfSurfaceSnap(px, py, ex._exclude);
+  if (ex.srf) { // 기준점 스냅(꼭짓점·중점·모서리·표면, 대상 자신 포함) — 그 점의 화면위치/높이를 기준으로
+    const sn = srfSurfaceSnap(px, py, null);
     if (sn && sn.z != null) { const s = proj3D(sn.x, sn.y, sn.z); apy = s[1]; h0 = Math.max(0, sn.z - ex.base); }
   }
   ex.anchorPy = apy; ex.h0 = h0; ex.heightPhase = 'awaitTop';
@@ -4235,10 +4240,10 @@ function extrudeHover(e) {
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
-    if (ex.srf) { // 면 포커싱 순간부터 객체 꼭짓점·모서리·표면 스냅 표시 + 명령창 실시간 표기
-      const sn = srfSurfaceSnap(px, py, ex._exclude);
+    if (ex.srf) { // 면 포커싱 순간부터 객체 꼭짓점·중점·모서리·표면 스냅 표시 (기준점은 대상 자신 포함)
+      const sn = srfSurfaceSnap(px, py, null);
       v3.snapHit = sn || null;
-      setPrompt(sn && sn.z != null ? `스냅 ▶ z=${Math.round(sn.z)} (${sn.kind}) — 클릭=기준점 확정 · Esc` : '기준점 클릭 (객체 꼭짓점·모서리·표면에 스냅) · 숫자 입력 · Esc');
+      setPrompt(sn && sn.z != null ? `스냅 ▶ z=${Math.round(sn.z)} (${sn.kind}) — 클릭=기준점 확정 · Esc` : '기준점 클릭 (객체 꼭짓점·중점·모서리·표면에 스냅) · 숫자 입력 · Esc');
       markInteract();
     }
     return;
