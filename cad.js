@@ -2958,15 +2958,24 @@ function renderScene(isActive) {
     }
     if (previewEnts) for (const e of previewEnts) strokeGhost(pathOf(e));
   }
-  // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각). extrudesrf 중엔 크게 + z 라벨
+  // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각). extrudesrf 중엔 크게 + z 라벨 + 커서→스냅 자석선
   if (v3.snapHit) {
     const sm = v3.snapHit, dpr3 = devicePixelRatio || 1;
     const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : cplaneZ());
     const big = (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.srf);
-    const rr = (big ? 11 : 7) * dpr3;
+    const rr = (big ? 15 : 7) * dpr3;
     c.save();
-    c.strokeStyle = '#2ee6a6'; c.lineWidth = (big ? 2.6 : 1.8) * dpr3; c.setLineDash([]);
-    if (big) { c.shadowColor = 'rgba(0,0,0,.5)'; c.shadowBlur = 3 * dpr3; }
+    // 자석 느낌: 커서에서 스냅점까지 점선 + 마커 뒤 반투명 후광
+    if (big && v3.snapCursor) {
+      c.strokeStyle = 'rgba(46,230,166,.55)'; c.lineWidth = 1.4 * dpr3; c.setLineDash([5 * dpr3, 4 * dpr3]);
+      c.beginPath(); c.moveTo(v3.snapCursor[0], v3.snapCursor[1]); c.lineTo(sp3[0], sp3[1]); c.stroke(); c.setLineDash([]);
+    }
+    if (big) {
+      c.fillStyle = 'rgba(46,230,166,.20)'; c.beginPath(); c.arc(sp3[0], sp3[1], rr + 6 * dpr3, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#2ee6a6'; c.beginPath(); c.arc(sp3[0], sp3[1], 2.4 * dpr3, 0, Math.PI * 2); c.fill(); // 중심 실점
+    }
+    c.strokeStyle = '#2ee6a6'; c.lineWidth = (big ? 3 : 1.8) * dpr3; c.setLineDash([]);
+    if (big) { c.shadowColor = 'rgba(0,0,0,.55)'; c.shadowBlur = 3 * dpr3; }
     if (sm.kind === 'midpoint') {
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
     } else if (sm.kind === 'center') {
@@ -2979,7 +2988,7 @@ function renderScene(isActive) {
     } else {
       c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
     }
-    if (big && sm.z != null) { c.shadowBlur = 0; c.fillStyle = '#2ee6a6'; c.font = `700 ${12 * dpr3}px -apple-system,system-ui,sans-serif`; c.fillText('z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : ''), sp3[0] + rr + 4 * dpr3, sp3[1] - 4 * dpr3); }
+    if (big && sm.z != null) { c.shadowBlur = 0; c.fillStyle = '#0a0f0d'; c.strokeStyle = '#2ee6a6'; c.lineWidth = 3 * dpr3; c.font = `800 ${13 * dpr3}px -apple-system,system-ui,sans-serif`; const lbl = 'z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : ''); c.strokeText(lbl, sp3[0] + rr + 5 * dpr3, sp3[1] - 5 * dpr3); c.fillStyle = '#2ee6a6'; c.fillText(lbl, sp3[0] + rr + 5 * dpr3, sp3[1] - 5 * dpr3); }
     c.restore();
   }
   // 3D 선 러버밴드 — 시작점(실제 z)에서 커서(스냅 z/작업면)까지
@@ -4136,8 +4145,8 @@ function srfSurfaceSnap(px, py, exclude) {
   const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   // BIM 객체(벽·기둥·슬래브·지붕 등): 각 엔티티 footprint를 '바닥/윗면' 높이에서 스냅.
   // v3.solids 밴드가 아니라 원본 footprint(선/폴리라인/원)를 쓰므로 두께 0 면(surface)도 실제 선이라 잡힘.
-  // 꼭짓점·중점은 반경을 넓게(착 달라붙게), 모서리는 좁게 → 꼭짓점/중점 우선 흡착
-  let bV = null, bVD = 18 * dpr, mMid = null, mMidD = 15 * dpr, hBest = null, hBestD = 9 * dpr, sfBest = null, sfDepth = Infinity;
+  // 꼭짓점·중점은 반경을 크게(착 달라붙게), 모서리는 좁게 → 꼭짓점/중점 우선 흡착
+  let bV = null, bVD = 26 * dpr, mMid = null, mMidD = 22 * dpr, hBest = null, hBestD = 9 * dpr, sfBest = null, sfDepth = Infinity;
   for (const e of state.entities) {
     if (!e.bim) continue;
     if (exclude && exclude.has(e.id)) continue;
@@ -4165,7 +4174,7 @@ function srfSurfaceSnap(px, py, exclude) {
     }
   }
   // 메시(불리언 결과·구·원뿔·STL): 삼각형 꼭짓점 mV, 모서리 mE, 면 mF
-  let mV = null, mVD = 18 * dpr, mE = null, mED = 9 * dpr, mF = null, mFDepth = Infinity;
+  let mV = null, mVD = 26 * dpr, mE = null, mED = 9 * dpr, mF = null, mFDepth = Infinity;
   for (const e of state.entities) {
     if (e.type !== 'MESH' || !e.tris) continue;
     if (exclude && exclude.has(e.id)) continue;
@@ -4255,7 +4264,7 @@ function extrudeHover(e) {
   if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
     if (ex.srf) { // 면 포커싱 순간부터 객체 꼭짓점·중점·모서리·표면 스냅 표시 (기준점은 대상 자신 포함)
       const sn = srfSurfaceSnap(px, py, null);
-      v3.snapHit = sn || null;
+      v3.snapHit = sn || null; v3.snapCursor = (sn && sn.z != null) ? [px, py] : null;
       setPrompt(sn && sn.z != null ? `스냅 ▶ z=${Math.round(sn.z)} (${sn.kind}) — 클릭=기준점 확정 · Esc` : '기준점 클릭 (객체 꼭짓점·중점·모서리·표면에 스냅) · 숫자 입력 · Esc');
       markInteract();
     }
@@ -4265,11 +4274,11 @@ function extrudeHover(e) {
   // (대상 자신 바닥 z0는 높이<10이라 자동 무시, 윗면 z1은 현재 높이라 무해) extrudecrv(동결)는 snap3D 유지.
   const sn = ex.srf ? srfSurfaceSnap(px, py, null) : (osnapEnabled ? snap3D(px, py, null, ex._exclude) : null);
   if (sn && sn.z != null && sn.z - ex.base >= 10) { // 근처 지오메트리/표면 z에 높이 흡착 → 정확한 높낮이
-    v3.snapHit = sn;
+    v3.snapHit = sn; v3.snapCursor = ex.srf ? [px, py] : null;
     extrudeSetVal(sn.z - ex.base);
     setPrompt(`높이 ${ex.val} · 스냅 z=${Math.round(sn.z)}${sn.kind ? ' (' + sn.kind + ')' : ''} — 클릭/Enter 확정 · 숫자 · Esc`);
   } else { // 스냅 없으면 기준점보다 커서를 위로 올릴수록 커짐
-    v3.snapHit = null;
+    v3.snapHit = null; v3.snapCursor = null;
     extrudeSetVal(ex.h0 + (ex.anchorPy - py) / (ex.k || 1));
     setPrompt(`높이 ${ex.val} — 클릭/Enter 확정 · 숫자 입력 · Esc`);
   }
@@ -7911,6 +7920,7 @@ window.__CADTEST__ = {
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
   bimSolids, lineClipPoly, genSectionView, stairSolids, roofSolids, solidTopZ,
+  proj3D, unproj3D, snap3D, srfSurfaceSnap,
 };
 
 // ============================================================
