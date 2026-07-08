@@ -4136,7 +4136,8 @@ function srfSurfaceSnap(px, py, exclude) {
   const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   // BIM 객체(벽·기둥·슬래브·지붕 등): 각 엔티티 footprint를 '바닥/윗면' 높이에서 스냅.
   // v3.solids 밴드가 아니라 원본 footprint(선/폴리라인/원)를 쓰므로 두께 0 면(surface)도 실제 선이라 잡힘.
-  let bV = null, bVD = 13 * dpr, mMid = null, mMidD = 12 * dpr, hBest = null, hBestD = 11 * dpr, sfBest = null, sfDepth = Infinity;
+  // 꼭짓점·중점은 반경을 넓게(착 달라붙게), 모서리는 좁게 → 꼭짓점/중점 우선 흡착
+  let bV = null, bVD = 18 * dpr, mMid = null, mMidD = 15 * dpr, hBest = null, hBestD = 9 * dpr, sfBest = null, sfDepth = Infinity;
   for (const e of state.entities) {
     if (!e.bim) continue;
     if (exclude && exclude.has(e.id)) continue;
@@ -4164,7 +4165,7 @@ function srfSurfaceSnap(px, py, exclude) {
     }
   }
   // 메시(불리언 결과·구·원뿔·STL): 삼각형 꼭짓점 mV, 모서리 mE, 면 mF
-  let mV = null, mVD = 12 * dpr, mE = null, mED = 10 * dpr, mF = null, mFDepth = Infinity;
+  let mV = null, mVD = 18 * dpr, mE = null, mED = 9 * dpr, mF = null, mFDepth = Infinity;
   for (const e of state.entities) {
     if (e.type !== 'MESH' || !e.tris) continue;
     if (exclude && exclude.has(e.id)) continue;
