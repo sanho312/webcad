@@ -4172,7 +4172,7 @@ function extrudeSetBase(px, py) {
   const vi = vpAt(px, py), rct = vpRect(vi), w = v3.views ? v3.views[vi] : null;
   ex.k = (Math.min(rct.w, rct.h) / (v3.fit * 1.4) * (w ? w.zoom : v3.zoom)) || 1;
   let apy = py, h0 = (ex.srf && ex.applied) ? ex.val : 0;
-  if (ex.srf && osnapEnabled) { // 면 밀당은 기준점도 스냅(꼭짓점·모서리·객체 표면) — 그 점의 화면위치/높이를 기준으로
+  if (ex.srf) { // 면 밀당은 기준점도 스냅(꼭짓점·모서리·객체 표면) — 그 점의 화면위치/높이를 기준으로
     const sn = srfSurfaceSnap(px, py, ex._exclude);
     if (sn && sn.z != null) { const s = proj3D(sn.x, sn.y, sn.z); apy = s[1]; h0 = Math.max(0, sn.z - ex.base); }
   }
@@ -4193,11 +4193,13 @@ function extrudeHover(e) {
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
-    if (ex.srf && ex.heightPhase === 'awaitBase' && osnapEnabled) { v3.snapHit = srfSurfaceSnap(px, py, ex._exclude) || null; markInteract(); } // 기준점 선택 중 객체 표면/꼭짓점 스냅 표시
+    if (ex.srf && ex.heightPhase === 'awaitBase') { v3.snapHit = srfSurfaceSnap(px, py, ex._exclude) || null; markInteract(); } // 기준점 선택 중 객체 표면/꼭짓점 스냅 표시
     return;
   }
-  const sn = osnapEnabled ? snap3D(px, py, null, ex._exclude) : null; // 돌출 대상 자신은 제외
-  if (sn && sn.z != null && sn.z - ex.base >= 10) { // 근처 지오메트리 z에 높이 흡착 → 정확한 높낮이
+  // 높이 결정: extrudesrf는 표면 스냅(면 위 아무 점) 우선 → 다른 객체 표면에 접하는 높이까지 정확히.
+  // extrudecrv(동결)는 기존 꼭짓점 스냅(snap3D) 유지.
+  const sn = ex.srf ? srfSurfaceSnap(px, py, ex._exclude) : (osnapEnabled ? snap3D(px, py, null, ex._exclude) : null);
+  if (sn && sn.z != null && sn.z - ex.base >= 10) { // 근처 지오메트리/표면 z에 높이 흡착 → 정확한 높낮이
     v3.snapHit = sn;
     extrudeSetVal(sn.z - ex.base);
     setPrompt(`높이 ${ex.val} · 스냅 z=${Math.round(sn.z)}${sn.kind ? ' (' + sn.kind + ')' : ''} — 클릭/Enter 확정 · 숫자 · Esc`);
