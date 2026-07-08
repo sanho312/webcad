@@ -3833,9 +3833,15 @@ function solidsToTris(onlyIds) {
   for (const s of bimSolids()) {
     if (onlyIds && !onlyIds.has(s.eid)) continue; // 선택 객체만
     const n = s.poly.length;
-    const zt = s.zt || s.poly.map(() => s.z1);
-    const top = s.poly.map((p, i) => [p[0], p[1], zt[i]]);
-    const bot = s.poly.map(p => [p[0], p[1], s.z0]);
+    // 폴리곤 winding을 CCW로 정규화 → 옆면·상하면 법선이 항상 바깥을 향함.
+    // (불리언 CSG는 안/밖 판정을 법선으로 하므로 입력이 CW면 차집합·교집합·합집합이 뒤바뀜.
+    //  벽 밴드는 CW, 상자는 CCW, 사용자 폴리라인은 제각각이라 반드시 정규화해야 함.)
+    let poly = s.poly, zt = s.zt || s.poly.map(() => s.z1);
+    let area2 = 0;
+    for (let i = 0; i < n; i++) { const a = poly[i], b = poly[(i + 1) % n]; area2 += a[0] * b[1] - b[0] * a[1]; }
+    if (area2 < 0) { poly = poly.slice().reverse(); zt = zt.slice().reverse(); }
+    const top = poly.map((p, i) => [p[0], p[1], zt[i]]);
+    const bot = poly.map(p => [p[0], p[1], s.z0]);
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       tris.push([bot[i], bot[j], top[j]], [bot[i], top[j], top[i]]); // 측면

@@ -279,6 +279,32 @@ function tests(){
     const g=ss.find(s=>s.glass);
     ok(!!g,'폴리라인 벽에도 창 유리 생성');
     if(g){ eq(g.z0,900,'유리 z0=씰'); eq(g.z1,2100,'유리 z1=씰+높이'); } }
+
+  group('3D 불리언 — winding 무관 정합 (CW/CCW 혼합)');
+  { // 부호 부피(테트라 합) — winding 일관 시 |vol|=실제 부피
+    const meshVol = (tris) => { let v=0; for(const t of tris){ const[a,b,c]=t;
+      v += (a[0]*(b[1]*c[2]-c[1]*b[2]) - a[1]*(b[0]*c[2]-c[0]*b[2]) + a[2]*(b[0]*c[1]-c[0]*b[1]))/6; } return v; };
+    // base: (0,0)~(1000,1000) CCW / cutter: (500,500)~(1500,1500) CW(반대 winding). 둘 다 h=1000, 겹침 500³=2.5e8
+    const mk = (pts) => ({ type:'LWPOLYLINE', closed:true, points:pts, layer:'0', bim:{kind:'column', base:0, h:1000} });
+    const baseP=[[0,0],[1000,0],[1000,1000],[0,1000]];             // CCW
+    const cutP =[[500,500],[500,1500],[1500,1500],[1500,500]];     // CW (일부러 반대)
+    // 차집합: base − cutter = 1e9 − 2.5e8 = 7.5e8
+    setEnts([mk(baseP), mk(cutP)]);
+    C.runBoolean('subtract', [S0.entities[0]], [S0.entities[1]]);
+    let m = S0.entities.find(e=>e.type==='MESH');
+    ok(!!m, '차집합 결과 메시 생성');
+    if(m) eq(Math.abs(meshVol(m.tris)), 7.5e8, '차집합 부피 = base − 겹침 (winding 반대여도)', 1e6);
+    // 교집합: 겹침 = 2.5e8
+    setEnts([mk(baseP), mk(cutP)]);
+    C.runBoolean('intersect', [S0.entities[0]], [S0.entities[1]]);
+    m = S0.entities.find(e=>e.type==='MESH');
+    if(m) eq(Math.abs(meshVol(m.tris)), 2.5e8, '교집합 부피 = 겹침 (winding 반대여도)', 1e6);
+    // 합집합: 1e9 + 1e9 − 2.5e8 = 1.75e9
+    setEnts([mk(baseP), mk(cutP)]);
+    C.runBoolean('union', [S0.entities[0]], [S0.entities[1]]);
+    m = S0.entities.find(e=>e.type==='MESH');
+    if(m) eq(Math.abs(meshVol(m.tris)), 1.75e9, '합집합 부피 = 두 상자 − 겹침 (winding 반대여도)', 1e6);
+  }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });
