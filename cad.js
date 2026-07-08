@@ -4109,11 +4109,34 @@ function footprintCentroid(sel) { // 선택 곡선들의 평면 무게중심
 }
 function is3DActive() { const ov = document.getElementById('bim3d'); return !!(ov && ov.style.display !== 'none'); }
 function extrudeRefresh() { if (is3DActive()) { if (typeof v3 !== 'undefined' && v3) v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); } }
-// extrudesrf 기준점용 스냅 — 꼭짓점/모서리(snap3D) 우선, 없으면 솔리드 윗/아랫면 '표면'에 흡착
+// extrudesrf 스냅 — 꼭짓점/모서리/중점/중심(snap3D) 우선, 없으면 솔리드 윗/아랫면 '표면'에 흡착.
+// extrudesrf에서는 전역 스냅 토글(osnapEnabled)과 무관하게 항상 스냅 잡히도록 강제.
 function srfSurfaceSnap(px, py, exclude) {
-  const v = snap3D(px, py, null, exclude);
+  const wasOsnap = osnapEnabled; osnapEnabled = true;
+  const v = snap3D(px, py, null, exclude); // 꼭짓점·중점·중심·솔리드 코너
+  osnapEnabled = wasOsnap;
   if (v && v.z != null) return v;
   if (typeof v3 === 'undefined' || !v3 || !v3.solids) return null;
+  const dpr = devicePixelRatio || 1;
+  const nearestOnSeg = (A, B) => { const pa = proj3D(A[0], A[1], A[2]), pb = proj3D(B[0], B[1], B[2]); const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy; const t = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0; return { d: Math.hypot(px - (pa[0] + dx * t), py - (pa[1] + dy * t)), t }; };
+  // 모서리 스냅: 수평변(윗·아랫변)은 표면보다 우선, 수직변은 표면보다 후순위(면 위에서 오스냅 방지)
+  let hBest = null, hBestD = 10 * dpr, vBest = null, vBestD = 10 * dpr;
+  for (const s of v3.solids) {
+    if (exclude && exclude.has(s.eid)) continue;
+    const n = s.poly.length, zt = s.zt || s.poly.map(() => s.z1);
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      for (const zz of [[zt[i], zt[j]], [s.z0, s.z0]]) { // 윗변·아랫변
+        const A = [s.poly[i][0], s.poly[i][1], zz[0]], B = [s.poly[j][0], s.poly[j][1], zz[1]];
+        const rr = nearestOnSeg(A, B);
+        if (rr.d < hBestD) { hBestD = rr.d; hBest = { x: Math.round(A[0] + (B[0] - A[0]) * rr.t), y: Math.round(A[1] + (B[1] - A[1]) * rr.t), z: Math.round(A[2] + (B[2] - A[2]) * rr.t), kind: '모서리' }; }
+      }
+      const Av = [s.poly[i][0], s.poly[i][1], s.z0], Bv = [s.poly[i][0], s.poly[i][1], zt[i]]; // 수직변
+      const rv = nearestOnSeg(Av, Bv);
+      if (rv.d < vBestD) { vBestD = rv.d; vBest = { x: s.poly[i][0], y: s.poly[i][1], z: Math.round(s.z0 + (zt[i] - s.z0) * rv.t), kind: '모서리' }; }
+    }
+  }
+  if (hBest) return hBest;
   const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   let best = null, bestDepth = Infinity;
   for (const s of v3.solids) {
@@ -4126,7 +4149,7 @@ function srfSurfaceSnap(px, py, exclude) {
       if (depth < bestDepth) { const w = unproj3D(px, py, zf); bestDepth = depth; best = { x: w ? Math.round(w[0]) : s.poly[0][0], y: w ? Math.round(w[1]) : s.poly[0][1], z: zf, kind: '표면' }; }
     }
   }
-  return best;
+  return best || vBest; // 표면 없으면 수직변
 }
 function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (10 스냅, 최소 10)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
