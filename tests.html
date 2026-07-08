@@ -325,10 +325,15 @@ function tests(){
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(false);
     ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall' && S0.entities[0].bim.t===0, 'cap=n → 캡 없는 면(wall t0) 즉시 생성');
     C.extrudeFinish(); ok(!C.extrudePend && S0.entities[0].bim.h>0, '  빈 Enter로 기본 높이 확정');
-    // 열린 곡선은 cap=y여도 면(닫혀야 캡 가능)
-    setEnts([{type:'LWPOLYLINE',closed:false,points:[[0,0],[3000,0],[3000,2000]],layer:'0'}]);
+    // 열린 폴리라인(닫힘 플래그 없음)이라도 cap=y면 캡 씌운 솔리드(column) — 사용자 요청 핵심(위·아래 면 생성)
+    setEnts([{type:'LWPOLYLINE',closed:false,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(true);
-    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall', '열린 곡선 → cap=y여도 면(wall)');
+    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='column', '열린 폴리라인 cap=y → 솔리드(column, 상·하면 포함)');
+    C.extrudeFinish();
+    // 2점 선은 면적을 못 이루므로 cap=y여도 면(wall)
+    setEnts([{type:'LINE',x1:0,y1:0,x2:3000,y2:0,layer:'0'}]);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(true);
+    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall', '2점 선 cap=y → 면(wall, 캡 불가)');
     C.extrudeFinish();
     // (a) 명령 후 선택: 선택 없이 실행 → pickSel 대기
     C.reset(); C.beginExtrude('extrudecrv');
