@@ -3040,13 +3040,13 @@ function bind3D(ov, cv3) {
   let drag = null;
   cv3.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    if (extrudePend && extrudePend.stage === 'height') { // 돌출 높이: 1차 좌클릭=기준점 지정, 2차 좌클릭=확정, 우클릭=취소
+    if (extrudePend && extrudePend.stage === 'height') { // 돌출 높이: 기준점 지정 전엔 좌클릭=기준점(스냅), awaitTop=확정, 우클릭=취소
       if (e.button === 2) { extrudePendCancel(); return; }
-      if (extrudePend.heightPhase === 'confirmFace') return; // 포커싱 단계: Space/Enter로 진행(클릭 무시)
       const rr = cv3.getBoundingClientRect();
       const cpx = (e.clientX - rr.left) * (rr.width ? cv3.width / rr.width : 1);
       const cpy = (e.clientY - rr.top) * (rr.height ? cv3.height / rr.height : 1);
-      if (extrudePend.heightPhase === 'awaitBase') extrudeSetBase(cpx, cpy); else extrudeFinish();
+      if (extrudePend.heightPhase === 'awaitTop') extrudeFinish();
+      else extrudeSetBase(cpx, cpy); // confirmFace/awaitBase 클릭 → 기준점(스냅) 지정 후 높이 조절로
       return;
     }
     { // 사분할: 클릭한 뷰포트를 활성화
@@ -4216,7 +4216,7 @@ function extrudeHover(e) {
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
-    if (ex.srf && ex.heightPhase === 'awaitBase') { v3.snapHit = srfSurfaceSnap(px, py, ex._exclude) || null; markInteract(); } // 기준점 선택 중 객체 표면/꼭짓점 스냅 표시
+    if (ex.srf) { v3.snapHit = srfSurfaceSnap(px, py, ex._exclude) || null; markInteract(); } // 면 포커싱 순간부터 객체 꼭짓점·모서리·표면 스냅 표시
     return;
   }
   // 높이 결정: extrudesrf는 표면 스냅(면 위 아무 점) 우선 → 다른 객체 표면에 접하는 높이까지 정확히.
@@ -5558,10 +5558,11 @@ function emptyEnterAction() {
     if (extrudePend.stage === 'height') {
       if (extrudePend.srf && extrudePend.heightPhase === 'confirmFace') { // 면 포커싱 후 Space/Enter → 기준점 선택 시작
         extrudePend.heightPhase = 'awaitBase';
-        setPrompt('기준점을 클릭하세요 — 화면 어디나 가능, 객체 표면엔 스냅 · 숫자 입력도 가능 · Esc');
-        logLine('  ▷ 기준점을 클릭하세요 (객체 표면·꼭짓점에 스냅됨) — 또는 높이값 입력', 'info');
+        setPrompt('기준점을 클릭하세요 — 화면 어디나 가능, 객체 꼭짓점·모서리·표면엔 스냅 · 숫자 입력도 가능 · Esc');
+        logLine('  ▷ 기준점을 클릭하세요 (객체 꼭짓점·모서리·표면에 스냅됨) — 또는 높이값 입력', 'info');
         return;
       }
+      if (extrudePend.srf && extrudePend.heightPhase === 'awaitBase') { logLine('  ▷ 기준점을 화면에서 클릭하세요 (스냅). 또는 높이값 입력.', 'info'); return; } // 기준점 클릭 대기 — Enter로 안 끝냄
       if (!extrudePend.applied) { extrudePend.val = settings.bim.wallH || 2700; extrudeApplyKind(); } // Enter=현재(또는 기본) 높이로 확정
       extrudeFinish(); return;
     }
