@@ -2952,13 +2952,15 @@ function renderScene(isActive) {
     }
     if (previewEnts) for (const e of previewEnts) strokeGhost(pathOf(e));
   }
-  // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각)
+  // 스냅 마커 — 2D와 동일한 초록 표식 (끝점=사각, 중간점=삼각). extrudesrf 중엔 크게 + z 라벨
   if (v3.snapHit) {
     const sm = v3.snapHit, dpr3 = devicePixelRatio || 1;
     const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : cplaneZ());
-    const rr = 7 * dpr3;
+    const big = (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.srf);
+    const rr = (big ? 11 : 7) * dpr3;
     c.save();
-    c.strokeStyle = '#2ee6a6'; c.lineWidth = 1.8 * dpr3; c.setLineDash([]);
+    c.strokeStyle = '#2ee6a6'; c.lineWidth = (big ? 2.6 : 1.8) * dpr3; c.setLineDash([]);
+    if (big) { c.shadowColor = 'rgba(0,0,0,.5)'; c.shadowBlur = 3 * dpr3; }
     if (sm.kind === 'midpoint') {
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
     } else if (sm.kind === 'center') {
@@ -2971,6 +2973,7 @@ function renderScene(isActive) {
     } else {
       c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
     }
+    if (big && sm.z != null) { c.shadowBlur = 0; c.fillStyle = '#2ee6a6'; c.font = `700 ${12 * dpr3}px -apple-system,system-ui,sans-serif`; c.fillText('z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : ''), sp3[0] + rr + 4 * dpr3, sp3[1] - 4 * dpr3); }
     c.restore();
   }
   // 3D 선 러버밴드 — 시작점(실제 z)에서 커서(스냅 z/작업면)까지
@@ -4232,7 +4235,12 @@ function extrudeHover(e) {
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
-    if (ex.srf) { v3.snapHit = srfSurfaceSnap(px, py, ex._exclude) || null; markInteract(); } // 면 포커싱 순간부터 객체 꼭짓점·모서리·표면 스냅 표시
+    if (ex.srf) { // 면 포커싱 순간부터 객체 꼭짓점·모서리·표면 스냅 표시 + 명령창 실시간 표기
+      const sn = srfSurfaceSnap(px, py, ex._exclude);
+      v3.snapHit = sn || null;
+      setPrompt(sn && sn.z != null ? `스냅 ▶ z=${Math.round(sn.z)} (${sn.kind}) — 클릭=기준점 확정 · Esc` : '기준점 클릭 (객체 꼭짓점·모서리·표면에 스냅) · 숫자 입력 · Esc');
+      markInteract();
+    }
     return;
   }
   // 높이 결정: extrudesrf는 표면 스냅(면 위 아무 점) 우선 → 다른 객체 표면에 접하는 높이까지 정확히.
