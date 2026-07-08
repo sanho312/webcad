@@ -2841,10 +2841,16 @@ function renderScene(isActive) {
       if (!v3.srfHi.has(s.eid)) continue;
       const zt = s.zt || s.poly.map(() => s.z1);
       const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
+      const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
       c.save();
       c.beginPath(); top.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath();
       c.fillStyle = 'rgba(10,132,255,0.32)'; c.fill();
       c.strokeStyle = '#0A84FF'; c.lineWidth = 2.5 * dpr; c.stroke();
+      // 바닥 윤곽 + 수직 모서리 점선 — 붙일 수 있는 스냅 참조(꼭짓점·중점·모서리) 시각화
+      c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(94,177,255,0.9)'; c.lineWidth = 1.4 * dpr;
+      c.beginPath(); bot.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke();
+      c.beginPath(); for (let i = 0; i < top.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
+      c.setLineDash([]);
       c.restore();
     }
   }
@@ -4248,9 +4254,9 @@ function extrudeHover(e) {
     }
     return;
   }
-  // 높이 결정: extrudesrf는 표면 스냅(면 위 아무 점) 우선 → 다른 객체 표면에 접하는 높이까지 정확히.
-  // extrudecrv(동결)는 기존 꼭짓점 스냅(snap3D) 유지.
-  const sn = ex.srf ? srfSurfaceSnap(px, py, ex._exclude) : (osnapEnabled ? snap3D(px, py, null, ex._exclude) : null);
+  // 높이 결정: extrudesrf는 모든 객체(대상 자신 포함)의 꼭짓점·중점·모서리·표면 스냅 → 다양한 높이 선택지.
+  // (대상 자신 바닥 z0는 높이<10이라 자동 무시, 윗면 z1은 현재 높이라 무해) extrudecrv(동결)는 snap3D 유지.
+  const sn = ex.srf ? srfSurfaceSnap(px, py, null) : (osnapEnabled ? snap3D(px, py, null, ex._exclude) : null);
   if (sn && sn.z != null && sn.z - ex.base >= 10) { // 근처 지오메트리/표면 z에 높이 흡착 → 정확한 높낮이
     v3.snapHit = sn;
     extrudeSetVal(sn.z - ex.base);
