@@ -4123,8 +4123,12 @@ function extrudeRefresh() { if (is3DActive()) { if (typeof v3 !== 'undefined' &&
 function srfSurfaceSnap(px, py, exclude) {
   if (typeof v3 === 'undefined' || !v3) return null;
   const dpr = devicePixelRatio || 1;
+  // snap3D는 비-BIM(선·곡선)만 담당 — BIM 객체는 snap3D가 중점/끝점을 항상 바닥 z로 줘서 부정확.
+  // BIM은 아래 footprint 루프가 바닥(z0)·윗면(z1) 각각에서 꼭짓점·중점·모서리를 정확히 스냅.
+  const svExclude = new Set(); for (const e of state.entities) if (e.bim) svExclude.add(e.id);
+  if (exclude) for (const id of exclude) svExclude.add(id);
   const wasOsnap = osnapEnabled; osnapEnabled = true;
-  const sv = snap3D(px, py, null, exclude); // 솔리드 꼭짓점·중점·중심·nearest
+  const sv = snap3D(px, py, null, svExclude); // 비-BIM 선/곡선의 끝점·중점·중심·nearest
   osnapEnabled = wasOsnap;
   const svVertex = (sv && sv.z != null && ['endpoint', 'center', 'midpoint'].includes(sv.kind)) ? sv : null;
   const svEdge = (sv && sv.z != null && sv.kind === 'nearest') ? sv : null;
@@ -4178,8 +4182,10 @@ function srfSurfaceSnap(px, py, exclude) {
       if (uu >= -0.001 && ww >= -0.001 && uu + ww <= 1.001) { const depth = (a[2] + b[2] + cc[2]) / 3; if (depth < mFDepth) { mFDepth = depth; const wz = t[0][2] + (t[2][2] - t[0][2]) * uu + (t[1][2] - t[0][2]) * ww; const w = unproj3D(px, py, wz); mF = { x: w ? Math.round(w[0]) : Math.round(t[0][0]), y: w ? Math.round(w[1]) : Math.round(t[0][1]), z: Math.round(wz), kind: '표면' }; } }
     }
   }
-  // 우선순위: 꼭짓점 > 중점 > 모서리 > 표면
-  return svVertex || bV || mV || mMid || hBest || svEdge || mE || sfBest || mF || null;
+  // BIM 꼭짓점·중점은 화면상 더 가까운 쪽 (납작한 박스에서 바닥 꼭짓점이 윗변 중점을 가리는 것 방지)
+  const bimPt = (bV && mMid) ? (bVD <= mMidD ? bV : mMid) : (bV || mMid);
+  // 우선순위: BIM 꼭짓점/중점(정확 z) > 비-BIM 꼭짓점/중점 > 메시 꼭짓점 > 모서리 > 표면
+  return bimPt || svVertex || mV || hBest || svEdge || mE || sfBest || mF || null;
 }
 function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (10 스냅, 최소 10)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
