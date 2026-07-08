@@ -4092,14 +4092,16 @@ function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (
   ex.val = Math.max(10, Math.round(val / 10) * 10);
   for (const it of ex.items) { const e = state.entities.find(x => x.id === it.id); if (e && e.bim) e.bim.h = ex.val; }
 }
-// 캡 유무에 따라 대상 bim 종류 설정 — cap=y & 면 되는 프로파일=solid(column), 아니면 면(wall t0)
+// 캡 유무에 따라 대상 bim 종류 설정(=이때 비로소 입체 생성) — cap=y & 면 되는 프로파일=solid(column), 아니면 면(wall t0)
 function extrudeApplyKind() {
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
+  const h = Math.max(10, ex.val);
   for (const it of ex.items) {
     const e = state.entities.find(x => x.id === it.id); if (!e) continue;
     const cappable = (e.type === 'CIRCLE') || (e.type === 'LWPOLYLINE' && (e.points || []).length >= 3);
-    e.bim = (ex.cap && cappable) ? { kind: 'column', h: ex.val, base: it.base } : { kind: 'wall', h: ex.val, t: 0, base: it.base };
+    e.bim = (ex.cap && cappable) ? { kind: 'column', h, base: it.base } : { kind: 'wall', h, t: 0, base: it.base };
   }
+  ex.applied = true;
 }
 function extrudePromptHeight() { // 단계별 명령창 안내 (+ 캡 유무 토글 버튼)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
@@ -4114,18 +4116,22 @@ function extrudePromptHeight() { // 단계별 명령창 안내 (+ 캡 유무 토
 function extrudeSetCap(cap) { // 캡 유무 지정 → 마지막 선택으로 저장(다음 돌출에도 유지)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   lastExtrudeCap = !!cap; ex.cap = !!cap;
-  extrudeApplyKind(); extrudeSetVal(ex.val); extrudeRefresh(); extrudePromptHeight();
+  if (ex.applied) { extrudeApplyKind(); extrudeSetVal(ex.val); extrudeRefresh(); } // 이미 생성됐으면 종류만 갱신(아직 클릭 전이면 유지만)
+  extrudePromptHeight();
   logLine(`  ▷ 캡 ${ex.cap ? '있음(솔리드)' : '없음(면)'} — 이후 돌출에도 유지`, 'info');
 }
 function extrudeToggleCap() { extrudeSetCap(!(extrudePend && extrudePend.cap)); }
-// 높이 기준점을 '클릭'으로 지정 (커서 위치가 아니라 클릭한 화면 위치가 기준) → 이후 커서/숫자로 높이
+// 높이 기준점을 '클릭'으로 지정 (화면 어느 곳이든 그 클릭 위치가 기준=높이 0) → 이때 비로소 입체 생성,
+// 이후 커서로 높이 결정(다른 객체 스냅). 클릭 전엔 높이 없음(평면 곡선 상태).
 function extrudeSetBase(px, py) {
   const ex = extrudePend; if (!ex || ex.stage !== 'height' || !is3DActive() || typeof v3 === 'undefined' || !v3) return;
   const vi = vpAt(px, py), rct = vpRect(vi), w = v3.views ? v3.views[vi] : null;
   ex.k = (Math.min(rct.w, rct.h) / (v3.fit * 1.4) * (w ? w.zoom : v3.zoom)) || 1;
-  ex.anchorPy = py; ex.h0 = ex.val; ex.heightPhase = 'awaitTop';
-  setPrompt(`높이 ${ex.val} — 커서로 조절 후 클릭/Enter 확정 · 숫자 입력 · Esc`);
-  logLine('  ▷ 높이 기준점(클릭) 지정 — 커서를 위·아래로 움직여 높이를 정하고 클릭(또는 숫자)', 'info');
+  ex.anchorPy = py; ex.h0 = 0; ex.heightPhase = 'awaitTop';
+  extrudeApplyKind(); extrudeSetVal(10); // 기준점=높이 0에서 시작 → 커서로 키움
+  extrudeRefresh();
+  setPrompt(`높이 ${ex.val} — 커서로 조절(다른 객체에 스냅) 후 클릭/Enter 확정 · 숫자 · Esc`);
+  logLine('  ▷ 높이 기준점(클릭) 지정 — 커서를 움직여 높이 결정(다른 객체에 스냅), 클릭/Enter 확정', 'info');
 }
 // 3D 커서로 높이 조절 (awaitTop) — 항상 스냅 우선: 커서 근처 지오메트리 z에 높이 흡착.
 // 스냅이 없으면 기준점(클릭) 대비 세로 이동량으로 조절.
@@ -4181,7 +4187,7 @@ function beginExtrude(cmd) {
   setPrompt(`${what} 선택 후 Enter — ${cmd}`);
   extrudeRefresh();
 }
-// 캡은 마지막 선택(lastExtrudeCap) 자동 적용 → 매번 안 물음. 즉시 기본 높이로 생성 → 클릭으로 기준점→높이.
+// 캡은 마지막 선택(lastExtrudeCap) 자동 적용. 3D에서는 '클릭'해야 높이 시작 — 클릭 전엔 높이 없음(평면).
 function extrudeStart(cmd, sel) {
   pushUndo();
   const items = []; let nSlant = 0;
@@ -4195,13 +4201,16 @@ function extrudeStart(cmd, sel) {
   const c = footprintCentroid(sel);
   const defH = settings.bim.wallH || 2700;
   const base = items.length ? Math.min(...items.map(it => it.base)) : lvElev();
-  extrudePend = { cmd, stage: 'height', heightPhase: 'awaitBase', items, cx: c.x, cy: c.y, val: defH, anchorPy: null, h0: defH, k: 0, cap: lastExtrudeCap, base, _exclude: new Set(items.map(it => it.id)) };
-  extrudeApplyKind();  // 마지막 캡 선택으로 즉시 생성
-  extrudeSetVal(defH); // 기본 높이로 바로 보임
-  extrudeRefresh();
-  const capTxt = lastExtrudeCap ? '캡 있는 솔리드' : '캡 없는 면';
-  logLine(`  ✔ ${capTxt} 생성(높이 ${defH}) — ${is3DActive() ? '높이 기준점을 클릭하거나 ' : ''}높이값 입력 · 캡은 버튼으로 전환(유지됨)`, 'ok');
-  extrudePromptHeight();
+  extrudePend = { cmd, stage: 'height', heightPhase: 'awaitBase', items, cx: c.x, cy: c.y, val: defH, anchorPy: null, h0: 0, k: 0, cap: lastExtrudeCap, base, _exclude: new Set(items.map(it => it.id)), applied: false };
+  if (is3DActive()) { // 3D: 클릭해야 높이 시작 — 그 전엔 높이값을 정하지 않음(평면 곡선 상태로 대기)
+    extrudeRefresh();
+    logLine(`  ▷ ${cmd}: 화면을 클릭하면 그 지점을 기준으로 높이가 시작됩니다(움직이며 다른 객체에 스냅). 또는 높이값 입력 · 캡 버튼으로 전환`, 'info');
+    extrudePromptHeight();
+  } else { // 평면: 클릭 드래그 불가 → 기본 높이로 생성 후 숫자로 조정
+    extrudeApplyKind(); extrudeSetVal(defH); extrudeRefresh();
+    logLine(`  ✔ ${lastExtrudeCap ? '캡 있는 솔리드' : '캡 없는 면'} 생성(높이 ${defH}) — 높이값 입력 후 Enter`, 'ok');
+    extrudePromptHeight();
+  }
 }
 function cmdExtrudeCrv() { beginExtrude('extrudecrv'); }
 function cmdExtrudeSrf() { beginExtrude('extrudesrf'); }
@@ -5375,11 +5384,11 @@ function runCommandInput(raw) {
   logLine('명령: ' + v, 'cmd');
   // 돌출(extrudecrv/extrudesrf) 진행 단계 입력 우선 처리
   if (extrudePend) {
-    if (extrudePend.stage === 'height') { // 이미 생성됨 — y/n=캡 전환, 숫자=정확한 높이로 변경 후 확정
+    if (extrudePend.stage === 'height') { // y/n=캡 전환, 숫자=그 높이로 (클릭 안 했어도) 생성·확정
       if (v === 'y' || v === 'yes' || v === '예') { extrudeSetCap(true); return; }
       if (v === 'n' || v === 'no' || v === '아니오') { extrudeSetCap(false); return; }
       const hn = parseFloat(v);
-      if (!isNaN(hn) && /^-?[\d.]+$/.test(v) && hn > 0) { extrudeSetVal(hn); extrudeFinish(); return; }
+      if (!isNaN(hn) && /^-?[\d.]+$/.test(v) && hn > 0) { extrudeSetVal(hn); if (!extrudePend.applied) extrudeApplyKind(); extrudeSetVal(hn); extrudeFinish(); return; }
       logLine('  높이값(양수) 입력·빈 Enter 확정 · y/n=캡 전환.', 'warn'); return;
     }
     if (extrudePend.stage === 'pickSel') { extrudePend = null; setPrompt(''); } // 다른 명령 입력 시 선택대기 취소 후 진행
@@ -5453,7 +5462,10 @@ function emptyEnterAction() {
       if (!valid.length) { logLine('  선택된 대상이 없습니다 — 곡선/면을 클릭한 뒤 Enter.', 'warn'); return; }
       const cmd = extrudePend.cmd; extrudePend = null; extrudeStart(cmd, valid); return;
     }
-    if (extrudePend.stage === 'height') { extrudeFinish(); return; }
+    if (extrudePend.stage === 'height') { // Enter=현재(또는 아직 클릭 전이면 기본) 높이로 확정
+      if (!extrudePend.applied) { extrudePend.val = settings.bim.wallH || 2700; extrudeApplyKind(); }
+      extrudeFinish(); return;
+    }
   }
   if (typeof boolPending !== 'undefined' && boolPending) { boolFinish(); return; } // 차집합 2단계 완료
   if (state.tool === 'pline') {
