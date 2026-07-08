@@ -3042,6 +3042,7 @@ function bind3D(ov, cv3) {
     e.preventDefault();
     if (extrudePend && extrudePend.stage === 'height') { // 돌출 높이: 1차 좌클릭=기준점 지정, 2차 좌클릭=확정, 우클릭=취소
       if (e.button === 2) { extrudePendCancel(); return; }
+      if (extrudePend.heightPhase === 'confirmFace') return; // 포커싱 단계: Space/Enter로 진행(클릭 무시)
       const rr = cv3.getBoundingClientRect();
       const cpx = (e.clientX - rr.left) * (rr.width ? cv3.width / rr.width : 1);
       const cpy = (e.clientY - rr.top) * (rr.height ? cv3.height / rr.height : 1);
@@ -4108,6 +4109,25 @@ function footprintCentroid(sel) { // 선택 곡선들의 평면 무게중심
 }
 function is3DActive() { const ov = document.getElementById('bim3d'); return !!(ov && ov.style.display !== 'none'); }
 function extrudeRefresh() { if (is3DActive()) { if (typeof v3 !== 'undefined' && v3) v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); } }
+// extrudesrf 기준점용 스냅 — 꼭짓점/모서리(snap3D) 우선, 없으면 솔리드 윗/아랫면 '표면'에 흡착
+function srfSurfaceSnap(px, py, exclude) {
+  const v = snap3D(px, py, null, exclude);
+  if (v && v.z != null) return v;
+  if (typeof v3 === 'undefined' || !v3 || !v3.solids) return null;
+  const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+  let best = null, bestDepth = Infinity;
+  for (const s of v3.solids) {
+    if (exclude && exclude.has(s.eid)) continue;
+    const zt = s.zt || s.poly.map(() => s.z1);
+    for (const zf of [Math.max(...zt), s.z0]) { // 윗면·아랫면
+      const proj = s.poly.map(p => proj3D(p[0], p[1], zf));
+      if (!inPoly(proj)) continue;
+      const depth = proj.reduce((a, p) => a + p[2], 0) / proj.length;
+      if (depth < bestDepth) { const w = unproj3D(px, py, zf); bestDepth = depth; best = { x: w ? Math.round(w[0]) : s.poly[0][0], y: w ? Math.round(w[1]) : s.poly[0][1], z: zf, kind: '표면' }; }
+    }
+  }
+  return best;
+}
 function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (10 스냅, 최소 10)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   ex.val = Math.max(10, Math.round(val / 10) * 10);
@@ -4152,8 +4172,8 @@ function extrudeSetBase(px, py) {
   const vi = vpAt(px, py), rct = vpRect(vi), w = v3.views ? v3.views[vi] : null;
   ex.k = (Math.min(rct.w, rct.h) / (v3.fit * 1.4) * (w ? w.zoom : v3.zoom)) || 1;
   let apy = py, h0 = (ex.srf && ex.applied) ? ex.val : 0;
-  if (ex.srf && osnapEnabled) { // 면 밀당은 기준점도 스냅 — 스냅된 지오메트리 점의 화면위치/높이를 기준으로
-    const sn = snap3D(px, py, null, ex._exclude);
+  if (ex.srf && osnapEnabled) { // 면 밀당은 기준점도 스냅(꼭짓점·모서리·객체 표면) — 그 점의 화면위치/높이를 기준으로
+    const sn = srfSurfaceSnap(px, py, ex._exclude);
     if (sn && sn.z != null) { const s = proj3D(sn.x, sn.y, sn.z); apy = s[1]; h0 = Math.max(0, sn.z - ex.base); }
   }
   ex.anchorPy = apy; ex.h0 = h0; ex.heightPhase = 'awaitTop';
@@ -4172,8 +4192,8 @@ function extrudeHover(e) {
   const r = v3.cv.getBoundingClientRect();
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
-  if (ex.heightPhase !== 'awaitTop') { // 기준점 클릭 대기 중
-    if (ex.srf && osnapEnabled) { v3.snapHit = snap3D(px, py, null, ex._exclude) || null; markInteract(); } // 면 밀당은 기준점 선택도 스냅 표시
+  if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
+    if (ex.srf && ex.heightPhase === 'awaitBase' && osnapEnabled) { v3.snapHit = srfSurfaceSnap(px, py, ex._exclude) || null; markInteract(); } // 기준점 선택 중 객체 표면/꼭짓점 스냅 표시
     return;
   }
   const sn = osnapEnabled ? snap3D(px, py, null, ex._exclude) : null; // 돌출 대상 자신은 제외
@@ -4246,9 +4266,10 @@ function extrudeStart(cmd, sel) {
     // 객체 전체가 아니라 '선택된 면(윗면)'만 강조 — 전체 선택 하이라이트 해제하고 윗면만 표시
     if (typeof v3 !== 'undefined' && v3) v3.srfHi = new Set(items.map(it => it.id));
     state.selection.clear();
+    extrudePend.heightPhase = 'confirmFace'; // 면 포커싱만 — Space/Enter로 기준점 선택 시작
     extrudeRefresh(); renderProps();
-    logLine(`  ▷ extrudesrf: 선택한 면(윗면)을 밀거나 당길 높이 — 화면을 클릭해 마우스로 조절(다른 객체에 스냅) 또는 높이값 입력 · Esc`, 'info');
-    setPrompt(`높이 ${extrudePend.val} — 화면 클릭으로 조절(스냅) / 숫자 입력 / Esc`);
+    logLine(`  ▷ extrudesrf: 면 포커싱됨 — Space/Enter를 눌러 기준점 선택을 시작하거나, 높이값을 바로 입력 · Esc`, 'info');
+    setPrompt(`면 선택됨 — Space/Enter로 기준점 선택 시작 · 또는 높이값 입력 · Esc`);
   } else if (is3DActive()) { // extrudecrv 3D(동결): 클릭해야 높이 시작 — 평면 대기
     extrudeRefresh();
     logLine(`  ▷ ${cmd}: 화면을 클릭하면 그 지점을 기준으로 높이가 시작됩니다(움직이며 다른 객체에 스냅). 또는 높이값 입력 · 캡 버튼으로 전환`, 'info');
@@ -5509,8 +5530,14 @@ function emptyEnterAction() {
       if (!valid.length) { logLine('  선택된 대상이 없습니다 — 곡선/면을 클릭한 뒤 Enter.', 'warn'); return; }
       const cmd = extrudePend.cmd; extrudePend = null; extrudeStart(cmd, valid); return;
     }
-    if (extrudePend.stage === 'height') { // Enter=현재(또는 아직 클릭 전이면 기본) 높이로 확정
-      if (!extrudePend.applied) { extrudePend.val = settings.bim.wallH || 2700; extrudeApplyKind(); }
+    if (extrudePend.stage === 'height') {
+      if (extrudePend.srf && extrudePend.heightPhase === 'confirmFace') { // 면 포커싱 후 Space/Enter → 기준점 선택 시작
+        extrudePend.heightPhase = 'awaitBase';
+        setPrompt('기준점을 클릭하세요 — 화면 어디나 가능, 객체 표면엔 스냅 · 숫자 입력도 가능 · Esc');
+        logLine('  ▷ 기준점을 클릭하세요 (객체 표면·꼭짓점에 스냅됨) — 또는 높이값 입력', 'info');
+        return;
+      }
+      if (!extrudePend.applied) { extrudePend.val = settings.bim.wallH || 2700; extrudeApplyKind(); } // Enter=현재(또는 기본) 높이로 확정
       extrudeFinish(); return;
     }
   }
