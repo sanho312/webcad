@@ -359,6 +359,7 @@ function tests(){
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0',bim:{kind:'column',h:2000,base:0}}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeSrf();
     ok(C.extrudePend && C.extrudePend.stage==='height' && C.extrudePend.srf, 'extrudesrf 솔리드 선택 → 면 밀당(srf) height 단계');
+    ok(S0.selection.size===0, '  전체 선택 해제(객체 전체가 아니라 윗면만 강조)');
     eq(C.extrudePend.val, 2000, '  현재 높이(2000)에서 시작');
     C.extrudeSetVal(3500); C.extrudeFinish();
     ok(S0.entities[0].bim.kind==='column' && S0.entities[0].bim.h===3500, '  숫자로 높이 3500으로 당김(솔리드 유지)');
