@@ -306,52 +306,65 @@ function tests(){
     if(m) eq(Math.abs(meshVol(m.tris)), 1.75e9, '합집합 부피 = 두 상자 − 겹침 (winding 반대여도)', 1e6);
   }
 
-  group('돌출 — 선택→cap(y/n)→즉시 생성→높이 조절, 두 선택순서, 팝업 없음 (extrudecrv/extrudesrf 공용)');
+  group('돌출 — 캡 마지막선택 유지 + 클릭기준 높이, 두 선택순서, 팝업 없음 (extrudecrv/extrudesrf 공용)');
   { const APP = document.getElementById('app').contentWindow; const oldPrompt = APP.prompt;
-    APP.prompt = ()=>{ record(false,'돌출 중 prompt() 호출됨 — 팝업이 남아있음'); return null; }; // 팝업 나오면 실패로 표시
-    // (b) 객체 선택 후 명령 → cap 질문 단계 (팝업 없이)
+    APP.prompt = ()=>{ record(false,'돌출 중 prompt() 호출됨 — 팝업이 남아있음'); return null; };
+    C.extrudeSetCap && C.extrudePend; // noop
+    // (b) 선택 후 명령 → cap 안 묻고 바로 height 단계(마지막 선택=기본 있음)
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
-    ok(C.extrudePend && C.extrudePend.stage==='capAsk', '닫힌 곡선 선택+extrudecrv → cap 질문(capAsk)');
-    C.extrudeRun(true); // cap=y → 즉시 생성 + height 단계
-    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='column', '  cap=y → 솔리드(column) 즉시 생성');
-    ok(C.extrudePend && C.extrudePend.stage==='height', '  height 조절 단계 (이미 생성됨)');
-    ok(S0.entities[0].bim.h>0, '  기본 높이로 바로 보임(h>0)');
+    ok(C.extrudePend && C.extrudePend.stage==='height', '선택+명령 → cap 안 묻고 바로 height 단계');
+    ok(C.extrudePend.heightPhase==='awaitBase', '  높이 기준점 클릭 대기(awaitBase)');
+    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='column', '  기본 캡=있음 → 솔리드(column) 즉시 생성');
+    ok(S0.entities[0].bim.h>0, '  기본 높이로 바로 보임');
     C.extrudeSetVal(3000); C.extrudeFinish();
-    eq(S0.entities[0].bim.h, 3000, '  높이값 3000 반영');
-    ok(!C.extrudePend, '  확정 후 대기 없음');
-    // cap=n → 캡 없는 면(wall t0), 빈 Enter(=extrudeFinish)로 기본 높이 확정
+    eq(S0.entities[0].bim.h, 3000, '  숫자 높이 3000 확정');
+    // 캡 없음으로 전환 → wall + 마지막 선택 저장
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
-    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(false);
-    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall' && S0.entities[0].bim.t===0, 'cap=n → 캡 없는 면(wall t0) 즉시 생성');
-    C.extrudeFinish(); ok(!C.extrudePend && S0.entities[0].bim.h>0, '  빈 Enter로 기본 높이 확정');
-    // 열린 폴리라인(닫힘 플래그 없음)이라도 cap=y면 캡 씌운 솔리드(column) — 사용자 요청 핵심(위·아래 면 생성)
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
+    C.extrudeSetCap(false);
+    ok(S0.entities[0].bim.kind==='wall' && S0.entities[0].bim.t===0, '캡 없음 전환 → 면(wall t0)');
+    ok(C.lastExtrudeCap===false, '  lastExtrudeCap=false 저장');
+    C.extrudeFinish();
+    // 다음 돌출은 캡 없음이 유지됨(안 물음)
+    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,1000],[0,1000]],layer:'0'}]);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
+    ok(S0.entities[0].bim.kind==='wall', '다음 돌출 → 마지막 선택(캡 없음) 자동 유지');
+    C.extrudeSetCap(true); C.extrudeFinish(); ok(C.lastExtrudeCap===true, '  다시 캡 있음으로 (복구)');
+    // 클릭기준 높이: awaitBase면 커서 이동으로 높이 안 바뀜(기준점 클릭 전)
+    setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
+    const h0=S0.entities[0].bim.h;
+    C.extrudeHover({clientX:250,clientY:200,pointerId:1}); // awaitBase → 무시
+    eq(S0.entities[0].bim.h, h0, '  기준점 클릭 전엔 커서 이동으로 높이 안 바뀜');
+    C.extrudeFinish();
+    // 열린 폴리라인 캡 있음 → 솔리드 (위·아래 면)
     setEnts([{type:'LWPOLYLINE',closed:false,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0'}]);
-    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(true);
-    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='column', '열린 폴리라인 cap=y → 솔리드(column, 상·하면 포함)');
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
+    ok(S0.entities[0].bim.kind==='column', '열린 폴리라인 캡 있음 → 솔리드(column, 상·하면)');
     C.extrudeFinish();
-    // 2점 선은 면적을 못 이루므로 cap=y여도 면(wall)
+    // 2점 선은 캡 불가 → 면
     setEnts([{type:'LINE',x1:0,y1:0,x2:3000,y2:0,layer:'0'}]);
-    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(true);
-    ok(S0.entities[0].bim && S0.entities[0].bim.kind==='wall', '2점 선 cap=y → 면(wall, 캡 불가)');
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
+    ok(S0.entities[0].bim.kind==='wall', '2점 선 → 면(wall, 캡 불가)');
     C.extrudeFinish();
-    // (a) 명령 후 선택: 선택 없이 실행 → pickSel 대기
+    // (a) 명령 후 선택: pickSel
     C.reset(); C.beginExtrude('extrudecrv');
     ok(C.extrudePend && C.extrudePend.stage==='pickSel', '선택 없이 extrudecrv → 객체 선택 대기(pickSel)');
     C.extrudePendCancel(); ok(!C.extrudePend, '  취소로 pickSel 해제');
-    // extrudesrf: 면(서피스 wall t0)에서 → cap → 높이 (로직 동일)
+    // extrudesrf: 면(서피스)에서도 동일 로직
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[2000,0],[2000,2000],[0,2000]],layer:'0',bim:{kind:'wall',h:100,t:0,base:0}}]);
     S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeSrf();
-    ok(C.extrudePend && C.extrudePend.stage==='capAsk', 'extrudesrf(면 선택) → cap 질문');
-    C.extrudeRun(true); C.extrudeSetVal(2800); C.extrudeFinish();
-    ok(S0.entities[0].bim.kind==='column', '  extrudesrf cap=y → 솔리드');
+    ok(C.extrudePend && C.extrudePend.stage==='height', 'extrudesrf(면 선택) → 바로 height 단계');
+    C.extrudeSetVal(2800); C.extrudeFinish();
+    ok(S0.entities[0].bim.kind==='column', '  extrudesrf 캡 있음 → 솔리드');
     eq(S0.entities[0].bim.h, 2800, '  높이 2800');
-    // cap 취소(height 단계 Esc) → 만든 입체 되돌림
+    // height 단계 Esc → 만든 입체 되돌림
     setEnts([{type:'LWPOLYLINE',closed:true,points:[[0,0],[1000,0],[1000,1000],[0,1000]],layer:'0'}]);
-    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv(); C.extrudeRun(true);
+    S0.selection.clear(); S0.selection.add(1); C.cmdExtrudeCrv();
     ok(S0.entities[0].bim, '  height 단계 진입 시 bim 존재');
     C.extrudePendCancel();
-    ok(!S0.entities[0] || !S0.entities[0].bim, 'height 단계 Esc → 돌출 취소로 bim 제거(undo 복원)');
+    ok(!S0.entities[0] || !S0.entities[0].bim, 'height 단계 취소 → bim 제거(undo 복원)');
     APP.prompt = oldPrompt;
   }
 }
