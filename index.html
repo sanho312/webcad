@@ -223,6 +223,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     border-top:0.5px solid var(--line);}
   #cmdLabel{color:var(--accent-text);font-weight:600;flex:0 0 auto;}
   #cmdPrompt{color:var(--muted);flex:0 1 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
+  .promptBtn{margin-left:6px;padding:1px 9px;font-size:11px;line-height:1.5;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:4px;cursor:pointer;vertical-align:middle;}
+  .promptBtn:hover{filter:brightness(1.12);}
   .cmdInputWrap{flex:1 1 260px;min-width:0;position:relative;}
   #cmdInput{width:100%;background:var(--glass-fill);color:var(--text);border:none;
     -webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
@@ -730,7 +732,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260708c"></script>
+<script src="cad.js?v=20260708d"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=8"></script>
 <script src="cloud.js?v=5"></script>
