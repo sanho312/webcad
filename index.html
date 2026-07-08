@@ -164,6 +164,12 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     border-right:0.5px solid var(--line);width:158px;flex:0 0 auto;
     overflow-y:auto;overflow-x:hidden;align-content:start;}
   .tdiv{grid-column:1 / -1;height:0.5px;background:var(--line);margin:2px 4px;}
+  /* 3D 전용 도구함 — 3D 뷰에서만 표시 (평면 작업 시 숨김) */
+  #toolbar .t3{display:none;}
+  #toolbar.show3d .tool.t3{display:flex;}
+  #toolbar.show3d .tdiv.t3{display:block;}
+  #toolbar.show3d .t3label{display:block;}
+  .t3label{grid-column:1 / -1;font-size:9px;font-weight:700;color:var(--accent-text,#5eb1ff);padding:3px 4px 1px;letter-spacing:0;}
   .tool{display:flex;flex-direction:column;align-items:center;gap:0;
     background:transparent;border:none;border-radius:var(--radius);
     padding:3px 1px;cursor:pointer;color:var(--muted);font-size:8.5px;line-height:1.1;letter-spacing:-0.02em;
@@ -450,6 +456,44 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <svg viewBox="0 0 24 24"><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/><path d="M6.5 17.5L17.5 6.5" stroke-dasharray="3 2"/></svg>거리</div>
       <div class="tool" data-tool="area" title="면적 (area) — 도형 클릭 또는 점 지정 후 Enter">
         <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M8 16l3-5 3 3 2-4" /></svg>면적</div>
+
+      <!-- 3D 전용 도구함 (3D 뷰에서만 표시) -->
+      <div class="tdiv t3"></div>
+      <div class="t3label t3">3D 솔리드</div>
+      <div class="tool t3" data-tool="box" title="상자 (box) — 3D 솔리드">
+        <svg viewBox="0 0 24 24"><path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/></svg>상자</div>
+      <div class="tool t3" data-tool="cylinder" title="원기둥 (cylinder) — 3D 솔리드">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/></svg>원기둥</div>
+      <div class="tool t3" data-tool="sphere" title="구 (sphere) — 3D 솔리드">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="8" ry="3"/></svg>구</div>
+      <div class="tool t3" data-tool="cone" title="원뿔 (cone) — 3D 솔리드">
+        <svg viewBox="0 0 24 24"><path d="M12 3L4 18M12 3l8 15"/><ellipse cx="12" cy="18" rx="8" ry="3"/></svg>원뿔</div>
+      <div class="tool t3" data-tool="extrudecrv" title="곡선 돌출 (extrudecrv) — 곡선을 면/솔리드로">
+        <svg viewBox="0 0 24 24"><path d="M4 20V9l4-3h8l4 3v11"/><path d="M4 20h16"/></svg>곡선돌출</div>
+      <div class="tool t3" data-tool="extrudesrf" title="면 돌출 (extrudesrf) — 면 클릭 후 두께">
+        <svg viewBox="0 0 24 24"><rect x="4" y="10" width="10" height="8"/><path d="M14 10l6-4M14 18l6-4M8 10V6h12v4"/></svg>면돌출</div>
+      <div class="tdiv t3"></div>
+      <div class="t3label t3">3D 불리언</div>
+      <div class="tool t3" data-tool="union" title="합집합 (union) — 두 솔리드를 하나로">
+        <svg viewBox="0 0 24 24"><path d="M10 6h8v8h-4v4H6v-8h4z"/></svg>합집합</div>
+      <div class="tool t3" data-tool="difference" title="차집합 (difference) — 첫 솔리드에서 뺌">
+        <svg viewBox="0 0 24 24"><path d="M6 8h8v8H6z"/><path d="M12 4h8v8h-6" stroke-dasharray="2 2"/></svg>차집합</div>
+      <div class="tool t3" data-tool="intersect3d" title="교집합 (intersect3d) — 겹친 부분만">
+        <svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="5"/><circle cx="15" cy="12" r="5"/></svg>교집합</div>
+      <div class="tdiv t3"></div>
+      <div class="t3label t3">3D 변형</div>
+      <div class="tool t3" data-tool="move3d" title="3D 이동 (move3d) — dx,dy,dz">
+        <svg viewBox="0 0 24 24"><path d="M12 4v16M4 12h16M12 4l-3 3M12 4l3 3M6 12l3-3M6 12l3 3"/></svg>3D이동</div>
+      <div class="tool t3" data-tool="rotate3d" title="3D 회전 (rotate3d) — Z축 기준">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>3D회전</div>
+      <div class="tool t3" data-tool="mirror3d" title="3D 대칭 (mirror3d)">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5z"/></svg>3D대칭</div>
+      <div class="tool t3" data-tool="array3d" title="3D 배열 (array3d)">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="5" height="5"/><rect x="15" y="4" width="5" height="5"/><rect x="4" y="15" width="5" height="5"/><rect x="15" y="15" width="5" height="5"/></svg>3D배열</div>
+      <div class="tool t3" data-tool="scale3d" title="3D 크기 (scale3d)">
+        <svg viewBox="0 0 24 24"><rect x="4" y="12" width="6" height="6"/><rect x="12" y="4" width="9" height="9"/></svg>3D크기</div>
+      <div class="tool t3" data-tool="settop" title="상단 정렬 (settop) — 벽·기둥 상단 높이 맞춤">
+        <svg viewBox="0 0 24 24"><path d="M3 5h18"/><rect x="6" y="8" width="4" height="11"/><rect x="14" y="8" width="4" height="7"/></svg>상단정렬</div>
     </div>
     <div class="rz" id="rzLeft" title="드래그: 도구막대 폭 조절 · 더블클릭: 기본 폭"></div>
 
@@ -686,7 +730,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260707m"></script>
+<script src="cad.js?v=20260707n"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=8"></script>
 <script src="cloud.js?v=5"></script>

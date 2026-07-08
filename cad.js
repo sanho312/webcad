@@ -2496,6 +2496,7 @@ function syncViewSeg(is3d) {
   if (!p || !d) return;
   p.style.background = is3d ? 'transparent' : 'var(--accent)'; p.style.color = is3d ? '' : '#fff';
   d.style.background = is3d ? 'var(--accent)' : 'transparent'; d.style.color = is3d ? '#fff' : '';
+  document.getElementById('toolbar')?.classList.toggle('show3d', is3d); // 3D 전용 도구함 표시 전환
 }
 // 3D 열린 동안 모델 변경(속성 수정·삭제·undo) 감지 → 재빌드
 let live3dTimer = null, live3dRev = -1, live3dSel = '';
@@ -6552,13 +6553,13 @@ const COMMAND_LIST = [
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
   { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' },
-  { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)' }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)' },
-  { name: 'move3d', ko: '3D 이동' }, { name: 'copy3d', ko: '3D 복사' },
-  { name: 'box', ko: '상자' }, { name: 'cylinder', ko: '원기둥' }, { name: 'settop', ko: '상단 정렬' },
-  { name: 'stl', ko: '3D 저장 STL' }, { name: 'obj', ko: '3D 저장 OBJ' }, { name: 'selectedexport', ko: '선택 3D 저장' },
-  { name: 'union', ko: '합집합' }, { name: 'difference', ko: '차집합' }, { name: 'intersect3d', ko: '교집합' },
-  { name: 'sphere', ko: '구' }, { name: 'cone', ko: '원뿔' },
-  { name: 'rotate3d', ko: '3D 회전' }, { name: 'mirror3d', ko: '3D 대칭' }, { name: 'array3d', ko: '3D 배열' }, { name: 'scale3d', ko: '3D 크기' },
+  { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
+  { name: 'move3d', ko: '3D 이동', d3: 1 }, { name: 'copy3d', ko: '3D 복사', d3: 1 },
+  { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
+  { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
+  { name: 'union', ko: '합집합', d3: 1 }, { name: 'difference', ko: '차집합', d3: 1 }, { name: 'intersect3d', ko: '교집합', d3: 1 },
+  { name: 'sphere', ko: '구', d3: 1 }, { name: 'cone', ko: '원뿔', d3: 1 },
+  { name: 'rotate3d', ko: '3D 회전', d3: 1 }, { name: 'mirror3d', ko: '3D 대칭', d3: 1 }, { name: 'array3d', ko: '3D 배열', d3: 1 }, { name: 'scale3d', ko: '3D 크기', d3: 1 },
   { name: 'line', ko: '선' }, { name: 'polyline', ko: '폴리라인' }, { name: 'rectangle', ko: '사각형' },
   { name: 'circle', ko: '원' }, { name: 'arc', ko: '호' }, { name: 'text', ko: '문자' },
   { name: 'move', ko: '이동' }, { name: 'erase', ko: '지우기' }, { name: 'select', ko: '선택' },
@@ -6578,11 +6579,14 @@ const COMMAND_LIST = [
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
+function is3DView() { const ov = document.getElementById('bim3d'); return !!(ov && ov.style.display !== 'none'); }
 function computeMatches(text) {
   const t = text.trim().toLowerCase();
   if (!t || /^[-@\d.]/.test(t)) return []; // 빈칸/좌표·숫자 입력이면 제안 안 함
+  const in3d = is3DView();
   const starts = [], contains = [];
   for (const c of COMMAND_LIST) {
+    if (c.d3 && !in3d) continue; // 3D 전용 명령은 3D 뷰에서만 제안 (평면 작업 방해 안 함)
     const n = c.name;
     if (n.startsWith(t)) starts.push(c);
     else if (n.includes(t)) contains.push(c);
