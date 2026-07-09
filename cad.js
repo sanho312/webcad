@@ -2870,18 +2870,23 @@ function renderScene(isActive) {
       c.restore();
     }
   }
-  // extrudecrv 생성 미리보기 — 기준점 클릭 전(awaitBase)에 프로파일이 어떤 입체가 될지 점선으로 예시(srf의 참조 와이어프레임과 동일한 느낌)
+  // extrudecrv 생성 미리보기(기준점 클릭 전) — ①선택 프로파일 파란 실선 강조 ②될 입체를 점선 고스트로 예시
   if (typeof extrudePend !== 'undefined' && extrudePend && !extrudePend.srf && extrudePend.stage === 'height' && extrudePend.heightPhase === 'awaitBase') {
-    const dpr = devicePixelRatio || 1, ph = extrudePend.val || (settings.bim.wallH || 2700);
-    c.save(); c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(46,230,166,0.9)'; c.lineWidth = 1.6 * dpr;
+    const dpr = devicePixelRatio || 1, ph = extrudePend.val || (settings.bim.wallH || 2700); // val=0(시작)이면 기본 높이로 예시
+    c.save();
     for (const it of extrudePend.items) {
-      const e = state.entities.find(x => x.id === it.id); if (!e || e.bim) continue; // 이미 솔리드로 보이는 BIM(병합 벽체 등)은 제외
+      const e = state.entities.find(x => x.id === it.id); if (!e) continue;
+      if (e.bim && !(e.bim.kind === 'wall' && !(e.bim.h > 0))) continue; // 이미 입체로 보이는 BIM 제외 — 납작(h0) 병합 벽체는 포함(밴드가 없어 이 강조가 유일한 표시)
       const fp = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : (e.points ? e.points.map(p => [p[0], p[1]]) : null);
       if (!fp || fp.length < 2) continue;
       const z0 = it.base, z1 = z0 + ph, closed = e.type === 'CIRCLE' || e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e));
       const bot = fp.map(p => proj3D(p[0], p[1], z0)), top = fp.map(p => proj3D(p[0], p[1], z1));
-      c.beginPath(); top.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
+      // 선택 강조: 베이스 프로파일을 파란 실선으로 (srf의 파란 면 포커싱과 같은 언어)
+      c.setLineDash([]); c.strokeStyle = '#0A84FF'; c.lineWidth = 2.4 * dpr;
       c.beginPath(); bot.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
+      // 점선 고스트: 이 프로파일이 (기본 높이로) 어떤 입체가 될지 예시
+      c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(94,177,255,0.85)'; c.lineWidth = 1.4 * dpr;
+      c.beginPath(); top.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
       c.beginPath(); for (let i = 0; i < fp.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
     }
     c.setLineDash([]); c.restore();
@@ -4486,7 +4491,8 @@ function detectDoubleOutlineWall(sel) {
   const ids = new Set([outer.id, inner.id]);
   state.entities = state.entities.filter(e => !ids.has(e.id));
   const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mids, layer: outer.layer, color: outer.color });
-  ln.bim = { kind: 'wall', h: settings.bim.wallH || 2700, t, base }; delete ln.zo;
+  ln.bim = { kind: 'wall', h: 0, t, base }; delete ln.zo; // 높이 0에서 시작 — 미리 솟아있지 않게 (기준점 클릭 후 커서로 올림)
+  state.selection.clear(); state.selection.add(ln.id); // 병합 벽체를 선택 상태로 → 파란 강조
   return ln;
 }
 // 단일 닫힌 곡선(면돌출로 하나만 클릭한 경우 등)에 대해, 안팎으로 포개진 짝 곡선을 찾아 반환.
@@ -4568,9 +4574,10 @@ function extrudeStart(cmd, sel) {
     extrudeRefresh(); renderProps();
     logLine(`  ▷ extrudesrf: 면 포커싱됨 — Space/Enter를 눌러 기준점 선택을 시작하거나, 높이값을 바로 입력 · Esc`, 'info');
     setPrompt(`면 선택됨 — Space/Enter로 기준점 선택 시작 · 또는 높이값 입력 · Esc`);
-  } else if (is3DActive()) { // extrudecrv 3D(동결): 클릭해야 높이 시작 — 평면 대기
+  } else if (is3DActive()) { // extrudecrv 3D: 높이 0(평면)에서 시작 — 선택 crv 파란 강조 + 점선 예시, 클릭해야 높이 시작
+    extrudePend.val = 0; // 미리 솟아있지 않게 — 기준점 클릭 후 커서/스냅/숫자로 0부터 올림
     extrudeRefresh();
-    logLine(`  ▷ ${cmd}: 화면을 클릭하면 그 지점을 기준으로 높이가 시작됩니다(움직이며 다른 객체에 스냅). 또는 높이값 입력 · 캡 버튼으로 전환`, 'info');
+    logLine(`  ▷ ${cmd}: 곡선이 선택됨(파란 강조 + 점선 예시) — 화면 클릭=기준점(스냅), 커서로 0부터 높이 조절 · 또는 높이값 입력 · 캡 버튼으로 전환`, 'info');
     extrudePromptHeight();
   } else { // 평면: 클릭 드래그 불가 → 기본 높이로 생성 후 숫자로 조정
     extrudeApplyKind(); extrudeSetVal(defH); extrudeRefresh();
