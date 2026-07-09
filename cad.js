@@ -2737,7 +2737,12 @@ function zRasterFaces(c, faces, vp, light) {
     for (const f of opaque) {
       const P = f.pts, sel = f._sel;
       const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
-      for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+      // 메시는 특징(코너·경계) 모서리만 그림 → 삼각분할 내부선이 표면에 안 보임. BIM 솔리드는 모든 변(=실제 모서리)
+      if (f.isMesh && f.fe) {
+        for (let i = 0; i < P.length; i++) if (f.fe[i]) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+      } else {
+        for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+      }
     }
     c.putImageData(img, ox, oy);
   }
@@ -2826,10 +2831,12 @@ function renderScene(isActive) {
     if (!cull || facesCam(ccx, ccy, s.z0, 0, 0, -1))  // 하면 (아래 향함)
       faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf });
   }
-  // 가져온 3D 메시(STL/OBJ) — 삼각형별 법선 셰이딩
+  // 가져온/불리언 3D 메시 — 삼각형별 법선 셰이딩. 내부 삼각분할선은 감추고 '진짜 모서리'만 표시
   for (const e of state.entities) {
     if (e.type !== 'MESH') continue;
     const l = getLayer(e.layer); if (l && !l.visible) continue;
+    const featSet = meshFeat(e); // 이 메시의 특징(코너·경계) 모서리 집합
+    const mcol = bimSolidColor(e, '#b9b2a6'); // 색: 명시색 > 레이어색 > 기본
     for (const t of e.tris) {
       const P = t.map(p => proj3D(p[0], p[1], p[2]));
       const ux = t[1][0] - t[0][0], uy = t[1][1] - t[0][1], uz = t[1][2] - t[0][2];
@@ -2837,7 +2844,8 @@ function renderScene(isActive) {
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
       const shade = 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
-      faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: e.color || '#b9b2a6', shade, eid: e.id });
+      const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
+      faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mcol, shade, eid: e.id, isMesh: true, fe });
     }
   }
   const light = document.documentElement.classList.contains('light');
@@ -3865,6 +3873,39 @@ function entityToTris(e){
   if (e.type==='MESH') return e.tris.map(t=>t.map(p=>p.slice()));
   return solidsToTris(new Set([e.id]));
 }
+// ── 메시 표면 정리: 삼각분할 내부선을 감추고 '진짜 모서리'(면 경계·꺾인 부분)만 그림 ──
+const _meshQ = v => Math.round(v * 100) / 100; // 0.01 양자화 (공유 꼭짓점 매칭)
+function meshVKey(p){ return _meshQ(p[0]) + ',' + _meshQ(p[1]) + ',' + _meshQ(p[2]); }
+function meshEdgeKey(a, b){ const ka = meshVKey(a), kb = meshVKey(b); return ka < kb ? ka + '|' + kb : kb + '|' + ka; }
+// 특징 모서리 집합: 경계 모서리(면 1개) 또는 인접 두 면이 이루는 각이 큰(비평면) 모서리만 → 코너·윤곽만 남고 내부 삼각형선 제거
+function meshFeat(e){
+  if (e._feat && e._featRef === e.tris) return e._feat;
+  const emap = new Map();
+  for (const t of e.tris){
+    if (t.length < 3) continue;
+    const ux=t[1][0]-t[0][0], uy=t[1][1]-t[0][1], uz=t[1][2]-t[0][2];
+    const vx=t[2][0]-t[0][0], vy=t[2][1]-t[0][1], vz=t[2][2]-t[0][2];
+    let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx; const nl=Math.hypot(nx,ny,nz)||1; nx/=nl;ny/=nl;nz/=nl;
+    for (let i=0;i<3;i++){
+      const k = meshEdgeKey(t[i], t[(i+1)%3]);
+      const m = emap.get(k);
+      if (!m) emap.set(k, { nx, ny, nz, c:1, feat:true });
+      else { const d = Math.abs(m.nx*nx + m.ny*ny + m.nz*nz); m.c++; if (d >= 0.9) m.feat = false; } // 거의 같은 평면 → 내부선(숨김)
+    }
+  }
+  const set = new Set();
+  for (const [k, m] of emap) if (m.c === 1 || m.feat) set.add(k);
+  e._feat = set; e._featRef = e.tris; return set;
+}
+// 서로 떨어진(꼭짓점을 공유하지 않는) 삼각형 무리를 개별 컴포넌트로 분리
+function meshComponents(tris){
+  const parent = new Map();
+  const find = x => { let r=x; while(parent.get(r)!==r) r=parent.get(r); while(parent.get(x)!==r){ const n=parent.get(x); parent.set(x,r); x=n; } return r; };
+  for (const t of tris){ for (const p of t){ const k=meshVKey(p); if(!parent.has(k)) parent.set(k,k); } for (let i=1;i<t.length;i++) parent.set(find(meshVKey(t[0])), find(meshVKey(t[i]))); }
+  const groups = new Map();
+  for (const t of tris){ const r = find(meshVKey(t[0])); if(!groups.has(r)) groups.set(r, []); groups.get(r).push(t); }
+  return [...groups.values()];
+}
 let boolPending = null; // 라이노식 차집합 2단계: {keepIds}
 let extrudePend = null; // extrudecrv/extrudesrf 진행: {cmd, stage:'pickSel'|'height', heightPhase:'awaitBase'|'awaitTop', items, val, cap, ...}
 let lastExtrudeCap = true; // 캡 유무 마지막 선택 유지 (별도로 바꾸기 전까지 다음 돌출에도 적용)
@@ -3881,10 +3922,20 @@ function runBoolean(op, keepEnts, cutterEnts){
   pushUndo();
   const ids = new Set(keepEnts.concat(cutterEnts).map(e=>e.id));
   state.entities = state.entities.filter(e=>!ids.has(e.id));
-  const m = addEntity({ type:'MESH', tris, color:'#a7b0c4' });
+  // 베이스(남길) 입체의 속성 승계 — 레이어·색을 유지해 불리언 후에도 정체성 보존
+  const baseEnt = keepEnts[0] || {};
+  const inheritLayer = baseEnt.layer, inheritColor = baseEnt.color;
+  // 서로 붙어있지 않은(꼭짓점 미공유) 덩어리는 개별 개체로 분리
+  const comps = meshComponents(tris);
+  const created = [];
+  for (const ct of comps) {
+    const m = addEntity({ type:'MESH', tris: ct, layer: inheritLayer, color: inheritColor });
+    created.push(m);
+  }
   const koOp = op==='union' ? '합집합' : op==='intersect' ? '교집합' : '차집합';
-  logLine('  ✔ ' + koOp + ' 완료 → 메시 ' + tris.length + '개 삼각형', 'ok');
-  state.selection.clear(); state.selection.add(m.id); boolRefresh();
+  if (created.length > 1) logLine('  ✔ ' + koOp + ' 완료 → 붙어있지 않아 ' + created.length + '개 개체로 분리 (총 ' + tris.length + '개 삼각형)', 'ok');
+  else logLine('  ✔ ' + koOp + ' 완료 → 메시 ' + tris.length + '개 삼각형', 'ok');
+  state.selection.clear(); created.forEach(m => state.selection.add(m.id)); boolRefresh();
 }
 function cmdBoolean(op){
   const sel = selectedEntities().filter(isBoolable);
@@ -7953,6 +8004,7 @@ window.__CADTEST__ = {
   bimSolids, lineClipPoly, genSectionView, stairSolids, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, bimSolidColor,
+  runBoolean, meshFeat, meshComponents, meshEdgeKey,
 };
 
 // ============================================================
