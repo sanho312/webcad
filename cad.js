@@ -4311,6 +4311,7 @@ function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (
 // 캡 유무에 따라 대상 bim 종류 설정(=이때 비로소 입체 생성) — cap=y & 면 되는 프로파일=solid(column), 아니면 면(wall t0)
 function extrudeApplyKind() {
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
+  extrudeDoMerge(ex); // 이중 외곽선 예약 병합 — 실제 생성 시점(여기)에 두 곡선 → 벽체 하나
   const h = Math.max(0, ex.val); // 높이 0 허용 (바닥 스냅 → 평면 면)
   for (const it of ex.items) {
     const e = state.entities.find(x => x.id === it.id); if (!e) continue;
@@ -4449,7 +4450,7 @@ function polyIsLoop(e) {
   const diag = Math.hypot(mxx - mnx, mxy - mny) || 1;
   return Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < diag * 0.08; // 끝점≈시작점
 }
-function detectDoubleOutlineWall(sel) {
+function detectDoubleOutlineWall(sel, dryRun) {
   const DBG = (m) => { try { logLine('  · 이중외곽선 판정: ' + m, 'info'); } catch (e) {} extrudeDiagBanner(m); };
   if (sel.length !== 2) { if (sel.length > 2) DBG(`선택 ${sel.length}개 — 정확히 2개여야 벽체 병합`); return null; }
   if (!sel.every(e => polyIsLoop(e))) {
@@ -4491,12 +4492,27 @@ function detectDoubleOutlineWall(sel) {
   if (!(t > 0.5)) { DBG(`두께 0 — 두 곡선이 거의 겹침(간격 ${t})`); return null; }
   DBG(`OK → 두께 ${t} 벽체로 병합 (포함율 ${Math.round(Math.max(f10, f01) * 100)}%)`);
   const base = lvElev() + (outer.zo || 0);
+  if (dryRun) return { outerId: outer.id, innerId: inner.id, t, mids, base, layer: outer.layer, color: outer.color }; // 감지만(무변경) — 병합은 생성 시점에
   const ids = new Set([outer.id, inner.id]);
   state.entities = state.entities.filter(e => !ids.has(e.id));
   const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mids, layer: outer.layer, color: outer.color });
   ln.bim = { kind: 'wall', h: 0, t, base }; delete ln.zo; // 높이 0에서 시작 — 미리 솟아있지 않게 (기준점 클릭 후 커서로 올림)
   state.selection.clear(); state.selection.add(ln.id); // 병합 벽체를 선택 상태로 → 파란 강조
   return ln;
+}
+// 이중 외곽선 병합을 '실제 생성' 시점에 실행 — 선택 단계에선 두 곡선이 그대로(둘 다 파란 강조) 보이게.
+function extrudeDoMerge(ex) {
+  const mi = ex && ex.merge2; if (!mi || ex.mergedDone) return;
+  ex.mergedDone = true;
+  const o = state.entities.find(e => e.id === mi.outerId), n = state.entities.find(e => e.id === mi.innerId);
+  if (!o || !n) return;
+  const ids = new Set([mi.outerId, mi.innerId]);
+  state.entities = state.entities.filter(e => !ids.has(e.id));
+  const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mi.mids, layer: mi.layer, color: mi.color });
+  ln.bim = { kind: 'wall', h: 0, t: mi.t, base: mi.base }; delete ln.zo;
+  state.selection.clear(); state.selection.add(ln.id);
+  ex.items = [{ id: ln.id, base: mi.base, t: mi.t }];
+  logLine(`  ▷ 곡선 2개 → 두께 ${mi.t} 벽체로 병합`, 'ok');
 }
 // 단일 닫힌 곡선(면돌출로 하나만 클릭한 경우 등)에 대해, 안팎으로 포개진 짝 곡선을 찾아 반환.
 // → 면돌출은 '면 클릭' 흐름이라 한 개만 잡히는데, 짝이 있으면 함께 잡아 벽체로 병합되게.
@@ -4551,8 +4567,9 @@ function extrudeStart(cmd, sel) {
   if (!srf) {
     extrudeDiagBanner(`선택 ${sel.length}개: ${sel.map(e => `${e.type === 'LWPOLYLINE' ? '폴리라인' : e.type}${e.closed ? '·닫힘' : '·열림'}·${(e.points || []).length}점${e.bim ? '·BIM' + e.bim.kind : ''}`).join('  |  ')}`);
     if (sel.length === 1) { const partner = findNestedPartner(sel[0]); if (partner) { sel = [sel[0], partner]; logLine('  ▷ 안팎으로 포갠 짝 곡선 자동 포함 — 벽체로 병합', 'info'); } else { extrudeDiagBanner('선택 1개 — 짝(포개진 곡선)을 못 찾음. 두 사각을 모두 선택했는지 확인'); } }
-    const wall2 = detectDoubleOutlineWall(sel); // 이중 외곽선(안팎 두 박스) → 두께 벽체 하나
-    if (wall2) { sel = [wall2]; logLine(`  ▷ 이중 외곽선 감지 → 두께 ${wall2.bim.t} 벽체로 돌출 (두 곡선 병합)`, 'ok'); }
+    // 이중 외곽선은 여기서 '감지만' — 병합은 실제 생성(기준점 클릭/숫자) 시점에. 선택 단계에선 두 곡선 모두 파란 강조로 보이게.
+    var merge2 = detectDoubleOutlineWall(sel, true);
+    if (merge2) logLine(`  ▷ 이중 외곽선 감지 — 곡선 2개가 생성 시 두께 ${merge2.t} 벽체로 병합됩니다`, 'ok');
   }
   const items = []; let nSlant = 0, curH = 0, hasSolid = false;
   for (const e of sel) {
@@ -4568,6 +4585,7 @@ function extrudeStart(cmd, sel) {
   const base = items.length ? Math.min(...items.map(it => it.base)) : lvElev();
   const startVal = (srf && hasSolid) ? curH : defH;
   extrudePend = { cmd, srf, stage: 'height', heightPhase: 'awaitBase', items, cx: c.x, cy: c.y, val: startVal, anchorPy: null, h0: 0, k: 0, cap: lastExtrudeCap, base, _exclude: new Set(items.map(it => it.id)), applied: false };
+  if (!srf && typeof merge2 !== 'undefined' && merge2) extrudePend.merge2 = merge2; // 생성 시점 병합 예약
   if (srf) { // 면 밀당: 기존 솔리드는 현재 높이로 그대로 보이게, 화면 클릭/숫자로 높이 조절 (스냅)
     if (hasSolid) { extrudeApplyKind(); extrudeSetVal(startVal); }
     // 객체 전체가 아니라 '선택된 면(윗면)'만 강조 — 전체 선택 하이라이트 해제하고 윗면만 표시
@@ -4580,8 +4598,8 @@ function extrudeStart(cmd, sel) {
   } else if (is3DActive()) { // extrudecrv 3D: 높이 0(평면)에서 시작 — 선택 crv 파란 강조 + 점선 예시, 클릭해야 높이 시작
     extrudePend.val = 0; // 미리 솟아있지 않게 — 기준점 클릭 후 커서/스냅/숫자로 0부터 올림
     extrudeRefresh();
-    logLine(`  ▷ ${cmd}: 곡선이 선택됨(파란 강조 + 점선 예시) — 화면 클릭=기준점(스냅), 커서로 0부터 높이 조절 · 또는 높이값 입력 · 캡 버튼으로 전환`, 'info');
-    extrudePromptHeight();
+    logLine(`  ▷ ${cmd}: 곡선 ${items.length}개 선택됨(파란 강조 + 끝점 표시)${extrudePend.merge2 ? ' — 생성 시 벽체 하나로 병합' : ''} — 화면 클릭=기준점(스냅), 커서로 0부터 높이 조절 · 또는 높이값 입력`, 'info');
+    setPrompt(`곡선 ${items.length}개 선택됨 — 기준점 클릭(스냅) · 높이값 입력 · Esc`);
   } else { // 평면: 클릭 드래그 불가 → 기본 높이로 생성 후 숫자로 조정
     extrudeApplyKind(); extrudeSetVal(defH); extrudeRefresh();
     logLine(`  ✔ ${lastExtrudeCap ? '캡 있는 솔리드' : '캡 없는 면'} 생성(높이 ${defH}) — 높이값 입력 후 Enter`, 'ok');
