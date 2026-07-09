@@ -2988,7 +2988,19 @@ function renderScene(isActive) {
     } else {
       c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
     }
-    if (big && sm.z != null) { c.shadowBlur = 0; c.fillStyle = '#0a0f0d'; c.strokeStyle = '#2ee6a6'; c.lineWidth = 3 * dpr3; c.font = `800 ${13 * dpr3}px -apple-system,system-ui,sans-serif`; const lbl = 'z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : ''); c.strokeText(lbl, sp3[0] + rr + 5 * dpr3, sp3[1] - 5 * dpr3); c.fillStyle = '#2ee6a6'; c.fillText(lbl, sp3[0] + rr + 5 * dpr3, sp3[1] - 5 * dpr3); }
+    if (big && sm.z != null) { // z 라벨 — 어두운 배경칩 위에 또렷한 텍스트(초록 외곽선 겹침 번짐 방지)
+      c.shadowBlur = 0;
+      const fs = 13 * dpr3;
+      c.font = `700 ${fs}px -apple-system,system-ui,sans-serif`;
+      c.textBaseline = 'middle'; c.textAlign = 'left';
+      const lbl = 'z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : '');
+      const padX = 7 * dpr3, padY = 4 * dpr3;
+      const bw = c.measureText(lbl).width + padX * 2, bh = fs + padY * 2;
+      const lx = sp3[0] + rr + 6 * dpr3, ly = sp3[1] - rr - bh; // 마커 우상단
+      c.fillStyle = 'rgba(10,15,13,.92)'; c.fillRect(lx, ly, bw, bh);           // 배경칩
+      c.strokeStyle = 'rgba(46,230,166,.9)'; c.lineWidth = 1 * dpr3; c.strokeRect(lx, ly, bw, bh); // 얇은 초록 테두리
+      c.fillStyle = '#eafff6'; c.fillText(lbl, lx + padX, ly + bh / 2);          // 또렷한 흰 텍스트
+    }
     c.restore();
   }
   // 3D 선 러버밴드 — 시작점(실제 z)에서 커서(스냅 z/작업면)까지
