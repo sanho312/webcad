@@ -4406,18 +4406,22 @@ function beginExtrude(cmd) {
 // 안팎 이중 외곽선(같은 모양 스케일/오프셋 쌍 — 안쪽 곡선이 바깥 곡선 안에 완전히 들어감) →
 // 간격을 두께로 하는 '건물 벽체' 하나로 변환. 안쪽 각 꼭짓점→바깥 변 최단거리=두께, 그 중점=중심선.
 function detectDoubleOutlineWall(sel) {
-  if (sel.length !== 2) return null;
-  if (!sel.every(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3)) return null;
+  const DBG = (m) => { try { logLine('  · 이중외곽선 판정: ' + m, 'info'); } catch (e) {} };
+  if (sel.length !== 2) { if (sel.length > 2) DBG(`선택 ${sel.length}개 — 정확히 2개여야 벽체 병합`); return null; }
+  if (!sel.every(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3)) {
+    DBG(`닫힌 폴리라인 2개 필요 (지금: ${sel.map(e => e.type + (e.closed ? '닫힘' : '열림') + (e.points ? e.points.length + '점' : '')).join(' , ')})`); return null;
+  }
   // 닫힘 중복점(마지막==처음) 제거해 정규화 — 다른 도구/임포트로 5점 사각형이 와도 매칭되게
   const norm = pts => { const q = pts.map(p => [p[0], p[1]]); if (q.length > 3) { const a = q[0], b = q[q.length - 1]; if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) q.pop(); } return q; };
   const P0 = norm(sel[0].points), P1 = norm(sel[1].points);
   const inPoly = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   // 안쪽 = 대다수(≥과반) 꼭짓점이 상대 안에 들어가는 쪽 (경계 오차 허용)
   const inFrac = (pts, poly) => pts.filter(p => inPoly(p, poly)).length / pts.length;
+  const f10 = inFrac(P1, P0), f01 = inFrac(P0, P1);
   let outer = null, inner = null, op = null, ip = null;
-  if (inFrac(P1, P0) >= 0.5 && inFrac(P1, P0) >= inFrac(P0, P1)) { outer = sel[0]; inner = sel[1]; op = P0; ip = P1; }
-  else if (inFrac(P0, P1) >= 0.5) { outer = sel[1]; inner = sel[0]; op = P1; ip = P0; }
-  if (!outer || !inner) return null;
+  if (f10 >= 0.5 && f10 >= f01) { outer = sel[0]; inner = sel[1]; op = P0; ip = P1; }
+  else if (f01 >= 0.5) { outer = sel[1]; inner = sel[0]; op = P1; ip = P0; }
+  if (!outer || !inner) { DBG(`포개짐 아님 — 한쪽이 다른쪽 안에 들어가야 함 (포함율 ${Math.round(f10 * 100)}% / ${Math.round(f01 * 100)}%). 옆으로 걸쳐 겹친 배치면 합집합(union)으로 하세요`); return null; }
   const n2 = op.length, dists = [], mids = [];
   for (const p of ip) {
     // 두께 = 바깥 '변'까지 최단(수직) 거리
@@ -4431,7 +4435,8 @@ function detectDoubleOutlineWall(sel) {
   }
   const t = Math.round(dists.reduce((a, b) => a + b, 0) / dists.length);
   const uniform = (Math.max(...dists) - Math.min(...dists)) < Math.max(4, t * 0.45); // 손그림·비정방 간격 45%까지 벽체로 허용
-  if (!(t > 0.5 && uniform)) return null;
+  if (!(t > 0.5 && uniform)) { DBG(`간격 불균일/두께0 — 평균두께 ${t}, 간격편차 ${Math.round(Math.max(...dists) - Math.min(...dists))}(허용 ${Math.round(Math.max(4, t * 0.45))} 이내). 안팎 간격을 고르게 하세요`); return null; }
+  DBG(`OK → 두께 ${t} 벽체로 병합`);
   const base = lvElev() + (outer.zo || 0);
   const ids = new Set([outer.id, inner.id]);
   state.entities = state.entities.filter(e => !ids.has(e.id));
