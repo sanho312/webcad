@@ -2388,7 +2388,7 @@ function bimSolids() {
       }
       cuts.sort((a, b) => a.s0 - b.s0);
       const band = (s0, s1, z0, z1, color, glass, beid) => {
-        if (s1 - s0 < 1e-6 || z1 - z0 < 1e-6) return;
+        if (s1 - s0 < 1e-6 || z1 - z0 < 0) return; // z1===z0(높이 0) 허용 — 라이노처럼 납작한 '면'으로 렌더
         const ax = x1 + ux * s0, ay = y1 + uy * s0, bx = x1 + ux * s1, by = y1 + uy * s1;
         const nx = -uy * t / 2, ny = ux * t / 2;
         let A1 = [ax + nx, ay + ny], A2 = [ax - nx, ay - ny];
