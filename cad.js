@@ -4406,8 +4406,17 @@ function beginExtrude(cmd) {
 // extrudesrf(면 밀당): 대상 솔리드는 현재 높이 그대로 두고, 화면 클릭/숫자로 높이(밀거나 당김) 조절.
 // 안팎 이중 외곽선(같은 모양 스케일/오프셋 쌍 — 안쪽 곡선이 바깥 곡선 안에 완전히 들어감) →
 // 간격을 두께로 하는 '건물 벽체' 하나로 변환. 안쪽 각 꼭짓점→바깥 변 최단거리=두께, 그 중점=중심선.
+// 진단 메시지를 화면 상단 배너로도 표시 (명령 로그가 접혀 있어도 보이게)
+function extrudeDiagBanner(msg) {
+  try {
+    let b = document.getElementById('extDiag');
+    if (!b) { b = document.createElement('div'); b.id = 'extDiag'; b.style.cssText = 'position:fixed;left:50%;top:120px;transform:translateX(-50%);z-index:99998;max-width:90vw;background:#ffcc00;color:#111;padding:10px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.4);font:600 13px system-ui,sans-serif;text-align:center;white-space:pre-line;'; document.body.appendChild(b); }
+    b.textContent = '돌출 진단\n' + msg;
+    clearTimeout(b._t); b._t = setTimeout(() => { try { b.remove(); } catch (e) {} }, 9000);
+  } catch (e) {}
+}
 function detectDoubleOutlineWall(sel) {
-  const DBG = (m) => { try { logLine('  · 이중외곽선 판정: ' + m, 'info'); } catch (e) {} };
+  const DBG = (m) => { try { logLine('  · 이중외곽선 판정: ' + m, 'info'); } catch (e) {} extrudeDiagBanner(m); };
   if (sel.length !== 2) { if (sel.length > 2) DBG(`선택 ${sel.length}개 — 정확히 2개여야 벽체 병합`); return null; }
   if (!sel.every(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3)) {
     DBG(`닫힌 폴리라인 2개 필요 (지금: ${sel.map(e => e.type + (e.closed ? '닫힘' : '열림') + (e.points ? e.points.length + '점' : '')).join(' , ')})`); return null;
@@ -4496,7 +4505,8 @@ function extrudeStart(cmd, sel) {
   const srf = (cmd === 'extrudesrf');
   // 곡선 병합(이중 외곽선→벽체, 겹친 곡선→합집합)은 extrudecrv(곡선 돌출) 전용. extrudesrf(면 밀당)는 손대지 않음.
   if (!srf) {
-    if (sel.length === 1) { const partner = findNestedPartner(sel[0]); if (partner) { sel = [sel[0], partner]; logLine('  ▷ 안팎으로 포갠 짝 곡선 자동 포함 — 벽체로 병합', 'info'); } }
+    extrudeDiagBanner(`선택 ${sel.length}개: ${sel.map(e => `${e.type === 'LWPOLYLINE' ? '폴리라인' : e.type}${e.closed ? '·닫힘' : '·열림'}·${(e.points || []).length}점${e.bim ? '·BIM' + e.bim.kind : ''}`).join('  |  ')}`);
+    if (sel.length === 1) { const partner = findNestedPartner(sel[0]); if (partner) { sel = [sel[0], partner]; logLine('  ▷ 안팎으로 포갠 짝 곡선 자동 포함 — 벽체로 병합', 'info'); } else { extrudeDiagBanner('선택 1개 — 짝(포개진 곡선)을 못 찾음. 두 사각을 모두 선택했는지 확인'); } }
     const wall2 = detectDoubleOutlineWall(sel); // 이중 외곽선(안팎 두 박스) → 두께 벽체 하나
     if (wall2) { sel = [wall2]; logLine(`  ▷ 이중 외곽선 감지 → 두께 ${wall2.bim.t} 벽체로 돌출 (두 곡선 병합)`, 'ok'); }
   }
