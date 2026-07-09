@@ -2309,6 +2309,13 @@ function drawMeshOverlay(e) {
 //  BIM 2단계 — 3D 뷰 (의존성 없는 자체 렌더러)
 //  모든 BIM 요소는 수직 기둥체(prism): {poly:[[x,y]..], z0, z1, color, glass?}
 // ============================================================
+// BIM 솔리드 색: 명시 색 > 이름있는(비흰색) 레이어 색 > 기본 건축 색. 레이어 바꾸면 3D 색도 바뀜.
+function bimSolidColor(e, fallback) {
+  if (e.color) return e.color;
+  const lc = (getLayer(e.layer) || {}).color;
+  if (lc && lc.toLowerCase() !== '#ffffff') return lc;
+  return fallback;
+}
 function bimSolids() {
   const solids = [];
   const walls = [], opens = [];
@@ -2319,18 +2326,19 @@ function bimSolids() {
     else if (e.bim.kind === 'opening' && e.type === 'LINE') opens.push(e);
     else if (e.bim.kind === 'slab') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : e.points.map(p => [p[0], p[1]]);
-      solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: '#9aa2af', eid: e.id });
+      solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: bimSolidColor(e, '#9aa2af'), eid: e.id });
     } else if (e.bim.kind === 'roof' && e.type === 'LWPOLYLINE') {
-      for (const s of roofSolids(e)) { s.eid = e.id; s.rf = true; solids.push(s); }
+      for (const s of roofSolids(e)) { s.eid = e.id; s.rf = true; s.color = bimSolidColor(e, s.color); solids.push(s); }
     } else if (e.bim.kind === 'stair' && e.type === 'LINE') {
-      for (const s of stairSolids(e)) { s.eid = e.id; solids.push(s); }
+      for (const s of stairSolids(e)) { s.eid = e.id; s.color = bimSolidColor(e, s.color); solids.push(s); }
     } else if (e.bim.kind === 'column') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
-      solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: '#8fa3c8', eid: e.id });
+      solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: bimSolidColor(e, '#8fa3c8'), eid: e.id });
     }
   }
   for (const w of walls) {
     const t = w.bim.t, h = w.bim.h, base = w.bim.base || 0;
+    const wallCol = bimSolidColor(w, '#cfc7ba'); // 벽 불투명 밴드 색 (레이어/명시 색 반영)
     // 꼭짓점 링 구성: LINE=2점 열린, 폴리라인=점열(닫힘 여부), 원=24각 닫힘
     let V, closedW;
     if (w.type === 'CIRCLE') { V = circlePoly(w.cx, w.cy, w.r, 24); closedW = true; }
@@ -2391,14 +2399,14 @@ function bimSolids() {
       };
       let cur = 0;
       for (const c of cuts) {
-        band(cur, c.s0, base, base + h, '#cfc7ba');            // 개구부 앞 벽체
+        band(cur, c.s0, base, base + h, wallCol);            // 개구부 앞 벽체
         const sill = c.o.bim.sill || 0, oh = c.o.bim.h || 2100;
-        if (sill > 0) band(c.s0, c.s1, base, base + sill, '#cfc7ba');            // 창 아래
-        if (base + h > base + sill + oh) band(c.s0, c.s1, base + sill + oh, base + h, '#cfc7ba'); // 인방(상부)
+        if (sill > 0) band(c.s0, c.s1, base, base + sill, wallCol);            // 창 아래
+        if (base + h > base + sill + oh) band(c.s0, c.s1, base + sill + oh, base + h, wallCol); // 인방(상부)
         if (c.o.bim.ot === 'window') band(c.s0 + 10, c.s1 - 10, base + sill, base + sill + oh, '#7ec8ff', true, c.o.id); // 유리
         cur = c.s1;
       }
-      band(cur, L, base, base + h, '#cfc7ba');
+      band(cur, L, base, base + h, wallCol);
     }
   }
   return solids;
@@ -4147,6 +4155,8 @@ function footprintCentroid(sel) { // 선택 곡선들의 평면 무게중심
   return n ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
 }
 function is3DActive() { const ov = document.getElementById('bim3d'); return !!(ov && ov.style.display !== 'none'); }
+// 속성 편집(레이어·색·BIM 수치 등) 후 갱신 — 2D는 항상, 3D 뷰가 열려 있으면 솔리드 재빌드+재렌더 (패널은 유지)
+function propRefresh() { draw(); if (is3DActive() && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); } }
 function extrudeRefresh() { if (is3DActive()) { if (typeof v3 !== 'undefined' && v3) v3.solids = bimSolids(); render3D(); } else { renderProps(); draw(); } }
 // extrudesrf 스냅 — 대상 외 모든 객체(벽·기둥 솔리드 + 불리언/구/원뿔/STL 메시)의 꼭짓점·모서리·표면에 흡착.
 // 우선순위: 꼭짓점 > 모서리 > 표면 > (솔리드)수직변. 전역 스냅 토글과 무관하게 항상.
@@ -6094,7 +6104,7 @@ function renderProps() {
          <button class="miniBtn" id="pBimCol">기둥</button><button class="miniBtn" id="pBimClr">BIM 해제</button>
        </div>
        <button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
-    const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); draw(); };
+    const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); propRefresh(); };
     document.getElementById('pFront').addEventListener('click', () => reorderSel(true));
     document.getElementById('pBack').addEventListener('click', () => reorderSel(false));
     document.getElementById('pSim').addEventListener('click', selectSimilar);
@@ -6164,7 +6174,7 @@ function renderProps() {
   body.querySelectorAll('input[data-bk]').forEach(inp => inp.addEventListener('change', () => {
     const v = parseFloat(inp.value);
     if (!isFinite(v)) return;
-    pushUndo(); e.bim[inp.dataset.bk] = v; draw();
+    pushUndo(); e.bim[inp.dataset.bk] = v; propRefresh();
   }));
   document.getElementById('pBimClr1')?.addEventListener('click', cmdBimClear);
   document.getElementById('pBimWall1')?.addEventListener('click', cmdWallTag);
@@ -6178,13 +6188,13 @@ function renderProps() {
       const k = inp.dataset.k;
       e[k] = (inp.type === 'number') ? parseFloat(inp.value) : inp.value;
       if (e.type === 'HATCH') hatchDirty(e);
-      draw();
+      propRefresh();
     }));
   const pHatch = document.getElementById('pHatch');
   if (pHatch) pHatch.addEventListener('change', () => { pushUndo(); e.pattern = pHatch.value; hatchDirty(e); draw(); logLine(`  해치 패턴 → ${HATCH_PATTERNS[e.pattern].ko}`, 'info'); });
-  document.getElementById('pLayer').addEventListener('change', (ev) => { pushUndo(); e.layer = ev.target.value; draw(); });
-  document.getElementById('pColor').addEventListener('input', (ev) => { pushUndo(); e.color = ev.target.value; draw(); });
-  document.getElementById('pColClear').addEventListener('click', () => { pushUndo(); delete e.color; renderProps(); draw(); });
+  document.getElementById('pLayer').addEventListener('change', (ev) => { pushUndo(); e.layer = ev.target.value; propRefresh(); });
+  document.getElementById('pColor').addEventListener('input', (ev) => { pushUndo(); e.color = ev.target.value; propRefresh(); });
+  document.getElementById('pColClear').addEventListener('click', () => { pushUndo(); delete e.color; renderProps(); propRefresh(); });
   document.getElementById('pDel').addEventListener('click', deleteSelection);
 }
 
@@ -7942,6 +7952,7 @@ window.__CADTEST__ = {
   // BIM (단면/솔리드 수치 검증용)
   bimSolids, lineClipPoly, genSectionView, stairSolids, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
+  renderProps, propRefresh, pick3DAt, bimSolidColor,
 };
 
 // ============================================================
