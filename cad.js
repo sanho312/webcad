@@ -4415,14 +4415,34 @@ function extrudeDiagBanner(msg) {
     clearTimeout(b._t); b._t = setTimeout(() => { try { b.remove(); } catch (e) {} }, 9000);
   } catch (e) {}
 }
+// 폴리라인이 '고리(닫힌 윤곽)'인가 — closed 플래그거나, 끝점이 시작점 근처(=폴리 도구로 안 닫고 되돌아 찍음)면 참
+function polyIsLoop(e) {
+  if (!e || e.type !== 'LWPOLYLINE') return false;
+  const p = e.points || []; if (p.length < 3) return false;
+  if (e.closed) return true;
+  if (p.length < 4) return false;
+  let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+  for (const q of p) { mnx = Math.min(mnx, q[0]); mny = Math.min(mny, q[1]); mxx = Math.max(mxx, q[0]); mxy = Math.max(mxy, q[1]); }
+  const diag = Math.hypot(mxx - mnx, mxy - mny) || 1;
+  return Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < diag * 0.08; // 끝점≈시작점
+}
 function detectDoubleOutlineWall(sel) {
   const DBG = (m) => { try { logLine('  · 이중외곽선 판정: ' + m, 'info'); } catch (e) {} extrudeDiagBanner(m); };
   if (sel.length !== 2) { if (sel.length > 2) DBG(`선택 ${sel.length}개 — 정확히 2개여야 벽체 병합`); return null; }
-  if (!sel.every(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3)) {
-    DBG(`닫힌 폴리라인 2개 필요 (지금: ${sel.map(e => e.type + (e.closed ? '닫힘' : '열림') + (e.points ? e.points.length + '점' : '')).join(' , ')})`); return null;
+  if (!sel.every(e => polyIsLoop(e))) {
+    DBG(`고리(닫힌 윤곽) 2개 필요 (지금: ${sel.map(e => (e.type === 'LWPOLYLINE' ? '폴리라인' : e.type) + (polyIsLoop(e) ? '·고리' : e.closed ? '·닫힘' : '·열림') + (e.points ? e.points.length + '점' : '')).join(' , ')}) — 폴리 도구로 그렸으면 끝점을 시작점에 정확히 맞물려 닫으세요`); return null;
   }
-  // 닫힘 중복점(마지막==처음) 제거해 정규화 — 다른 도구/임포트로 5점 사각형이 와도 매칭되게
-  const norm = pts => { const q = pts.map(p => [p[0], p[1]]); if (q.length > 3) { const a = q[0], b = q[q.length - 1]; if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) q.pop(); } return q; };
+  // 닫힘/끝점≈시작점 중복 꼭짓점 제거해 정규화 — 폴리 도구로 안 닫힌 5점 사각형도 4점으로
+  const norm = pts => {
+    const q = pts.map(p => [p[0], p[1]]);
+    if (q.length >= 4) {
+      let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+      for (const p of q) { mnx = Math.min(mnx, p[0]); mny = Math.min(mny, p[1]); mxx = Math.max(mxx, p[0]); mxy = Math.max(mxy, p[1]); }
+      const tol = Math.max(1, Math.hypot(mxx - mnx, mxy - mny) * 0.04);
+      while (q.length >= 4 && Math.hypot(q[0][0] - q[q.length - 1][0], q[0][1] - q[q.length - 1][1]) < tol) q.pop();
+    }
+    return q;
+  };
   const P0 = norm(sel[0].points), P1 = norm(sel[1].points);
   const inPoly = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   // 안쪽 = 대다수(≥과반) 꼭짓점이 상대 안에 들어가는 쪽 (경계 오차 허용)
@@ -4457,11 +4477,11 @@ function detectDoubleOutlineWall(sel) {
 // 단일 닫힌 곡선(면돌출로 하나만 클릭한 경우 등)에 대해, 안팎으로 포개진 짝 곡선을 찾아 반환.
 // → 면돌출은 '면 클릭' 흐름이라 한 개만 잡히는데, 짝이 있으면 함께 잡아 벽체로 병합되게.
 function findNestedPartner(e) {
-  if (!(e && e.type === 'LWPOLYLINE' && e.closed && !e.bim && (e.points || []).length >= 3)) return null;
+  if (!(e && !e.bim && polyIsLoop(e))) return null;
   const inPoly = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
   const frac = (a, b) => a.filter(p => inPoly(p, b)).length / a.length;
   for (const c of state.entities) {
-    if (c === e || c.bim || c.type !== 'LWPOLYLINE' || !c.closed || (c.points || []).length < 3) continue;
+    if (c === e || c.bim || !polyIsLoop(c)) continue;
     const l = getLayer(c.layer); if (l && !l.visible) continue;
     const ep = e.points.map(p => [p[0], p[1]]), cp = c.points.map(p => [p[0], p[1]]);
     if (frac(cp, ep) >= 0.8 || frac(ep, cp) >= 0.8) return c; // 한쪽이 다른쪽 안에 대부분 들어감
