@@ -4408,13 +4408,18 @@ function beginExtrude(cmd) {
 function detectDoubleOutlineWall(sel) {
   if (sel.length !== 2) return null;
   if (!sel.every(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3)) return null;
+  // 닫힘 중복점(마지막==처음) 제거해 정규화 — 다른 도구/임포트로 5점 사각형이 와도 매칭되게
+  const norm = pts => { const q = pts.map(p => [p[0], p[1]]); if (q.length > 3) { const a = q[0], b = q[q.length - 1]; if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) q.pop(); } return q; };
+  const P0 = norm(sel[0].points), P1 = norm(sel[1].points);
   const inPoly = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
-  let outer = null, inner = null;
-  if (sel[1].points.every(p => inPoly(p, sel[0].points))) { outer = sel[0]; inner = sel[1]; }
-  else if (sel[0].points.every(p => inPoly(p, sel[1].points))) { outer = sel[1]; inner = sel[0]; }
-  if (!outer || !inner || outer.points.length !== inner.points.length) return null;
-  const op = outer.points, n2 = op.length, dists = [], mids = [];
-  for (const p of inner.points) {
+  // 안쪽 = 대다수(≥과반) 꼭짓점이 상대 안에 들어가는 쪽 (경계 오차 허용)
+  const inFrac = (pts, poly) => pts.filter(p => inPoly(p, poly)).length / pts.length;
+  let outer = null, inner = null, op = null, ip = null;
+  if (inFrac(P1, P0) >= 0.5 && inFrac(P1, P0) >= inFrac(P0, P1)) { outer = sel[0]; inner = sel[1]; op = P0; ip = P1; }
+  else if (inFrac(P0, P1) >= 0.5) { outer = sel[1]; inner = sel[0]; op = P1; ip = P0; }
+  if (!outer || !inner) return null;
+  const n2 = op.length, dists = [], mids = [];
+  for (const p of ip) {
     // 두께 = 바깥 '변'까지 최단(수직) 거리
     let bd = Infinity;
     for (let i = 0; i < n2; i++) { const a = op[i], b = op[(i + 1) % n2]; const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy; const tt = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; const qx = a[0] + dx * tt, qy = a[1] + dy * tt; const d = Math.hypot(p[0] - qx, p[1] - qy); if (d < bd) bd = d; }
@@ -4425,7 +4430,7 @@ function detectDoubleOutlineWall(sel) {
     mids.push([(p[0] + vx) / 2, (p[1] + vy) / 2]);
   }
   const t = Math.round(dists.reduce((a, b) => a + b, 0) / dists.length);
-  const uniform = (Math.max(...dists) - Math.min(...dists)) < Math.max(2, t * 0.25); // 스케일 쌍 등 25% 비균일 허용
+  const uniform = (Math.max(...dists) - Math.min(...dists)) < Math.max(4, t * 0.45); // 손그림·비정방 간격 45%까지 벽체로 허용
   if (!(t > 0.5 && uniform)) return null;
   const base = lvElev() + (outer.zo || 0);
   const ids = new Set([outer.id, inner.id]);
