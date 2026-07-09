@@ -2870,6 +2870,22 @@ function renderScene(isActive) {
       c.restore();
     }
   }
+  // extrudecrv 생성 미리보기 — 기준점 클릭 전(awaitBase)에 프로파일이 어떤 입체가 될지 점선으로 예시(srf의 참조 와이어프레임과 동일한 느낌)
+  if (typeof extrudePend !== 'undefined' && extrudePend && !extrudePend.srf && extrudePend.stage === 'height' && extrudePend.heightPhase === 'awaitBase') {
+    const dpr = devicePixelRatio || 1, ph = extrudePend.val || (settings.bim.wallH || 2700);
+    c.save(); c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(46,230,166,0.9)'; c.lineWidth = 1.6 * dpr;
+    for (const it of extrudePend.items) {
+      const e = state.entities.find(x => x.id === it.id); if (!e || e.bim) continue; // 이미 솔리드로 보이는 BIM(병합 벽체 등)은 제외
+      const fp = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : (e.points ? e.points.map(p => [p[0], p[1]]) : null);
+      if (!fp || fp.length < 2) continue;
+      const z0 = it.base, z1 = z0 + ph, closed = e.type === 'CIRCLE' || e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e));
+      const bot = fp.map(p => proj3D(p[0], p[1], z0)), top = fp.map(p => proj3D(p[0], p[1], z1));
+      c.beginPath(); top.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
+      c.beginPath(); bot.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
+      c.beginPath(); for (let i = 0; i < fp.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
+    }
+    c.setLineDash([]); c.restore();
+  }
   // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (활성 뷰에서만, 거의 수직 뷰에서는 숨김)
   if (isActive && state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
     const sid = [...state.selection][0];
@@ -2978,7 +2994,7 @@ function renderScene(isActive) {
   if (v3.snapHit) {
     const sm = v3.snapHit, dpr3 = devicePixelRatio || 1;
     const sp3 = proj3D(sm.x, sm.y, sm.z != null ? sm.z : cplaneZ());
-    const big = (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.srf);
+    const big = (typeof extrudePend !== 'undefined' && !!extrudePend); // 돌출(srf·crv 공통) 중엔 크게 + 자석선 + z라벨
     const rr = (big ? 15 : 7) * dpr3;
     c.save();
     // 자석 느낌: 커서에서 스냅점까지 점선 + 마커 뒤 반투명 후광
@@ -4324,7 +4340,7 @@ function extrudeSetBase(px, py) {
   const vi = vpAt(px, py), rct = vpRect(vi), w = v3.views ? v3.views[vi] : null;
   ex.k = (Math.min(rct.w, rct.h) / (v3.fit * 1.4) * (w ? w.zoom : v3.zoom)) || 1;
   let apy = py, h0 = (ex.srf && ex.applied) ? ex.val : 0;
-  if (ex.srf) { // 기준점 스냅(꼭짓점·중점·모서리·표면, 대상 자신 포함) — 그 점의 화면위치/높이를 기준으로
+  { // 기준점 스냅(꼭짓점·중점·모서리·표면, 대상·다른 객체 포함) — srf·crv 공통. 그 점의 화면위치/높이를 기준으로
     const sn = srfSurfaceSnap(px, py, null);
     if (sn && sn.z != null) { const s = proj3D(sn.x, sn.y, sn.z); apy = s[1]; h0 = Math.max(0, sn.z - ex.base); }
   }
@@ -4345,19 +4361,18 @@ function extrudeHover(e) {
   const px = (e.clientX - r.left) * (r.width ? v3.cv.width / r.width : 1);
   const py = (e.clientY - r.top) * (r.height ? v3.cv.height / r.height : 1);
   if (ex.heightPhase !== 'awaitTop') { // confirmFace(포커싱) 또는 awaitBase(기준점 대기)
-    if (ex.srf) { // 면 포커싱 순간부터 객체 꼭짓점·중점·모서리·표면 스냅 표시 (기준점은 대상 자신 포함)
-      const sn = srfSurfaceSnap(px, py, null);
-      v3.snapHit = sn || null; v3.snapCursor = (sn && sn.z != null) ? [px, py] : null;
-      setPrompt(sn && sn.z != null ? `스냅 ▶ z=${Math.round(sn.z)} (${sn.kind}) — 클릭=기준점 확정 · Esc` : '기준점 클릭 (객체 꼭짓점·중점·모서리·표면에 스냅) · 숫자 입력 · Esc');
-      markInteract();
-    }
+    // srf·crv 공통: 포커싱/기준점 대기 순간부터 객체 꼭짓점·중점·모서리·표면 스냅 표시 (대상 자신 포함)
+    const sn = srfSurfaceSnap(px, py, null);
+    v3.snapHit = sn || null; v3.snapCursor = (sn && sn.z != null) ? [px, py] : null;
+    setPrompt(sn && sn.z != null ? `스냅 ▶ z=${Math.round(sn.z)} (${sn.kind}) — 클릭=기준점 확정 · Esc` : '기준점 클릭 (객체 꼭짓점·중점·모서리·표면에 스냅) · 숫자 입력 · Esc');
+    markInteract();
     return;
   }
-  // 높이 결정: extrudesrf는 모든 객체(대상 자신 포함)의 꼭짓점·중점·모서리·표면 스냅 → 다양한 높이 선택지.
-  // 바닥(z0=기준점) 꼭짓점·모서리에 붙이면 높이 0 → 평면 면 생성 가능. extrudecrv는 snap3D(자기 제외).
-  const sn = ex.srf ? srfSurfaceSnap(px, py, null) : (osnapEnabled ? snap3D(px, py, null, ex._exclude) : null);
+  // 높이 결정: srf·crv 공통으로 모든 객체(대상 자신 포함)의 꼭짓점·중점·모서리·표면 스냅 → 다양한 높이 선택지.
+  // 바닥(z0=기준점) 꼭짓점·모서리에 붙이면 높이 0 → 평면 면 생성 가능.
+  const sn = srfSurfaceSnap(px, py, null);
   if (sn && sn.z != null && sn.z - ex.base >= 0) { // 근처 지오메트리/표면 z에 높이 흡착(바닥 포함) → 정확한 높낮이(0 가능)
-    v3.snapHit = sn; v3.snapCursor = ex.srf ? [px, py] : null;
+    v3.snapHit = sn; v3.snapCursor = [px, py];
     extrudeSetVal(sn.z - ex.base);
     setPrompt(`높이 ${ex.val} · 스냅 z=${Math.round(sn.z)}${sn.kind ? ' (' + sn.kind + ')' : ''} — 클릭/Enter 확정 · 숫자 · Esc`);
   } else { // 스냅 없으면 기준점보다 커서를 위로 올릴수록 커짐
