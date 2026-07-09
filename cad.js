@@ -8132,5 +8132,24 @@ try {
   window.WEBCAD_VERSION = m ? m[1] : 'unknown';
 } catch (e) { window.WEBCAD_VERSION = 'unknown'; }
 setTimeout(() => { try { logLine(`WebCAD · cad.js 버전 ${window.WEBCAD_VERSION}`, 'info'); } catch (e) {} }, 900);
+// 자동 업데이트 — GitHub Pages가 index.html을 10분 캐시(max-age=600)해서, 새로고침해도
+// 예전 index.html→예전 cad.js가 로딩되는 문제. 고유 쿼리로 원본에서 최신 index.html을 받아
+// 로딩된 버전과 다르면(=캐시로 옛 버전 로딩됨) 캐시 우회 URL로 자동 이동(세션당 버전별 1회).
+setTimeout(async () => {
+  try {
+    const res = await fetch(location.pathname + '?_=' + Date.now(), { cache: 'no-store' });
+    const txt = await res.text();
+    const m = txt.match(/cad\.js\?v=([0-9a-z.]+)/);
+    const latest = m && m[1];
+    if (latest && latest !== window.WEBCAD_VERSION) {
+      const guard = 'webcad_upd_' + latest;
+      if (!sessionStorage.getItem(guard)) {
+        sessionStorage.setItem(guard, '1');
+        try { logLine(`  ↻ 새 버전(${latest}) 감지 — 캐시 우회 새로고침`, 'info'); } catch (e) {}
+        location.replace(location.pathname + '?v=' + latest);
+      }
+    }
+  } catch (e) {}
+}, 2500);
 
 })();
