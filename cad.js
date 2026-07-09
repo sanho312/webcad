@@ -2976,16 +2976,20 @@ function renderScene(isActive) {
     }
     c.strokeStyle = '#2ee6a6'; c.lineWidth = (big ? 3 : 1.8) * dpr3; c.setLineDash([]);
     if (big) { c.shadowColor = 'rgba(0,0,0,.55)'; c.shadowBlur = 3 * dpr3; }
-    if (sm.kind === 'midpoint') {
+    // 종류별 마커 모양 (2D 규약) — srfSurfaceSnap은 한글 kind, snap3D는 영문 kind라 둘 다 매핑
+    const k = sm.kind;
+    if (k === 'midpoint' || k === '중점') { // 중점=삼각형
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
-    } else if (sm.kind === 'center') {
+    } else if (k === 'center' || k === '중심') { // 중심=원
       c.beginPath(); c.arc(sp3[0], sp3[1], rr, 0, Math.PI * 2); c.stroke();
-    } else if (sm.kind === 'nearest') {
+    } else if (k === 'nearest' || k === '모서리') { // 모서리=X
       c.beginPath();
       c.moveTo(sp3[0] - rr, sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1] + rr);
       c.moveTo(sp3[0] + rr, sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr);
       c.stroke();
-    } else {
+    } else if (k === '표면' || k === 'surface') { // 표면=마름모(꼭짓점과 구분)
+      c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1]); c.lineTo(sp3[0], sp3[1] + rr); c.lineTo(sp3[0] - rr, sp3[1]); c.closePath(); c.stroke();
+    } else { // 꼭짓점/끝점=사각
       c.strokeRect(sp3[0] - rr, sp3[1] - rr, 2 * rr, 2 * rr);
     }
     if (big && sm.z != null) { // z 라벨 — 어두운 배경칩 위에 또렷한 텍스트(초록 외곽선 겹침 번짐 방지)
@@ -2996,7 +3000,12 @@ function renderScene(isActive) {
       const lbl = 'z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : '');
       const padX = 7 * dpr3, padY = 4 * dpr3;
       const bw = c.measureText(lbl).width + padX * 2, bh = fs + padY * 2;
-      const lx = sp3[0] + rr + 6 * dpr3, ly = sp3[1] - rr - bh; // 마커 우상단
+      let lx = sp3[0] + rr + 6 * dpr3, ly = sp3[1] - rr - bh; // 기본: 마커 우상단
+      const cw = v3.cv.width, ch = v3.cv.height, mg = 2 * dpr3; // 화면 밖으로 안 나가게 클램프(우측 넘침→좌측 등)
+      if (lx + bw > cw - mg) lx = sp3[0] - rr - 6 * dpr3 - bw;
+      if (lx < mg) lx = mg;
+      if (ly < mg) ly = sp3[1] + rr + 6 * dpr3;
+      if (ly + bh > ch - mg) ly = ch - mg - bh;
       c.fillStyle = 'rgba(10,15,13,.92)'; c.fillRect(lx, ly, bw, bh);           // 배경칩
       c.strokeStyle = 'rgba(46,230,166,.9)'; c.lineWidth = 1 * dpr3; c.strokeRect(lx, ly, bw, bh); // 얇은 초록 테두리
       c.fillStyle = '#eafff6'; c.fillText(lbl, lx + padX, ly + bh / 2);          // 또렷한 흰 텍스트
@@ -4300,7 +4309,7 @@ function extrudeHover(e) {
 function extrudeFinish() { // 현재 높이로 확정
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   extrudePend = null; setPrompt('');
-  if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.srfHi = null; }
+  if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.snapCursor = null; v3.srfHi = null; }
   logLine(ex.srf ? `  ✔ 면 밀당 완료 — 높이 ${ex.val}` : `  ✔ 돌출 완료 — 높이 ${ex.val} · ${ex.cap ? '캡 있음(솔리드)' : '캡 없음(면)'}`, 'ok');
   extrudeRefresh();
 }
@@ -4308,7 +4317,7 @@ function extrudePendCancel() { // 어느 단계든 취소 (height면 만든 입�
   if (!extrudePend) return false;
   const st = extrudePend.stage;
   extrudePend = null; setPrompt('');
-  if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.srfHi = null; }
+  if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.snapCursor = null; v3.srfHi = null; }
   if (st === 'height' && undoStack.length) restore(undoStack.pop());
   logLine('  돌출 취소', 'info');
   extrudeRefresh();
@@ -5544,8 +5553,8 @@ function runCommandInput(raw) {
       if (v === 'y' || v === 'yes' || v === '예') { extrudeSetCap(true); return; }
       if (v === 'n' || v === 'no' || v === '아니오') { extrudeSetCap(false); return; }
       const hn = parseFloat(v);
-      if (!isNaN(hn) && /^-?[\d.]+$/.test(v) && hn > 0) { extrudeSetVal(hn); if (!extrudePend.applied) extrudeApplyKind(); extrudeSetVal(hn); extrudeFinish(); return; }
-      logLine('  높이값(양수) 입력·빈 Enter 확정 · y/n=캡 전환.', 'warn'); return;
+      if (!isNaN(hn) && /^[\d.]+$/.test(v) && hn >= 0) { if (!extrudePend.applied) extrudeApplyKind(); extrudeSetVal(hn); extrudeFinish(); return; } // 0 허용(평면 면), 음수 불가
+      logLine('  높이값(0 이상) 입력·빈 Enter 확정 · y/n=캡 전환.', 'warn'); return;
     }
     if (extrudePend.stage === 'pickSel') { extrudePend = null; setPrompt(''); } // 다른 명령 입력 시 선택대기 취소 후 진행
   }
