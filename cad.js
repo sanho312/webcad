@@ -2870,26 +2870,29 @@ function renderScene(isActive) {
       c.restore();
     }
   }
-  // extrudecrv 생성 미리보기(기준점 클릭 전) — ①선택 프로파일 파란 실선 강조 ②될 입체를 점선 고스트로 예시
+  // extrudecrv 생성 단계 시각화(기준점 클릭 전) — 선택 crv 파란 실선 + 끝점 스냅표시(초록 사각)만.
+  // 미리보기 입체는 만들지 않음(혼란 방지) — 실제 입체는 기준점 클릭 후 0에서부터 커서로 자라남.
   if (typeof extrudePend !== 'undefined' && extrudePend && !extrudePend.srf && extrudePend.stage === 'height' && extrudePend.heightPhase === 'awaitBase') {
-    const dpr = devicePixelRatio || 1, ph = extrudePend.val || (settings.bim.wallH || 2700); // val=0(시작)이면 기본 높이로 예시
+    const dpr = devicePixelRatio || 1;
     c.save();
     for (const it of extrudePend.items) {
       const e = state.entities.find(x => x.id === it.id); if (!e) continue;
       if (e.bim && !(e.bim.kind === 'wall' && !(e.bim.h > 0))) continue; // 이미 입체로 보이는 BIM 제외 — 납작(h0) 병합 벽체는 포함(밴드가 없어 이 강조가 유일한 표시)
       const fp = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : (e.points ? e.points.map(p => [p[0], p[1]]) : null);
       if (!fp || fp.length < 2) continue;
-      const z0 = it.base, z1 = z0 + ph, closed = e.type === 'CIRCLE' || e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e));
-      const bot = fp.map(p => proj3D(p[0], p[1], z0)), top = fp.map(p => proj3D(p[0], p[1], z1));
-      // 선택 강조: 베이스 프로파일을 파란 실선으로 (srf의 파란 면 포커싱과 같은 언어)
+      const z0 = it.base, closed = e.type === 'CIRCLE' || e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e));
+      const bot = fp.map(p => proj3D(p[0], p[1], z0));
+      // 선택됨: 프로파일을 파란 실선으로 (srf의 파란 면 포커싱과 같은 언어)
       c.setLineDash([]); c.strokeStyle = '#0A84FF'; c.lineWidth = 2.4 * dpr;
       c.beginPath(); bot.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
-      // 점선 고스트: 이 프로파일이 (기본 높이로) 어떤 입체가 될지 예시
-      c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(94,177,255,0.85)'; c.lineWidth = 1.4 * dpr;
-      c.beginPath(); top.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); if (closed) c.closePath(); c.stroke();
-      c.beginPath(); for (let i = 0; i < fp.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
+      // 끝점(꼭짓점) 스냅 표시 — 초록 사각 (2D 끝점 스냅과 동일 언어)
+      if (e.type !== 'CIRCLE') {
+        c.strokeStyle = '#2ee6a6'; c.lineWidth = 1.6 * dpr;
+        const r0 = 5 * dpr;
+        for (const q of bot) c.strokeRect(q[0] - r0, q[1] - r0, 2 * r0, 2 * r0);
+      }
     }
-    c.setLineDash([]); c.restore();
+    c.restore();
   }
   // 높이 그립 — 벽/기둥 1개 선택 시 상단에 드래그 핸들 (활성 뷰에서만, 거의 수직 뷰에서는 숨김)
   if (isActive && state.selection.size === 1 && Math.abs(Math.cos(v3.pitch)) >= 0.15) {
@@ -4351,7 +4354,7 @@ function extrudeSetBase(px, py) {
   }
   ex.anchorPy = apy; ex.h0 = h0; ex.heightPhase = 'awaitTop';
   if (!ex.applied) extrudeApplyKind(); // extrudecrv/평면: 이 클릭에서 비로소 입체 생성
-  extrudeSetVal(ex.h0 || 10); // 면 밀당은 현재/스냅 높이에서, 그 외는 0(→10)에서 시작
+  extrudeSetVal(ex.h0); // 면 밀당은 현재/스냅 높이에서, 그 외는 0에서 자연스럽게 시작 (커서 이동으로 즉시 자람)
   if (typeof v3 !== 'undefined' && v3) v3.snapHit = null;
   extrudeRefresh();
   setPrompt(`높이 ${ex.val} — 커서로 조절(다른 객체에 스냅) 후 클릭/Enter 확정 · 숫자 · Esc`);
