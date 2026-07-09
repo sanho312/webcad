@@ -4372,7 +4372,7 @@ function extrudeFinish() { // 현재 높이로 확정
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   extrudePend = null; setPrompt('');
   if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.snapCursor = null; v3.srfHi = null; }
-  if (!ex.srf && ex.items.length >= 2) mergeOverlappingExtrusion(ex.items); // 겹친(합집합) 곡선들 → 하나로 병합
+  // (겹친 곡선 통짜 합집합 병합은 사용자 요청으로 보류 — 안팎 포갬 벽체만 유지)
   logLine(ex.srf ? `  ✔ 면 밀당 완료 — 높이 ${ex.val}` : `  ✔ 돌출 완료 — 높이 ${ex.val} · ${ex.cap ? '캡 있음(솔리드)' : '캡 없음(면)'}`, 'ok');
   extrudeRefresh();
 }
