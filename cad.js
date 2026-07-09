@@ -8198,14 +8198,20 @@ setTimeout(async () => {
     const m = txt.match(/cad\.js\?v=([0-9a-z.]+)/);
     const latest = m && m[1];
     if (latest && latest !== window.WEBCAD_VERSION) {
+      const goFresh = () => location.replace(location.pathname + '?v=' + latest + '.' + Date.now().toString(36));
+      // 눈에 확 띄는 업데이트 배너 (클릭=캐시 우회 새로고침) — 자동 새로고침이 막혀도 사용자가 직접 누를 수 있게
+      try {
+        const bar = document.createElement('div');
+        bar.style.cssText = 'position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:99999;background:#0A84FF;color:#fff;padding:11px 18px;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.45);font:600 14px system-ui,sans-serif;cursor:pointer;';
+        bar.textContent = `새 버전(${latest}) 있음 — 눌러서 업데이트`;
+        bar.onclick = goFresh;
+        document.body.appendChild(bar);
+        try { logLine(`  ↻ 새 버전(${latest}) 감지 — 상단 파란 배너를 누르거나 잠시 후 자동 새로고침`, 'info'); } catch (e) {}
+      } catch (e) {}
       const guard = 'webcad_upd_' + latest;
-      if (!sessionStorage.getItem(guard)) {
-        sessionStorage.setItem(guard, '1');
-        try { logLine(`  ↻ 새 버전(${latest}) 감지 — 캐시 우회 새로고침`, 'info'); } catch (e) {}
-        location.replace(location.pathname + '?v=' + latest);
-      }
+      if (!sessionStorage.getItem(guard)) { sessionStorage.setItem(guard, '1'); setTimeout(goFresh, 1200); } // 자동 1회 시도(고유 쿼리로 캐시 확실 우회)
     }
   } catch (e) {}
-}, 2500);
+}, 1500);
 
 })();
