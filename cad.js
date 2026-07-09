@@ -4290,6 +4290,7 @@ function extrudeApplyKind() {
   const h = Math.max(0, ex.val); // 높이 0 허용 (바닥 스냅 → 평면 면)
   for (const it of ex.items) {
     const e = state.entities.find(x => x.id === it.id); if (!e) continue;
+    if (it.t != null) { e.bim = { kind: 'wall', h, t: it.t, base: it.base }; continue; } // 이중 외곽선 벽체: 두께 유지
     const cappable = (e.type === 'CIRCLE') || (e.type === 'LWPOLYLINE' && (e.points || []).length >= 3);
     // extrudesrf(면 밀당)은 항상 솔리드로. extrudecrv는 캡 선택에 따라 솔리드/면.
     const solid = ex.srf ? cappable : (ex.cap && cappable);
@@ -4402,8 +4403,41 @@ function beginExtrude(cmd) {
 }
 // extrudecrv: 캡은 lastExtrudeCap 자동. 3D는 '클릭'해야 높이 시작(그 전엔 평면).
 // extrudesrf(면 밀당): 대상 솔리드는 현재 높이 그대로 두고, 화면 클릭/숫자로 높이(밀거나 당김) 조절.
+// 안팎 이중 외곽선(같은 모양 스케일/오프셋 쌍 — 안쪽 곡선이 바깥 곡선 안에 완전히 들어감) →
+// 간격을 두께로 하는 '건물 벽체' 하나로 변환. 안쪽 각 꼭짓점→바깥 변 최단거리=두께, 그 중점=중심선.
+function detectDoubleOutlineWall(sel) {
+  if (sel.length !== 2) return null;
+  if (!sel.every(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3)) return null;
+  const inPoly = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+  let outer = null, inner = null;
+  if (sel[1].points.every(p => inPoly(p, sel[0].points))) { outer = sel[0]; inner = sel[1]; }
+  else if (sel[0].points.every(p => inPoly(p, sel[1].points))) { outer = sel[1]; inner = sel[0]; }
+  if (!outer || !inner || outer.points.length !== inner.points.length) return null;
+  const op = outer.points, n2 = op.length, dists = [], mids = [];
+  for (const p of inner.points) {
+    // 두께 = 바깥 '변'까지 최단(수직) 거리
+    let bd = Infinity;
+    for (let i = 0; i < n2; i++) { const a = op[i], b = op[(i + 1) % n2]; const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy; const tt = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; const qx = a[0] + dx * tt, qy = a[1] + dy * tt; const d = Math.hypot(p[0] - qx, p[1] - qy); if (d < bd) bd = d; }
+    dists.push(bd);
+    // 중심선 = 바깥 '꼭짓점'과의 중점 (스케일/오프셋 쌍은 대응 꼭짓점 → 코너까지 깔끔한 중심선)
+    let vd = Infinity, vx = 0, vy = 0;
+    for (let i = 0; i < n2; i++) { const d = Math.hypot(p[0] - op[i][0], p[1] - op[i][1]); if (d < vd) { vd = d; vx = op[i][0]; vy = op[i][1]; } }
+    mids.push([(p[0] + vx) / 2, (p[1] + vy) / 2]);
+  }
+  const t = Math.round(dists.reduce((a, b) => a + b, 0) / dists.length);
+  const uniform = (Math.max(...dists) - Math.min(...dists)) < Math.max(2, t * 0.25); // 스케일 쌍 등 25% 비균일 허용
+  if (!(t > 0.5 && uniform)) return null;
+  const base = lvElev() + (outer.zo || 0);
+  const ids = new Set([outer.id, inner.id]);
+  state.entities = state.entities.filter(e => !ids.has(e.id));
+  const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mids, layer: outer.layer, color: outer.color });
+  ln.bim = { kind: 'wall', h: settings.bim.wallH || 2700, t, base }; delete ln.zo;
+  return ln;
+}
 function extrudeStart(cmd, sel) {
   pushUndo();
+  const wall2 = detectDoubleOutlineWall(sel); // 이중 외곽선(안팎 두 박스) → 두께 벽체 하나
+  if (wall2) { sel = [wall2]; logLine(`  ▷ 이중 외곽선 감지 → 두께 ${wall2.bim.t} 벽체로 돌출 (두 곡선 병합)`, 'ok'); }
   const srf = (cmd === 'extrudesrf');
   const items = []; let nSlant = 0, curH = 0, hasSolid = false;
   for (const e of sel) {
@@ -4411,7 +4445,7 @@ function extrudeStart(cmd, sel) {
     if (e.type === 'LINE' && (e.z1 != null || e.z2 != null)) { base = Math.min(e.z1 || 0, e.z2 || 0); if ((e.z1 || 0) !== (e.z2 || 0)) nSlant++; delete e.z1; delete e.z2; }
     else if (e.bim && e.bim.base != null) base = e.bim.base;
     if (e.bim && e.bim.h) { curH = Math.max(curH, e.bim.h); hasSolid = true; }
-    delete e.zo; items.push({ id: e.id, base });
+    delete e.zo; items.push({ id: e.id, base, t: (e.bim && e.bim.kind === 'wall' && e.bim.t > 0) ? e.bim.t : null });
   }
   if (nSlant) logLine(`  ⚠ 기울어진 3D 선 ${nSlant}개는 낮은 끝 높이 기준으로 수직 돌출`, 'warn');
   const c = footprintCentroid(sel);
@@ -8004,7 +8038,7 @@ window.__CADTEST__ = {
   bimSolids, lineClipPoly, genSectionView, stairSolids, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, bimSolidColor,
-  runBoolean, meshFeat, meshComponents, meshEdgeKey,
+  runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
 };
 
 // ============================================================
