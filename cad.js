@@ -4372,6 +4372,7 @@ function extrudeFinish() { // 현재 높이로 확정
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   extrudePend = null; setPrompt('');
   if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.snapCursor = null; v3.srfHi = null; }
+  if (!ex.srf && ex.items.length >= 2) mergeOverlappingExtrusion(ex.items); // 겹친(합집합) 곡선들 → 하나로 병합
   logLine(ex.srf ? `  ✔ 면 밀당 완료 — 높이 ${ex.val}` : `  ✔ 돌출 완료 — 높이 ${ex.val} · ${ex.cap ? '캡 있음(솔리드)' : '캡 없음(면)'}`, 'ok');
   extrudeRefresh();
 }
@@ -4458,12 +4459,47 @@ function findNestedPartner(e) {
   }
   return null;
 }
+// 발자국(닫힌 다각형)을 z0~z1 기둥 삼각형으로 (CCW 정규화)
+function extrudePrism(pts, z0, z1) {
+  const n = pts.length; if (n < 3) return [];
+  let area2 = 0; for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n]; area2 += a[0] * b[1] - b[0] * a[1]; }
+  const poly = area2 < 0 ? pts.slice().reverse() : pts;
+  const top = poly.map(p => [p[0], p[1], z1]), bot = poly.map(p => [p[0], p[1], z0]), tris = [];
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; tris.push([bot[i], bot[j], top[j]], [bot[i], top[j], top[i]]); }
+  for (let i = 1; i < n - 1; i++) { tris.push([top[0], top[i], top[i + 1]]); tris.push([bot[0], bot[i + 1], bot[i]]); }
+  return tris;
+}
+// 겹친(합집합) 여러 곡선 돌출 → CSG 합집합으로 하나의 개체(라이노식 벽체처럼). 안 겹치면 그대로 둠.
+function mergeOverlappingExtrusion(items) {
+  const rows = items.map(it => ({ it, e: state.entities.find(e => e.id === it.id) })).filter(r => r.e);
+  if (rows.length < 2) return;
+  const fp = e => e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : (e.points ? e.points.map(p => [p[0], p[1]]) : null);
+  for (const r of rows) { r.fp = fp(r.e); if (!r.fp || r.fp.length < 3) return; }
+  const inP = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+  const segX = (a, b, c, d) => { const D = (b[0] - a[0]) * (d[1] - c[1]) - (b[1] - a[1]) * (d[0] - c[0]); if (Math.abs(D) < 1e-9) return false; const t = ((c[0] - a[0]) * (d[1] - c[1]) - (c[1] - a[1]) * (d[0] - c[0])) / D, u = ((c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])) / D; return t >= 0 && t <= 1 && u >= 0 && u <= 1; };
+  const overlap = (A, B) => { if (A.some(p => inP(p, B)) || B.some(p => inP(p, A))) return true; for (let i = 0; i < A.length; i++) for (let j = 0; j < B.length; j++) if (segX(A[i], A[(i + 1) % A.length], B[j], B[(j + 1) % B.length])) return true; return false; };
+  let any = false; for (let a = 0; a < rows.length && !any; a++) for (let b = a + 1; b < rows.length; b++) if (overlap(rows[a].fp, rows[b].fp)) any = true;
+  if (!any) return; // 안 겹치면 따로 유지 (Phase95 원칙)
+  let acc = null;
+  for (const r of rows) { const z0 = r.it.base || 0, z1 = z0 + Math.max(1, (r.e.bim && r.e.bim.h) || 0); const p = trisToPolys(extrudePrism(r.fp, z0, z1)); if (p.length) acc = acc ? csgOp(acc, p, 'union') : p; }
+  if (!acc || !acc.length) return;
+  const outTris = polysToTris(acc); if (!outTris.length) return;
+  const base = rows[0].e, ids = new Set(rows.map(r => r.e.id));
+  state.entities = state.entities.filter(e => !ids.has(e.id));
+  const comps = meshComponents(outTris), created = [];
+  for (const ct of comps) created.push(addEntity({ type: 'MESH', tris: ct, layer: base.layer, color: base.color }));
+  state.selection.clear(); created.forEach(m => state.selection.add(m.id));
+  logLine(`  ✔ 겹친 ${rows.length}개 곡선 → 합집합 하나로 병합`, 'ok');
+}
 function extrudeStart(cmd, sel) {
   pushUndo();
-  if (sel.length === 1) { const partner = findNestedPartner(sel[0]); if (partner) { sel = [sel[0], partner]; logLine('  ▷ 안팎으로 포갠 짝 곡선 자동 포함 — 벽체로 병합', 'info'); } } // 면돌출 등 하나만 잡혀도 짝을 찾아 벽체로
-  const wall2 = detectDoubleOutlineWall(sel); // 이중 외곽선(안팎 두 박스) → 두께 벽체 하나
-  if (wall2) { sel = [wall2]; logLine(`  ▷ 이중 외곽선 감지 → 두께 ${wall2.bim.t} 벽체로 돌출 (두 곡선 병합)`, 'ok'); }
   const srf = (cmd === 'extrudesrf');
+  // 곡선 병합(이중 외곽선→벽체, 겹친 곡선→합집합)은 extrudecrv(곡선 돌출) 전용. extrudesrf(면 밀당)는 손대지 않음.
+  if (!srf) {
+    if (sel.length === 1) { const partner = findNestedPartner(sel[0]); if (partner) { sel = [sel[0], partner]; logLine('  ▷ 안팎으로 포갠 짝 곡선 자동 포함 — 벽체로 병합', 'info'); } }
+    const wall2 = detectDoubleOutlineWall(sel); // 이중 외곽선(안팎 두 박스) → 두께 벽체 하나
+    if (wall2) { sel = [wall2]; logLine(`  ▷ 이중 외곽선 감지 → 두께 ${wall2.bim.t} 벽체로 돌출 (두 곡선 병합)`, 'ok'); }
+  }
   const items = []; let nSlant = 0, curH = 0, hasSolid = false;
   for (const e of sel) {
     let base = lvElev() + (e.zo || 0);
