@@ -4444,8 +4444,23 @@ function detectDoubleOutlineWall(sel) {
   ln.bim = { kind: 'wall', h: settings.bim.wallH || 2700, t, base }; delete ln.zo;
   return ln;
 }
+// 단일 닫힌 곡선(면돌출로 하나만 클릭한 경우 등)에 대해, 안팎으로 포개진 짝 곡선을 찾아 반환.
+// → 면돌출은 '면 클릭' 흐름이라 한 개만 잡히는데, 짝이 있으면 함께 잡아 벽체로 병합되게.
+function findNestedPartner(e) {
+  if (!(e && e.type === 'LWPOLYLINE' && e.closed && !e.bim && (e.points || []).length >= 3)) return null;
+  const inPoly = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+  const frac = (a, b) => a.filter(p => inPoly(p, b)).length / a.length;
+  for (const c of state.entities) {
+    if (c === e || c.bim || c.type !== 'LWPOLYLINE' || !c.closed || (c.points || []).length < 3) continue;
+    const l = getLayer(c.layer); if (l && !l.visible) continue;
+    const ep = e.points.map(p => [p[0], p[1]]), cp = c.points.map(p => [p[0], p[1]]);
+    if (frac(cp, ep) >= 0.8 || frac(ep, cp) >= 0.8) return c; // 한쪽이 다른쪽 안에 대부분 들어감
+  }
+  return null;
+}
 function extrudeStart(cmd, sel) {
   pushUndo();
+  if (sel.length === 1) { const partner = findNestedPartner(sel[0]); if (partner) { sel = [sel[0], partner]; logLine('  ▷ 안팎으로 포갠 짝 곡선 자동 포함 — 벽체로 병합', 'info'); } } // 면돌출 등 하나만 잡혀도 짝을 찾아 벽체로
   const wall2 = detectDoubleOutlineWall(sel); // 이중 외곽선(안팎 두 박스) → 두께 벽체 하나
   if (wall2) { sel = [wall2]; logLine(`  ▷ 이중 외곽선 감지 → 두께 ${wall2.bim.t} 벽체로 돌출 (두 곡선 병합)`, 'ok'); }
   const srf = (cmd === 'extrudesrf');
