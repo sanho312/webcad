@@ -4197,15 +4197,15 @@ function srfSurfaceSnap(px, py, exclude) {
   // 우선순위: BIM 꼭짓점/중점(정확 z) > 비-BIM 꼭짓점/중점 > 메시 꼭짓점 > 모서리 > 표면
   return bimPt || svVertex || mV || hBest || svEdge || mE || sfBest || mF || null;
 }
-function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (10 스냅, 최소 10)
+function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (1단위=부드럽게, 최소 0=바닥 스냅 시 평면)
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
-  ex.val = Math.max(10, Math.round(val / 10) * 10);
+  ex.val = Math.max(0, Math.round(val)); // 10단위 계단식 제거 → 1단위로 부드럽게 늘고 줆. 0 허용(높이 0 면)
   for (const it of ex.items) { const e = state.entities.find(x => x.id === it.id); if (e && e.bim) e.bim.h = ex.val; }
 }
 // 캡 유무에 따라 대상 bim 종류 설정(=이때 비로소 입체 생성) — cap=y & 면 되는 프로파일=solid(column), 아니면 면(wall t0)
 function extrudeApplyKind() {
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
-  const h = Math.max(10, ex.val);
+  const h = Math.max(0, ex.val); // 높이 0 허용 (바닥 스냅 → 평면 면)
   for (const it of ex.items) {
     const e = state.entities.find(x => x.id === it.id); if (!e) continue;
     const cappable = (e.type === 'CIRCLE') || (e.type === 'LWPOLYLINE' && (e.points || []).length >= 3);
@@ -4271,9 +4271,9 @@ function extrudeHover(e) {
     return;
   }
   // 높이 결정: extrudesrf는 모든 객체(대상 자신 포함)의 꼭짓점·중점·모서리·표면 스냅 → 다양한 높이 선택지.
-  // (대상 자신 바닥 z0는 높이<10이라 자동 무시, 윗면 z1은 현재 높이라 무해) extrudecrv(동결)는 snap3D 유지.
+  // 바닥(z0=기준점) 꼭짓점·모서리에 붙이면 높이 0 → 평면 면 생성 가능. extrudecrv는 snap3D(자기 제외).
   const sn = ex.srf ? srfSurfaceSnap(px, py, null) : (osnapEnabled ? snap3D(px, py, null, ex._exclude) : null);
-  if (sn && sn.z != null && sn.z - ex.base >= 10) { // 근처 지오메트리/표면 z에 높이 흡착 → 정확한 높낮이
+  if (sn && sn.z != null && sn.z - ex.base >= 0) { // 근처 지오메트리/표면 z에 높이 흡착(바닥 포함) → 정확한 높낮이(0 가능)
     v3.snapHit = sn; v3.snapCursor = ex.srf ? [px, py] : null;
     extrudeSetVal(sn.z - ex.base);
     setPrompt(`높이 ${ex.val} · 스냅 z=${Math.round(sn.z)}${sn.kind ? ' (' + sn.kind + ')' : ''} — 클릭/Enter 확정 · 숫자 · Esc`);
