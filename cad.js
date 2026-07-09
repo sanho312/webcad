@@ -4434,9 +4434,9 @@ function detectDoubleOutlineWall(sel) {
     mids.push([(p[0] + vx) / 2, (p[1] + vy) / 2]);
   }
   const t = Math.round(dists.reduce((a, b) => a + b, 0) / dists.length);
-  const uniform = (Math.max(...dists) - Math.min(...dists)) < Math.max(4, t * 0.45); // 손그림·비정방 간격 45%까지 벽체로 허용
-  if (!(t > 0.5 && uniform)) { DBG(`간격 불균일/두께0 — 평균두께 ${t}, 간격편차 ${Math.round(Math.max(...dists) - Math.min(...dists))}(허용 ${Math.round(Math.max(4, t * 0.45))} 이내). 안팎 간격을 고르게 하세요`); return null; }
-  DBG(`OK → 두께 ${t} 벽체로 병합`);
+  // 포개진(안쪽이 바깥쪽 안에 든) 두 곡선이면 간격이 고르지 않아도 항상 벽체로 병합 — 간격 평균을 두께로.
+  if (!(t > 0.5)) { DBG(`두께 0 — 두 곡선이 거의 겹침(간격 ${t})`); return null; }
+  DBG(`OK → 두께 ${t} 벽체로 병합 (포함율 ${Math.round(Math.max(f10, f01) * 100)}%)`);
   const base = lvElev() + (outer.zo || 0);
   const ids = new Set([outer.id, inner.id]);
   state.entities = state.entities.filter(e => !ids.has(e.id));
