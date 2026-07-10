@@ -55,7 +55,7 @@ let hatchSpacing = 5;   // 해치 간격
 const SETTINGS_KEY = 'webcad_settings_v1';
 let settings = {
   units: 'mm',
-  osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true },
+  osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true, tangent: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
   bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180 }, // BIM 기본값(mm)
@@ -407,6 +407,9 @@ function drawSnapMarker(s, type) {
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y + r);
     ctx.moveTo(s.x + r, s.y - r); ctx.lineTo(s.x - r, s.y + r);
     ctx.stroke();
+  } else if (type === 'tangent') { // 접선: 원 + 위쪽 접선
+    ctx.beginPath(); ctx.arc(s.x, s.y + r * 0.25, r * 0.75, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s.x - r, s.y - r * 0.5); ctx.lineTo(s.x + r, s.y - r * 0.5); ctx.stroke();
   } else { // nearest: 모래시계(⧗)
     ctx.beginPath();
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y - r); ctx.lineTo(s.x - r, s.y + r);
@@ -771,7 +774,7 @@ function findObjectSnap(raw) {
     for (const p of pts) consider(p.x, p.y, 'endpoint', 1);
     if (draft && draft.type === 'LINE') consider(draft.x1, draft.y1, 'endpoint', 1);
   }
-  let perp = null, perpD = Infinity;
+  let perp = null, perpD = Infinity, perpKind = 'perp';
   const preTol = tol / state.view.scale * 1.5; // bbox 프리체크(대형 도면 성능)
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
@@ -792,7 +795,21 @@ function findObjectSnap(raw) {
         const dCur = Math.hypot(sn.x - mouseScreen.x, sn.y - mouseScreen.y);
         if (dCur > tol) continue;
         const f = perpFoot(base.x, base.y, sg[0], sg[1], sg[2], sg[3]);
-        if (f && f.t >= -1e-9 && f.t <= 1 + 1e-9 && dCur < perpD) { perpD = dCur; perp = { x: f.x, y: f.y }; }
+        if (f && f.t >= -1e-9 && f.t <= 1 + 1e-9 && dCur < perpD) { perpD = dCur; perp = { x: f.x, y: f.y }; perpKind = 'perp'; }
+      }
+    }
+    // 접점(Tan): 기준점에서 원/호에 그은 접선의 접점 — 라이노 Tan (기준점이 원 밖일 때만 존재)
+    if (base && settings.osnapModes.tangent && (e.type === 'CIRCLE' || e.type === 'ARC')) {
+      const tdx = base.x - e.cx, tdy = base.y - e.cy, tL = Math.hypot(tdx, tdy);
+      if (tL > e.r + 1e-9) {
+        const bAng = Math.atan2(tdy, tdx), al = Math.acos(e.r / tL);
+        for (const sgn of [1, -1]) {
+          const tx = e.cx + e.r * Math.cos(bAng + al * sgn), ty = e.cy + e.r * Math.sin(bAng + al * sgn);
+          if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, tx, ty), e.startAngle, e.endAngle)) continue;
+          const sn = worldToScreen(tx, ty);
+          const dCur = Math.hypot(sn.x - mouseScreen.x, sn.y - mouseScreen.y);
+          if (dCur <= tol && dCur < perpD) { perpD = dCur; perp = { x: tx, y: ty }; perpKind = 'tangent'; }
+        }
       }
     }
     const np = settings.osnapModes.nearest ? nearestOnEntity(e, raw) : null;
@@ -812,9 +829,9 @@ function findObjectSnap(raw) {
     for (let i = 0; i < near.length; i++) for (let j = i + 1; j < near.length; j++)
       for (const pt of intersectEntities(near[i], near[j])) consider(pt[0], pt[1], 'intersect', 1);
   }
-  // 우선순위: 끝점·중점·중심·교차 > 수직점 > 근처점
+  // 우선순위: 끝점·중점·중심·교차 > 수직점·접점 > 근처점
   if (best && best.prio <= 3) return best;
-  if (perp) return { x: perp.x, y: perp.y, type: 'perp' };
+  if (perp) return { x: perp.x, y: perp.y, type: perpKind };
   return best;
 }
 // 두 도형의 교차점 목록
@@ -846,7 +863,7 @@ function intersectEntities(A, B) {
   }
   return out;
 }
-const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', perp: '수직', nearest: '근처', intersect: '교차' };
+const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', perp: '수직', nearest: '근처', intersect: '교차', tangent: '접선' };
 
 // ============================================================
 //  이동
@@ -3070,10 +3087,23 @@ function renderScene(isActive) {
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath(); c.stroke();
     } else if (k === 'center' || k === '중심') { // 중심=원
       c.beginPath(); c.arc(sp3[0], sp3[1], rr, 0, Math.PI * 2); c.stroke();
-    } else if (k === 'nearest' || k === '모서리') { // 모서리=X
+    } else if (k === 'intersect' || k === '교차') { // 교차=✕ (2D 규약과 동일)
       c.beginPath();
       c.moveTo(sp3[0] - rr, sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1] + rr);
       c.moveTo(sp3[0] + rr, sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr);
+      c.stroke();
+    } else if (k === 'perp' || k === '수직') { // 수직=⊐ (2D 규약과 동일)
+      c.beginPath();
+      c.moveTo(sp3[0] - rr, sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr); c.lineTo(sp3[0] + rr, sp3[1] + rr);
+      c.moveTo(sp3[0] - rr, sp3[1]); c.lineTo(sp3[0], sp3[1]); c.lineTo(sp3[0], sp3[1] + rr);
+      c.stroke();
+    } else if (k === 'tangent' || k === '접선') { // 접선=원+위쪽 접선 (2D 규약과 동일)
+      c.beginPath(); c.arc(sp3[0], sp3[1] + rr * 0.25, rr * 0.75, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); c.moveTo(sp3[0] - rr, sp3[1] - rr * 0.5); c.lineTo(sp3[0] + rr, sp3[1] - rr * 0.5); c.stroke();
+    } else if (k === 'nearest' || k === '모서리') { // 모서리/근처=모래시계 (2D 규약과 통일 — ✕는 교차 전용)
+      c.beginPath();
+      c.moveTo(sp3[0] - rr, sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr);
+      c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath();
       c.stroke();
     } else if (k === '표면' || k === 'surface') { // 표면=마름모(꼭짓점과 구분)
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1]); c.lineTo(sp3[0], sp3[1] + rr); c.lineTo(sp3[0] - rr, sp3[1]); c.closePath(); c.stroke();
@@ -3085,7 +3115,7 @@ function renderScene(isActive) {
       const fs = 13 * dpr3;
       c.font = `700 ${fs}px -apple-system,system-ui,sans-serif`;
       c.textBaseline = 'middle'; c.textAlign = 'left';
-      const lbl = 'z=' + Math.round(sm.z) + (sm.kind ? ' ' + sm.kind : '');
+      const lbl = 'z=' + Math.round(sm.z) + (sm.kind ? ' ' + (SNAP_KO[sm.kind] || sm.kind) : '');
       const padX = 7 * dpr3, padY = 4 * dpr3;
       const bw = c.measureText(lbl).width + padX * 2, bh = fs + padY * 2;
       let lx = sp3[0] + rr + 6 * dpr3, ly = sp3[1] - rr - bh; // 기본: 마커 우상단
@@ -3458,6 +3488,44 @@ function close3D() {
   });
 })();
 // 3D 스냅: 클릭 지점 근처(화면 12px)의 끝점·중간점으로 흡착 (OSNAP 토글 존중)
+// 3D 선분-선분 최근접 거리와 중간점 — 라이노 Int의 '실제 3D 교차' 판정용 (Ericson 클램프 방식)
+function seg3Dist(p1, p2, q1, q2) {
+  const d1 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+  const d2 = [q2[0] - q1[0], q2[1] - q1[1], q2[2] - q1[2]];
+  const r0 = [p1[0] - q1[0], p1[1] - q1[1], p1[2] - q1[2]];
+  const a = d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2];
+  const e = d2[0] * d2[0] + d2[1] * d2[1] + d2[2] * d2[2];
+  const f = d2[0] * r0[0] + d2[1] * r0[1] + d2[2] * r0[2];
+  let s, t;
+  if (a <= 1e-12 && e <= 1e-12) { s = 0; t = 0; }
+  else if (a <= 1e-12) { s = 0; t = Math.max(0, Math.min(1, f / e)); }
+  else {
+    const c0 = d1[0] * r0[0] + d1[1] * r0[1] + d1[2] * r0[2];
+    if (e <= 1e-12) { t = 0; s = Math.max(0, Math.min(1, -c0 / a)); }
+    else {
+      const b = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2], den = a * e - b * b;
+      s = den > 1e-12 ? Math.max(0, Math.min(1, (b * f - c0 * e) / den)) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) { t = 0; s = Math.max(0, Math.min(1, -c0 / a)); }
+      else if (t > 1) { t = 1; s = Math.max(0, Math.min(1, (b - c0) / a)); }
+    }
+  }
+  const cp = [p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s];
+  const cq = [q1[0] + d2[0] * t, q1[1] + d2[1] * t, q1[2] + d2[2] * t];
+  return { d: Math.hypot(cp[0] - cq[0], cp[1] - cq[1], cp[2] - cq[2]), p: [(cp[0] + cq[0]) / 2, (cp[1] + cq[1]) / 2, (cp[2] + cq[2]) / 2] };
+}
+// 점 (x,y)가 평면 곡선 e '위'에 있는지 (기울어진 3D 선의 평면 통과점이 진짜 교차인지 검증)
+function onCurve2D(e, x, y, tol) {
+  if (e.type === 'CIRCLE' || e.type === 'ARC') {
+    if (Math.abs(Math.hypot(x - e.cx, y - e.cy) - e.r) > tol) return false;
+    return e.type !== 'ARC' || angleInArc(ang(e.cx, e.cy, x, y), e.startAngle, e.endAngle);
+  }
+  for (const sg of entitySegments(e)) {
+    const q = closestOnSeg(x, y, sg[0], sg[1], sg[2], sg[3]);
+    if (Math.hypot(q.x - x, q.y - y) <= tol) return true;
+  }
+  return false;
+}
 function snap3D(px, py, w, exclude) {
   if (!osnapEnabled) return w;
   let best = null, bestD = 14 * (devicePixelRatio || 1);
@@ -3499,6 +3567,126 @@ function snap3D(px, py, w, exclude) {
       const d = Math.hypot(s[0] - px, s[1] - py);
       if (d < bestD) { bestD = d; best = { x: p.x, y: p.y, z: p.z, kind: p.kind }; }
     }
+  }
+  // ── 라이노 정합 오스냅: Int(교차) / Perp(수직) / Tan(접선) ──
+  const osOn = k => !settings.osnapModes || settings.osnapModes[k] !== false;
+  const dpr3s = devicePixelRatio || 1;
+  const entZ3 = e => (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
+  const segs3Of = e => { // 곡선의 3D 세그먼트 (LINE은 정점 z, 폴리라인은 평면 z)
+    const zb = entZ3(e), out = [];
+    if (e.type === 'LINE') out.push([[e.x1, e.y1, e.z1 != null ? e.z1 : zb], [e.x2, e.y2, e.z2 != null ? e.z2 : zb]]);
+    else if (e.type === 'LWPOLYLINE' && e.points) {
+      for (let i = 0; i < e.points.length - (e.closed ? 0 : 1); i++) {
+        const a = e.points[i], b = e.points[(i + 1) % e.points.length];
+        out.push([[a[0], a[1], zb], [b[0], b[1], zb]]);
+      }
+    }
+    return out;
+  };
+  const snapEnts = []; // Int/Perp/Tan 공용 곡선 목록 (레이어·exclude 필터)
+  for (const e of state.entities) {
+    if (exclude && exclude.has(e.id)) continue;
+    if (!['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(e.type)) continue;
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    snapEnts.push(e);
+  }
+  // 교차(Int): 곡선쌍의 '실제 3D 교차점' — 겉보기(화면상) 교차가 아니라 공간에서 진짜 만나는 점만 (라이노 Int)
+  if (osOn('intersection') && snapEnts.length >= 2) {
+    const mg3 = 40 * dpr3s;
+    const nearCur = e => { // 화면 근접 프리필터: 투영 bbox (성능)
+      let bb = null; try { bb = entityBBox(e); } catch (_) { return false; }
+      if (!bb) return false;
+      const zb = entZ3(e);
+      const zs = e.type === 'LINE' ? [e.z1 != null ? e.z1 : zb, e.z2 != null ? e.z2 : zb] : [zb];
+      let x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+      for (const zz of zs) for (const cn of [[bb.xmin, bb.ymin], [bb.xmax, bb.ymin], [bb.xmax, bb.ymax], [bb.xmin, bb.ymax]]) {
+        const p = proj3D(cn[0], cn[1], zz);
+        x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]);
+      }
+      return px >= x0 - mg3 && px <= x1 + mg3 && py >= y0 - mg3 && py <= y1 + mg3;
+    };
+    const planeZ = e => { // 곡선이 실려 있는 수평면 z (기울어진 3D 선이면 null)
+      const zb = entZ3(e);
+      if (e.type === 'LINE' && (e.z1 != null || e.z2 != null)) {
+        const za = e.z1 != null ? e.z1 : zb, zc = e.z2 != null ? e.z2 : zb;
+        return Math.abs(za - zc) < 0.5 ? (za + zc) / 2 : null;
+      }
+      return zb;
+    };
+    const near = snapEnts.filter(nearCur).slice(0, 12), hits = [];
+    for (let i = 0; i < near.length; i++) for (let j = i + 1; j < near.length; j++) {
+      const A = near[i], B = near[j], zA = planeZ(A), zB = planeZ(B);
+      if (zA != null && zB != null) {
+        if (Math.abs(zA - zB) > 0.5) continue; // 서로 다른 평면 — 공간에서 만나지 않음
+        for (const pt of intersectEntities(A, B)) hits.push([pt[0], pt[1], zA]);
+      } else if (zA == null && zB == null) { // 기울어진 3D 선 × 3D 선: 최근접 거리로 실제 교차 판정
+        for (const a of segs3Of(A)) for (const b of segs3Of(B)) {
+          const r = seg3Dist(a[0], a[1], b[0], b[1]);
+          if (r.d <= 0.5) hits.push(r.p);
+        }
+      } else { // 기울어진 3D 선 × 평면 곡선: 선이 그 평면을 통과하는 점이 곡선 위에 있을 때만
+        const ln = zA == null ? A : B, pl = zA == null ? B : A, zp = zA == null ? zB : zA;
+        const sg = segs3Of(ln)[0];
+        if (sg) {
+          const [P, Q] = sg;
+          if ((P[2] - zp) * (Q[2] - zp) <= 0 && Math.abs(Q[2] - P[2]) > 1e-9) {
+            const t = (zp - P[2]) / (Q[2] - P[2]);
+            const hx = P[0] + (Q[0] - P[0]) * t, hy = P[1] + (Q[1] - P[1]) * t;
+            if (onCurve2D(pl, hx, hy, 0.5)) hits.push([hx, hy, zp]);
+          }
+        }
+      }
+    }
+    for (const h of hits) {
+      const s = proj3D(h[0], h[1], h[2]);
+      const d = Math.hypot(s[0] - px, s[1] - py);
+      if (d < bestD) { bestD = d; best = { x: h[0], y: h[1], z: h[2], kind: 'intersect' }; }
+    }
+  }
+  // 수직(Perp)·접선(Tan): 작도 기준점(직전 클릭점)이 있을 때만 성립 — 라이노와 동일. 점 스냅이 없을 때 2순위.
+  let base3 = null;
+  if (typeof pts !== 'undefined' && pts.length) { const lp = pts[pts.length - 1]; base3 = [lp.x, lp.y, cplaneZ()]; }
+  if (v3 && v3.line3d && v3.line3d.p1) base3 = [v3.line3d.p1.x, v3.line3d.p1.y, v3.line3d.p1.z];
+  if (v3 && v3.wallMode && v3.wallP1) base3 = [v3.wallP1[0], v3.wallP1[1], cplaneZ()];
+  if (!best && base3) {
+    let pt3 = null, ptD = 12 * dpr3s;
+    for (const e of snapEnts) {
+      const zb = entZ3(e);
+      if (osOn('perp')) {
+        if (e.type === 'CIRCLE' || e.type === 'ARC') { // 원 위 수직점: 기준점→중심 방향(법선)이 원과 만나는 점
+          const dx = base3[0] - e.cx, dy = base3[1] - e.cy, L = Math.hypot(dx, dy);
+          if (L > 1e-9) for (const sgn of [1, -1]) {
+            const x = e.cx + dx / L * e.r * sgn, y = e.cy + dy / L * e.r * sgn;
+            if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, x, y), e.startAngle, e.endAngle)) continue;
+            const s = proj3D(x, y, zb), d = Math.hypot(s[0] - px, s[1] - py);
+            if (d < ptD) { ptD = d; pt3 = { x, y, z: zb, kind: 'perp' }; }
+          }
+        } else {
+          for (const [A, B] of segs3Of(e)) { // 3D 수선의 발 — 선분 범위 안에 있을 때만
+            const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2];
+            const L2 = ux * ux + uy * uy + uz * uz; if (L2 < 1e-12) continue;
+            const t = ((base3[0] - A[0]) * ux + (base3[1] - A[1]) * uy + (base3[2] - A[2]) * uz) / L2;
+            if (t < -1e-9 || t > 1 + 1e-9) continue;
+            const x = A[0] + ux * t, y = A[1] + uy * t, z = A[2] + uz * t;
+            const s = proj3D(x, y, z), d = Math.hypot(s[0] - px, s[1] - py);
+            if (d < ptD) { ptD = d; pt3 = { x, y, z, kind: 'perp' }; }
+          }
+        }
+      }
+      if (osOn('tangent') && (e.type === 'CIRCLE' || e.type === 'ARC')) { // 접점: 기준점이 원 밖일 때 2개
+        const dx = base3[0] - e.cx, dy = base3[1] - e.cy, L = Math.hypot(dx, dy);
+        if (L > e.r + 1e-9) {
+          const bAng = Math.atan2(dy, dx), al = Math.acos(e.r / L);
+          for (const sgn of [1, -1]) {
+            const x = e.cx + e.r * Math.cos(bAng + al * sgn), y = e.cy + e.r * Math.sin(bAng + al * sgn);
+            if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, x, y), e.startAngle, e.endAngle)) continue;
+            const s = proj3D(x, y, zb), d = Math.hypot(s[0] - px, s[1] - py);
+            if (d < ptD) { ptD = d; pt3 = { x, y, z: zb, kind: 'tangent' }; }
+          }
+        }
+      }
+    }
+    if (pt3) best = pt3;
   }
   // 근접(nearest): 밑그림·3D선 세그먼트 위의 최근접점 (끝점류가 안 잡힐 때 변 위에 흡착)
   if (!best && (!settings.osnapModes || settings.osnapModes.nearest !== false)) {
@@ -4320,7 +4508,7 @@ function srfSurfaceSnap(px, py, exclude) {
   const wasOsnap = osnapEnabled; osnapEnabled = true;
   const sv = snap3D(px, py, null, svExclude); // 비-BIM 선/곡선의 끝점·중점·중심·nearest
   osnapEnabled = wasOsnap;
-  const svVertex = (sv && sv.z != null && ['endpoint', 'center', 'midpoint'].includes(sv.kind)) ? sv : null;
+  const svVertex = (sv && sv.z != null && ['endpoint', 'center', 'midpoint', 'intersect'].includes(sv.kind)) ? sv : null;
   const svEdge = (sv && sv.z != null && sv.kind === 'nearest') ? sv : null;
   const segNear = (A, B) => { const pa = proj3D(A[0], A[1], A[2]), pb = proj3D(B[0], B[1], B[2]); const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy; const t = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0; return { d: Math.hypot(px - (pa[0] + dx * t), py - (pa[1] + dy * t)), t }; };
   const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
@@ -6797,7 +6985,7 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     document.getElementById('optDimTxt').value = settings.dim.txt || 0;
     document.getElementById('optDimDec').value = String(settings.dim.dec != null ? settings.dim.dec : 2);
     document.getElementById('optDimSuffix').checked = !!settings.dim.suffix;
-    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest', 'intersection'])
+    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'tangent', 'nearest', 'intersection'])
       document.getElementById('os_' + k).checked = !!settings.osnapModes[k];
     // 단축키 목록 (도구명 → 현재 사용자 별칭 역조회)
     const rev = {}; for (const [a, t] of Object.entries(settings.aliases)) if (!rev[t]) rev[t] = a;
@@ -6821,7 +7009,7 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     settings.dim.txt = Math.max(0, parseFloat(document.getElementById('optDimTxt').value) || 0);
     settings.dim.dec = parseInt(document.getElementById('optDimDec').value, 10);
     settings.dim.suffix = document.getElementById('optDimSuffix').checked;
-    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'nearest', 'intersection'])
+    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'tangent', 'nearest', 'intersection'])
       settings.osnapModes[k] = document.getElementById('os_' + k).checked;
     const aliases = {};
     document.querySelectorAll('#aliasList input').forEach(inp => {
