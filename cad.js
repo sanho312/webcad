@@ -4326,23 +4326,26 @@ function srfSurfaceSnap(px, py, exclude) {
   // 우선순위: BIM 꼭짓점/중점(정확 z) > 비-BIM 꼭짓점/중점 > 메시 꼭짓점 > 모서리 > 표면
   return bimPt || svVertex || mV || hBest || svEdge || mE || sfBest || mF || null;
 }
-function extrudeSetVal(val) { // height 단계: 모든 항목에 높이 적용 (1단위=부드럽게, 최소 0=바닥 스냅 시 평면)
+function extrudeSetVal(val) { // height 단계: 모든 항목에 적용 — 양수=위로, 음수=아래로(기준면 아래) 돌출, 0=평면
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
-  ex.val = Math.max(0, Math.round(val)); // 10단위 계단식 제거 → 1단위로 부드럽게 늘고 줆. 0 허용(높이 0 면)
-  for (const it of ex.items) { const e = state.entities.find(x => x.id === it.id); if (e && e.bim) e.bim.h = ex.val; }
+  ex.val = Math.round(val); // 1단위로 부드럽게. 음수 허용 → 아래 방향은 base를 내리고 h=|값|으로 저장
+  for (const it of ex.items) {
+    const e = state.entities.find(x => x.id === it.id);
+    if (e && e.bim) { e.bim.base = it.base + Math.min(0, ex.val); e.bim.h = Math.abs(ex.val); }
+  }
 }
 // 캡 유무에 따라 대상 bim 종류 설정(=이때 비로소 입체 생성) — cap=y & 면 되는 프로파일=solid(column), 아니면 면(wall t0)
 function extrudeApplyKind() {
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   extrudeDoMerge(ex); // 이중 외곽선 예약 병합 — 실제 생성 시점(여기)에 두 곡선 → 벽체 하나
-  const h = Math.max(0, ex.val); // 높이 0 허용 (바닥 스냅 → 평면 면)
+  const h = Math.abs(ex.val), bOff = Math.min(0, ex.val); // 음수=아래 방향 돌출(base 내림), 0=평면
   for (const it of ex.items) {
     const e = state.entities.find(x => x.id === it.id); if (!e) continue;
-    if (it.t != null) { e.bim = { kind: 'wall', h, t: it.t, base: it.base }; continue; } // 이중 외곽선 벽체: 두께 유지
+    if (it.t != null) { e.bim = { kind: 'wall', h, t: it.t, base: it.base + bOff }; continue; } // 이중 외곽선 벽체: 두께 유지
     const cappable = (e.type === 'CIRCLE') || (e.type === 'LWPOLYLINE' && (e.points || []).length >= 3);
     // extrudesrf(면 밀당)은 항상 솔리드로. extrudecrv는 캡 선택에 따라 솔리드/면.
     const solid = ex.srf ? cappable : (ex.cap && cappable);
-    e.bim = solid ? { kind: 'column', h, base: it.base } : { kind: 'wall', h, t: 0, base: it.base };
+    e.bim = solid ? { kind: 'column', h, base: it.base + bOff } : { kind: 'wall', h, t: 0, base: it.base + bOff };
   }
   ex.applied = true;
 }
@@ -4374,7 +4377,7 @@ function extrudeSetBase(px, py) {
   let apy = py, h0 = (ex.srf && ex.applied) ? ex.val : 0;
   { // 기준점 스냅(꼭짓점·중점·모서리·표면, 대상·다른 객체 포함) — srf·crv 공통. 그 점의 화면위치/높이를 기준으로
     const sn = srfSurfaceSnap(px, py, null);
-    if (sn && sn.z != null) { const s = proj3D(sn.x, sn.y, sn.z); apy = s[1]; h0 = Math.max(0, sn.z - ex.base); }
+    if (sn && sn.z != null) { const s = proj3D(sn.x, sn.y, sn.z); apy = s[1]; h0 = sn.z - ex.base; } // 기준면 아래 스냅이면 음수 시작(아래 방향)
   }
   ex.anchorPy = apy; ex.h0 = h0; ex.heightPhase = 'awaitTop';
   if (!ex.applied) extrudeApplyKind(); // extrudecrv/평면: 이 클릭에서 비로소 입체 생성
@@ -4401,13 +4404,13 @@ function extrudeHover(e) {
     return;
   }
   // 높이 결정: srf·crv 공통으로 모든 객체(대상 자신 포함)의 꼭짓점·중점·모서리·표면 스냅 → 다양한 높이 선택지.
-  // 바닥(z0=기준점) 꼭짓점·모서리에 붙이면 높이 0 → 평면 면 생성 가능.
+  // 기준면 위·아래 모두 허용 — 아래 스냅/드래그면 음수(아래 방향 돌출), 0이면 평면.
   const sn = srfSurfaceSnap(px, py, null);
-  if (sn && sn.z != null && sn.z - ex.base >= 0) { // 근처 지오메트리/표면 z에 높이 흡착(바닥 포함) → 정확한 높낮이(0 가능)
+  if (sn && sn.z != null) { // 근처 지오메트리/표면 z에 흡착(기준면 아래 포함) → 정확한 높낮이
     v3.snapHit = sn; v3.snapCursor = [px, py];
     extrudeSetVal(sn.z - ex.base);
     setPrompt(`높이 ${ex.val} · 스냅 z=${Math.round(sn.z)}${sn.kind ? ' (' + sn.kind + ')' : ''} — 클릭/Enter 확정 · 숫자 · Esc`);
-  } else { // 스냅 없으면 기준점보다 커서를 위로 올릴수록 커짐
+  } else { // 스냅 없으면 기준점 대비 세로 이동량 — 위로 올리면 +, 아래로 내리면 −(아래 방향 돌출)
     v3.snapHit = null; v3.snapCursor = null;
     extrudeSetVal(ex.h0 + (ex.anchorPy - py) / (ex.k || 1));
     setPrompt(`높이 ${ex.val} — 클릭/Enter 확정 · 숫자 입력 · Esc`);
@@ -5797,8 +5800,8 @@ function runCommandInput(raw) {
       if (v === 'y' || v === 'yes' || v === '예') { extrudeSetCap(true); return; }
       if (v === 'n' || v === 'no' || v === '아니오') { extrudeSetCap(false); return; }
       const hn = parseFloat(v);
-      if (!isNaN(hn) && /^[\d.]+$/.test(v) && hn >= 0) { if (!extrudePend.applied) extrudeApplyKind(); extrudeSetVal(hn); extrudeFinish(); return; } // 0 허용(평면 면), 음수 불가
-      logLine('  높이값(0 이상) 입력·빈 Enter 확정 · y/n=캡 전환.', 'warn'); return;
+      if (!isNaN(hn) && /^-?[\d.]+$/.test(v)) { if (!extrudePend.applied) extrudeApplyKind(); extrudeSetVal(hn); extrudeFinish(); return; } // 0=평면, 음수=기준면 아래로 돌출
+      logLine('  높이값 입력(음수=아래 방향)·빈 Enter 확정 · y/n=캡 전환.', 'warn'); return;
     }
     if (extrudePend.stage === 'pickSel') { extrudePend = null; setPrompt(''); } // 다른 명령 입력 시 선택대기 취소 후 진행
   }
