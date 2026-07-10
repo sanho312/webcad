@@ -2734,20 +2734,24 @@ function zRasterFaces(c, faces, vp, light) {
     }
     const eps = Math.max(1, v3.fit * 0.008);
     const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
-    // 내부 이음선 숨김 — 같은 개체(eid)의 '같은 평면'(shade 동일) 면 2개가 공유하는 변은
-    // 실제 모서리가 아니라 밴드 분할선(벽 링 윗면의 마이터 대각선 등) → 그리지 않음.
+    // 내부 이음선 숨김 — 같은 개체(eid)에서 '같은 평면'(shade 동일) 면 2개가 공유하는 변(밴드 분할선:
+    // 벽 링 윗면의 마이터 대각선 등)은 그 개체의 '모든' 면에서 그리지 않음.
+    // (컬링에서 살아남은 마이터 캡 면이 같은 선분을 혼자 그리는 것까지 차단해야 코너 선이 안 남음)
     // 윗면↔옆면(shade 다름)·코너 수직선(옆면끼리 방향 달라 shade 다름)은 그대로 남음.
-    const seam = new Map();
-    const seamKey = (f, a, b) => {
-      const q = v => Math.round(v * 4) / 4;
-      const ka = q(a[0]) + ',' + q(a[1]), kb = q(b[0]) + ',' + q(b[1]);
-      return f.eid + '§' + Math.round(f.shade * 50) + '§' + (ka < kb ? ka + '|' + kb : kb + '|' + ka);
-    };
+    const edgeK = (a, b) => { const q = v => Math.round(v * 4) / 4; const ka = q(a[0]) + ',' + q(a[1]), kb = q(b[0]) + ',' + q(b[1]); return ka < kb ? ka + '|' + kb : kb + '|' + ka; };
+    const seamShades = new Map(); // eid§변 → Map(shade반올림 → 등장 면 수)
     for (const f of opaque) {
       if (f.isMesh || f.eid == null) continue; // 메시는 자체 특징모서리(fe)로 처리
-      const P = f.pts;
-      for (let i = 0; i < P.length; i++) { const k = seamKey(f, P[i], P[(i + 1) % P.length]); seam.set(k, (seam.get(k) || 0) + 1); }
+      const P = f.pts, s = Math.round(f.shade * 50), seen = new Set();
+      for (let i = 0; i < P.length; i++) {
+        const k = f.eid + '§' + edgeK(P[i], P[(i + 1) % P.length]);
+        if (seen.has(k)) continue; seen.add(k); // 퇴화 면(높이 0 옆면) 내부의 중복 변은 1회만 집계
+        let m = seamShades.get(k); if (!m) seamShades.set(k, m = new Map());
+        m.set(s, (m.get(s) || 0) + 1);
+      }
     }
+    const seamHide = new Set();
+    for (const [k, m] of seamShades) { for (const cnt of m.values()) if (cnt >= 2) { seamHide.add(k); break; } }
     let seamHidden = 0;
     for (const f of opaque) {
       const P = f.pts, sel = f._sel;
@@ -2757,7 +2761,7 @@ function zRasterFaces(c, faces, vp, light) {
         for (let i = 0; i < P.length; i++) if (f.fe[i]) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
       } else {
         for (let i = 0; i < P.length; i++) {
-          if (f.eid != null && (seam.get(seamKey(f, P[i], P[(i + 1) % P.length])) || 0) >= 2) { seamHidden++; continue; } // 내부 이음선
+          if (f.eid != null && seamHide.has(f.eid + '§' + edgeK(P[i], P[(i + 1) % P.length]))) { seamHidden++; continue; } // 내부 이음선
           zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
         }
       }
