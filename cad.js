@@ -3180,12 +3180,13 @@ function bind3D(ov, cv3) {
       extrudeSetBase(cpx, cpy); // confirmFace/awaitBase 클릭 → 기준점(스냅) 지정 후 높이 조절로
       return;
     }
-    { // 사분할: 클릭한 뷰포트를 활성화
+    { // 사분할: 클릭한 뷰포트를 활성화 + 커서 아래 '면'을 항상 기록(검볼이 클릭을 가로채도 extrudesrf가 면을 알 수 있게)
       const rv = cv3.getBoundingClientRect();
       const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
       const pyv = (e.clientY - rv.top) * (rv.height ? cv3.height / rv.height : 1);
       const vi = vpAt(pxv, pyv);
       if (vi !== v3.act) { v3.act = vi; loadVp(vi); render3D(); }
+      try { v3.pickFace = findFaceAt(pxv, pyv) || v3.pickFace; } catch (err) {}
     }
     // 높이 그립 히트 → 리프트 드래그 (벽/기둥 높이 끌어올리기)
     if (v3.grip && e.button === 0 && !e.shiftKey) {
@@ -4373,15 +4374,21 @@ function srfSurfaceSnap(px, py, exclude) {
 function extrudeSetVal(val) { // height 단계: 모든 항목에 적용 — 양수=위로, 음수=아래로(기준면 아래) 돌출, 0=평면
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   ex.val = Math.round(val); // 1단위로 부드럽게. 음수 허용 → 아래 방향은 base를 내리고 h=|값|으로 저장
-  if (ex.side) { // 옆면 밀당: 클릭한 변(또는 원 반지름)을 법선 방향으로 ex.val 만큼 이동 — 높이/종류는 그대로
+  if (ex.side) { // 옆면 밀당: '클릭한 그 면만' 법선 방향으로 ex.val 만큼 이동 — 높이/종류는 그대로
     const s = ex.side, e = state.entities.find(x => x.id === s.id); if (!e) return;
+    const setPt = (idx, x, y) => { if (s.line) { if (idx === s.i) { e.x1 = x; e.y1 = y; } else { e.x2 = x; e.y2 = y; } } else if (e.points) e.points[idx] = [x, y]; };
     if (s.circle) { e.r = Math.max(1, s.r0 + ex.val); }
-    else if (s.line) { // 단일 선 벽: 세그먼트 전체 이동
-      e.x1 = s.p0[0][0] + s.nx * ex.val; e.y1 = s.p0[0][1] + s.ny * ex.val;
-      e.x2 = s.p0[1][0] + s.nx * ex.val; e.y2 = s.p0[1][1] + s.ny * ex.val;
-    } else if (e.points) {
-      e.points[s.i] = [s.p0[0][0] + s.nx * ex.val, s.p0[0][1] + s.ny * ex.val];
-      e.points[s.j] = [s.p0[1][0] + s.nx * ex.val, s.p0[1][1] + s.ny * ex.val];
+    else if (s.shell) { // 벽 옆 셸: 두께 변화 + 중심선 절반 이동 → 클릭 면은 val만큼, 반대쪽 면은 제자리
+      e.bim.t = Math.max(1, s.t0 + ex.val);
+      const hx = s.nx * ex.val / 2, hy = s.ny * ex.val / 2;
+      setPt(s.i, s.p0[0][0] + hx, s.p0[0][1] + hy);
+      setPt(s.j, s.p0[1][0] + hx, s.p0[1][1] + hy);
+    } else if (s.cap) { // 벽 끝단 캡: 그 끝점만 길이 방향 이동(벽 연장/단축)
+      if (s.cap === 'b') setPt(s.j, s.p0[1][0] + s.nx * ex.val, s.p0[1][1] + s.ny * ex.val);
+      else setPt(s.i, s.p0[0][0] + s.nx * ex.val, s.p0[0][1] + s.ny * ex.val);
+    } else { // 기둥 발자국 변: 그 변만 법선 이동
+      setPt(s.i, s.p0[0][0] + s.nx * ex.val, s.p0[0][1] + s.ny * ex.val);
+      setPt(s.j, s.p0[1][0] + s.nx * ex.val, s.p0[1][1] + s.ny * ex.val);
     }
     return;
   }
@@ -4697,7 +4704,9 @@ function extrudeStart(cmd, sel) {
       if ((mx - ccx) * nx + (my - ccy) * ny < 0) { nx = -nx; ny = -ny; }
       sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx, ny, mx, my, mz: (e.bim.base || 0) + (e.bim.h || 0) / 2 };
     } else if (e.bim && e.bim.kind === 'wall' && pf.si != null) {
-      // 벽(t0 면 포함): 클릭한 세그먼트(중심선 변)를 법선 방향으로 통째로 이동 — 닫힌 상자 면·개별 벽 모두
+      // 벽(t0 면 포함): 라이노처럼 '클릭한 그 면만' 법선 방향으로 이동.
+      //  · 옆 셸(fi 0/2): 두께 t가 변하고 중심선이 절반만 이동 → 클릭 면은 val만큼, 반대쪽 면은 그대로
+      //  · 끝단 캡(fi 1/3): 그 끝점을 길이 방향으로 이동(벽이 길어지고 짧아짐)
       let V = null, closedW = false;
       if (e.type === 'LINE') { V = [[e.x1, e.y1], [e.x2, e.y2]]; }
       else if (e.points && e.points.length >= 2) { V = e.points.map(p => [p[0], p[1]]); closedW = !!e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e)); }
@@ -4706,10 +4715,23 @@ function extrudeStart(cmd, sel) {
         const n = V.length, i0 = pf.si, j0 = (i0 + 1) % n;
         const a = V[i0], b = V[j0];
         const ex2 = b[0] - a[0], ey2 = b[1] - a[1], L = Math.hypot(ex2, ey2) || 1;
-        let nx = ey2 / L, ny = -ex2 / L;
-        const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
-        if (n > 2) { let ccx = 0, ccy = 0; for (const p of V) { ccx += p[0]; ccy += p[1]; } ccx /= n; ccy /= n; if ((mx - ccx) * nx + (my - ccy) * ny < 0) { nx = -nx; ny = -ny; } }
-        sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx, ny, mx, my, mz: (e.bim.base || 0) + (e.bim.h || 0) / 2, wall: true, line: e.type === 'LINE' };
+        const ux = ex2 / L, uy = ey2 / L;               // 길이 방향
+        const bnx = -uy, bny = ux;                      // 밴드 +법선 (bimSolids band와 동일 규약: A1=+n 쪽)
+        const t0 = e.bim.t || 0, mz = (e.bim.base || 0) + (e.bim.h || 0) / 2;
+        const mcx = (a[0] + b[0]) / 2, mcy = (a[1] + b[1]) / 2; // 중심선 중점
+        const fi = pf.fi != null ? pf.fi : 0;
+        if (fi === 1 || fi === 3) { // 끝단 캡: 길이 방향 이동
+          const capB = fi === 1;    // 1 = j0쪽 끝, 3 = i0쪽 끝
+          const dir = capB ? [ux, uy] : [-ux, -uy];
+          const ep = capB ? b : a;
+          sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx: dir[0], ny: dir[1],
+            mx: ep[0] + dir[0] * 0, my: ep[1] + dir[1] * 0, mz, wall: true, cap: capB ? 'b' : 'a', line: e.type === 'LINE' };
+        } else { // 옆 셸: 클릭한 쪽(+n=fi0 / −n=fi2)만 이동 — 두께 변화 + 중심선 절반 이동
+          const sgn = fi === 2 ? -1 : 1;
+          const nx = bnx * sgn, ny = bny * sgn; // 클릭 셸의 바깥 방향
+          sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx, ny,
+            mx: mcx + nx * t0 / 2, my: mcy + ny * t0 / 2, mz, wall: true, shell: true, t0, line: e.type === 'LINE' };
+        }
       }
     }
   }
