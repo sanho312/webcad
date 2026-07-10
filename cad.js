@@ -2846,13 +2846,13 @@ function renderScene(isActive) {
       if ((mx - ccx) * onx + (my - ccy) * ony < 0) { onx = -onx; ony = -ony; } // 중심 반대쪽 = 바깥
       if (cull && !facesCam(mx, my, midz, onx, ony, 0)) continue; // 안쪽 면(카메라 반대) 제외
       const lightA = Math.abs(onx * 0.8 + ony * 0.35);
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf });
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side' });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1))   // 상면 (위 향함)
-      faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf });
+      faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' });
     if (!cull || facesCam(ccx, ccy, s.z0, 0, 0, -1))  // 하면 (아래 향함)
-      faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf });
+      faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' });
   }
   // 가져온/불리언 3D 메시 — 삼각형별 법선 셰이딩. 내부 삼각분할선은 감추고 '진짜 모서리'만 표시
   for (const e of state.entities) {
@@ -2873,21 +2873,22 @@ function renderScene(isActive) {
   }
   const light = document.documentElement.classList.contains('light');
   zRasterFaces(c, faces, v3.vp, light);                // 항상 정확한 Z-버퍼 은면 제거 (회전·호버·정지 모두)
-  // extrudesrf(면 밀당): 대상의 '윗면'만 강조 — 객체 전체가 아니라 선택된 면임을 명확히
+  // extrudesrf(면 밀당): 선택된 면(윗면 또는 아랫면)만 강조 — 객체 전체가 아니라 그 면임을 명확히
   if (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.srf && v3.srfHi && v3.srfHi.size) {
-    const dpr = devicePixelRatio || 1;
+    const dpr = devicePixelRatio || 1, fb = !!extrudePend.fromBottom;
     for (const s of v3.solids) {
       if (!v3.srfHi.has(s.eid)) continue;
       const zt = s.zt || s.poly.map(() => s.z1);
       const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
       const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
+      const hi = fb ? bot : top, ref = fb ? top : bot; // 아랫면 밀당이면 아랫면을 파랗게, 윗면은 점선 참조
       c.save();
-      c.beginPath(); top.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath();
+      c.beginPath(); hi.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath();
       c.fillStyle = 'rgba(10,132,255,0.32)'; c.fill();
       c.strokeStyle = '#0A84FF'; c.lineWidth = 2.5 * dpr; c.stroke();
-      // 바닥 윤곽 + 수직 모서리 점선 — 붙일 수 있는 스냅 참조(꼭짓점·중점·모서리) 시각화
+      // 반대쪽 윤곽 + 수직 모서리 점선 — 붙일 수 있는 스냅 참조(꼭짓점·중점·모서리) 시각화
       c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(94,177,255,0.9)'; c.lineWidth = 1.4 * dpr;
-      c.beginPath(); bot.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke();
+      c.beginPath(); ref.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke();
       c.beginPath(); for (let i = 0; i < top.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
       c.setLineDash([]);
       c.restore();
@@ -3640,6 +3641,7 @@ function pick3DAt(px, py, additive) {
     }
     if (best && (!hit || bestDepth < hit.d)) hit = { eid: best.eid };
   }
+  v3.pickFace = hit ? { eid: hit.eid, fk: hit.fk || null } : null; // 마지막으로 클릭한 면 종류(top/bot/side) — extrudesrf 아랫면 밀당용
   if (!additive) state.selection.clear();
   if (hit) {
     if (additive && state.selection.has(hit.eid)) state.selection.delete(hit.eid);
@@ -4589,30 +4591,33 @@ function extrudeStart(cmd, sel) {
     var merge2 = sel.length === 2 ? detectDoubleOutlineWall(sel, true) : null;
     if (merge2) logLine(`  ▷ 이중 외곽선 감지 — 곡선 2개가 생성 시 두께 ${merge2.t} 벽체로 병합됩니다`, 'ok');
   }
+  // extrudesrf: 마지막으로 클릭한 면이 '아랫면'이면 윗면을 고정하고 아랫면을 밀당 (라이노처럼 위·아래 면 모두 가능)
+  const fromBottom = srf && typeof v3 !== 'undefined' && v3 && v3.pickFace && v3.pickFace.fk === 'bot' && sel.some(e => e.id === v3.pickFace.eid);
   const items = []; let nSlant = 0, curH = 0, hasSolid = false;
   for (const e of sel) {
     let base = lvElev() + (e.zo || 0);
     if (e.type === 'LINE' && (e.z1 != null || e.z2 != null)) { base = Math.min(e.z1 || 0, e.z2 || 0); if ((e.z1 || 0) !== (e.z2 || 0)) nSlant++; delete e.z1; delete e.z2; }
     else if (e.bim && e.bim.base != null) base = e.bim.base;
     if (e.bim && e.bim.h) { curH = Math.max(curH, e.bim.h); hasSolid = true; }
+    if (fromBottom) base = base + ((e.bim && e.bim.h) || 0); // 아랫면 밀당: 고정 기준 = 원래 '윗면' z (val 음수 = 아랫면이 아래로)
     delete e.zo; items.push({ id: e.id, base, t: (e.bim && e.bim.kind === 'wall' && e.bim.t > 0) ? e.bim.t : null });
   }
   if (nSlant) logLine(`  ⚠ 기울어진 3D 선 ${nSlant}개는 낮은 끝 높이 기준으로 수직 돌출`, 'warn');
   const c = footprintCentroid(sel);
   const defH = settings.bim.wallH || 2700;
   const base = items.length ? Math.min(...items.map(it => it.base)) : lvElev();
-  const startVal = (srf && hasSolid) ? curH : defH;
-  extrudePend = { cmd, srf, stage: 'height', heightPhase: 'awaitBase', items, cx: c.x, cy: c.y, val: startVal, anchorPy: null, h0: 0, k: 0, cap: lastExtrudeCap, base, _exclude: new Set(items.map(it => it.id)), applied: false };
+  const startVal = (srf && hasSolid) ? (fromBottom ? -curH : curH) : defH; // 아랫면 모드: 현재 아랫면 = 윗면-곡선높이 → 음수 시작
+  extrudePend = { cmd, srf, stage: 'height', heightPhase: 'awaitBase', items, cx: c.x, cy: c.y, val: startVal, anchorPy: null, h0: 0, k: 0, cap: lastExtrudeCap, base, _exclude: new Set(items.map(it => it.id)), applied: false, fromBottom };
   if (!srf && typeof merge2 !== 'undefined' && merge2) extrudePend.merge2 = merge2; // 생성 시점 병합 예약
   if (srf) { // 면 밀당: 기존 솔리드는 현재 높이로 그대로 보이게, 화면 클릭/숫자로 높이 조절 (스냅)
     if (hasSolid) { extrudeApplyKind(); extrudeSetVal(startVal); }
-    // 객체 전체가 아니라 '선택된 면(윗면)'만 강조 — 전체 선택 하이라이트 해제하고 윗면만 표시
+    // 객체 전체가 아니라 '선택된 면(윗면 또는 아랫면)'만 강조 — 전체 선택 하이라이트 해제하고 그 면만 표시
     if (typeof v3 !== 'undefined' && v3) v3.srfHi = new Set(items.map(it => it.id));
     state.selection.clear();
     extrudePend.heightPhase = 'confirmFace'; // 면 포커싱만 — Space/Enter로 기준점 선택 시작
     extrudeRefresh(); renderProps();
-    logLine(`  ▷ extrudesrf: 면 포커싱됨 — Space/Enter를 눌러 기준점 선택을 시작하거나, 높이값을 바로 입력 · Esc`, 'info');
-    setPrompt(`면 선택됨 — Space/Enter로 기준점 선택 시작 · 또는 높이값 입력 · Esc`);
+    logLine(`  ▷ extrudesrf: ${fromBottom ? '아랫면' : '윗면'} 포커싱됨 — Space/Enter를 눌러 기준점 선택을 시작하거나, 높이값을 바로 입력 · Esc`, 'info');
+    setPrompt(`${fromBottom ? '아랫면' : '면'} 선택됨 — Space/Enter로 기준점 선택 시작 · 또는 높이값 입력 · Esc`);
   } else if (is3DActive()) { // extrudecrv 3D: 높이 0(평면)에서 시작 — 선택 crv 파란 강조 + 점선 예시, 클릭해야 높이 시작
     extrudePend.val = 0; // 미리 솟아있지 않게 — 기준점 클릭 후 커서/스냅/숫자로 0부터 올림
     extrudeRefresh();
