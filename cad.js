@@ -2846,7 +2846,7 @@ function renderScene(isActive) {
       if ((mx - ccx) * onx + (my - ccy) * ony < 0) { onx = -onx; ony = -ony; } // 중심 반대쪽 = 바깥
       if (cull && !facesCam(mx, my, midz, onx, ony, 0)) continue; // 안쪽 면(카메라 반대) 제외
       const lightA = Math.abs(onx * 0.8 + ony * 0.35);
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null });
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1))   // 상면 (위 향함)
@@ -3660,7 +3660,7 @@ function findFaceAt(px, py) {
     return inside;
   };
   const f = [...v3.faces].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
-  return f ? { eid: f.eid, fk: f.fk || null, fi: f.fi != null ? f.fi : null, si: f.si != null ? f.si : null } : null;
+  return f ? { eid: f.eid, fk: f.fk || null, fi: f.fi != null ? f.fi : null, si: f.si != null ? f.si : null, sz0: f.sz0 != null ? f.sz0 : null } : null;
 }
 // 캔버스 픽셀 좌표로 선택 (테스트/내부용)
 function pick3DAt(px, py, additive) {
@@ -3691,7 +3691,7 @@ function pick3DAt(px, py, additive) {
     }
     if (best && (!hit || bestDepth < hit.d)) hit = { eid: best.eid };
   }
-  v3.pickFace = hit ? { eid: hit.eid, fk: hit.fk || null, fi: hit.fi != null ? hit.fi : null, si: hit.si != null ? hit.si : null } : null; // 마지막 클릭 면(top/bot/side + 변 fi + 벽 세그 si) — extrudesrf 면 밀당용
+  v3.pickFace = hit ? { eid: hit.eid, fk: hit.fk || null, fi: hit.fi != null ? hit.fi : null, si: hit.si != null ? hit.si : null, sz0: hit.sz0 != null ? hit.sz0 : null } : null; // 마지막 클릭 면(top/bot/side + 변 fi + 벽 세그 si + 밴드 z0) — extrudesrf 면 밀당용
   if (!additive) state.selection.clear();
   if (hit) {
     if (additive && state.selection.has(hit.eid)) state.selection.delete(hit.eid);
@@ -4332,6 +4332,28 @@ function srfSurfaceSnap(px, py, exclude) {
     if (!e.bim) continue;
     if (exclude && exclude.has(e.id)) continue;
     const l = getLayer(e.layer); if (l && !l.visible) continue;
+    // 벽: '실제 렌더 밴드'(마이터 코너·개구부 분할 포함)에 스냅 — 중심선의 보이지 않는 점 대신 눈에 보이는 지오메트리
+    if (e.bim.kind === 'wall') {
+      const parts2 = (v3.solids || []).filter(s => s.eid === e.id);
+      if (parts2.length) {
+        for (const s of parts2) {
+          const zTop = s.zt ? Math.max(...s.zt) : s.z1;
+          for (const zf of [zTop, s.z0]) {
+            const fp2 = s.poly, proj2 = fp2.map(p => proj3D(p[0], p[1], zf));
+            for (let i = 0; i < fp2.length; i++) { const d = Math.hypot(px - proj2[i][0], py - proj2[i][1]); if (d < bVD) { bVD = d; bV = { x: Math.round(fp2[i][0]), y: Math.round(fp2[i][1]), z: Math.round(zf), kind: '꼭짓점' }; } }
+            for (let i = 0; i < fp2.length; i++) {
+              const j = (i + 1) % fp2.length;
+              if (Math.hypot(fp2[j][0] - fp2[i][0], fp2[j][1] - fp2[i][1]) < 1e-6) continue; // t0 퇴화 변 스킵
+              const mx = (fp2[i][0] + fp2[j][0]) / 2, my = (fp2[i][1] + fp2[j][1]) / 2, mp = proj3D(mx, my, zf);
+              const dm = Math.hypot(px - mp[0], py - mp[1]); if (dm < mMidD) { mMidD = dm; mMid = { x: Math.round(mx), y: Math.round(my), z: Math.round(zf), kind: '중점' }; }
+              const rr = segNear([fp2[i][0], fp2[i][1], zf], [fp2[j][0], fp2[j][1], zf]); if (rr.d < hBestD) { hBestD = rr.d; hBest = { x: Math.round(fp2[i][0] + (fp2[j][0] - fp2[i][0]) * rr.t), y: Math.round(fp2[i][1] + (fp2[j][1] - fp2[i][1]) * rr.t), z: Math.round(zf), kind: '모서리' }; }
+            }
+            if (inPoly(proj2)) { const depth = proj2.reduce((a2, p) => a2 + p[2], 0) / proj2.length; if (depth < sfDepth) { const w = unproj3D(px, py, zf); sfDepth = depth; sfBest = { x: w ? Math.round(w[0]) : Math.round(fp2[0][0]), y: w ? Math.round(w[1]) : Math.round(fp2[0][1]), z: Math.round(zf), kind: '표면' }; } }
+          }
+        }
+        continue;
+      }
+    }
     let fp = null, closed = false;
     if (e.type === 'CIRCLE') { fp = circlePoly(e.cx, e.cy, e.r, 32); closed = true; }
     else if (e.type === 'LINE') { fp = [[e.x1, e.y1], [e.x2, e.y2]]; }
@@ -4738,33 +4760,21 @@ function extrudeStart(cmd, sel) {
       const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
       if ((mx - ccx) * nx + (my - ccy) * ny < 0) { nx = -nx; ny = -ny; }
       sideMode = { id: e.id, ea: [a[0], a[1]], eb: [b[0], b[1]], nx, ny, mx, my, mz: mze, z0: z0e, z1: z1e };
-    } else if (e.bim && e.bim.kind === 'wall' && pf.si != null) {
-      // 벽(t0 면 포함): 라이노처럼 '클릭한 그 면만' 법선 방향으로 이동.
-      //  · 옆 셸(fi 0/2): 두께 t가 변하고 중심선이 절반만 이동 → 클릭 면은 val만큼, 반대쪽 면은 그대로
-      //  · 끝단 캡(fi 1/3): 그 끝점을 길이 방향으로 이동(벽이 길어지고 짧아짐)
-      let V = null, closedW = false;
-      if (e.type === 'LINE') { V = [[e.x1, e.y1], [e.x2, e.y2]]; }
-      else if (e.points && e.points.length >= 2) { V = e.points.map(p => [p[0], p[1]]); closedW = !!e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e)); }
-      const nE = V ? (closedW ? V.length : V.length - 1) : 0;
-      if (V && pf.si < nE) {
-        const n = V.length, i0 = pf.si, j0 = (i0 + 1) % n;
-        const a = V[i0], b = V[j0];
-        const ex2 = b[0] - a[0], ey2 = b[1] - a[1], L = Math.hypot(ex2, ey2) || 1;
-        const ux = ex2 / L, uy = ey2 / L;               // 길이 방향
-        const bnx = -uy, bny = ux;                      // 밴드 +법선 (bimSolids band와 동일 규약: A1=+n 쪽)
-        const t0 = e.bim.t || 0;
-        const fi = pf.fi != null ? pf.fi : 0;
-        if (fi === 1 || fi === 3) { // 끝단 캡 면: 그 면(두께 폭)에서 길이 방향으로 새 솔리드
-          const capB = fi === 1;    // 1 = j0쪽 끝, 3 = i0쪽 끝
-          const dir = capB ? [ux, uy] : [-ux, -uy];
-          const ep = capB ? b : a;
-          sideMode = { id: e.id, ea: [ep[0] + bnx * t0 / 2, ep[1] + bny * t0 / 2], eb: [ep[0] - bnx * t0 / 2, ep[1] - bny * t0 / 2],
-            nx: dir[0], ny: dir[1], mx: ep[0], my: ep[1], mz: mze, z0: z0e, z1: z1e };
-        } else { // 옆 셸 면(+n=fi0 / −n=fi2): 그 면에서 바깥으로 새 솔리드
-          const sgn = fi === 2 ? -1 : 1;
-          const nx = bnx * sgn, ny = bny * sgn; // 클릭 셸의 바깥 방향
-          sideMode = { id: e.id, ea: [a[0] + nx * t0 / 2, a[1] + ny * t0 / 2], eb: [b[0] + nx * t0 / 2, b[1] + ny * t0 / 2],
-            nx, ny, mx: (a[0] + b[0]) / 2 + nx * t0 / 2, my: (a[1] + b[1]) / 2 + ny * t0 / 2, mz: mze, z0: z0e, z1: z1e };
+    } else if (e.bim && e.bim.kind === 'wall' && pf.si != null && pf.fi != null) {
+      // 벽: 클릭한 '실제 렌더 밴드'의 그 변을 그대로 사용 — 마이터 코너 포함, 면 끝에서 끝까지 정확
+      const bands = (typeof v3 !== 'undefined' && v3 && v3.solids ? v3.solids : []).filter(s => s.eid === e.id && s.seg === pf.si);
+      const band = bands.find(s => pf.sz0 == null || s.z0 === pf.sz0) || bands[0];
+      if (band && pf.fi < band.poly.length) {
+        const n4 = band.poly.length, i0 = pf.fi, j0 = (i0 + 1) % n4;
+        const a = band.poly[i0], b = band.poly[j0];
+        const ex2 = b[0] - a[0], ey2 = b[1] - a[1], L = Math.hypot(ex2, ey2);
+        if (L > 1e-6) { // t0 벽의 퇴화(폭 0) 캡 변은 제외
+          let nx = ey2 / L, ny = -ex2 / L;
+          let ccx = 0, ccy = 0; for (const p of band.poly) { ccx += p[0]; ccy += p[1]; } ccx /= n4; ccy /= n4;
+          const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+          if ((mx - ccx) * nx + (my - ccy) * ny < 0) { nx = -nx; ny = -ny; } // 밴드 중심 반대쪽 = 바깥
+          const zTop = band.zt ? Math.max(...band.zt) : band.z1;
+          sideMode = { id: e.id, ea: [a[0], a[1]], eb: [b[0], b[1]], nx, ny, mx, my, mz: (band.z0 + zTop) / 2, z0: band.z0, z1: zTop };
         }
       }
     }
