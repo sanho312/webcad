@@ -2734,16 +2734,35 @@ function zRasterFaces(c, faces, vp, light) {
     }
     const eps = Math.max(1, v3.fit * 0.008);
     const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
+    // 내부 이음선 숨김 — 같은 개체(eid)의 '같은 평면'(shade 동일) 면 2개가 공유하는 변은
+    // 실제 모서리가 아니라 밴드 분할선(벽 링 윗면의 마이터 대각선 등) → 그리지 않음.
+    // 윗면↔옆면(shade 다름)·코너 수직선(옆면끼리 방향 달라 shade 다름)은 그대로 남음.
+    const seam = new Map();
+    const seamKey = (f, a, b) => {
+      const q = v => Math.round(v * 4) / 4;
+      const ka = q(a[0]) + ',' + q(a[1]), kb = q(b[0]) + ',' + q(b[1]);
+      return f.eid + '§' + Math.round(f.shade * 50) + '§' + (ka < kb ? ka + '|' + kb : kb + '|' + ka);
+    };
+    for (const f of opaque) {
+      if (f.isMesh || f.eid == null) continue; // 메시는 자체 특징모서리(fe)로 처리
+      const P = f.pts;
+      for (let i = 0; i < P.length; i++) { const k = seamKey(f, P[i], P[(i + 1) % P.length]); seam.set(k, (seam.get(k) || 0) + 1); }
+    }
+    let seamHidden = 0;
     for (const f of opaque) {
       const P = f.pts, sel = f._sel;
       const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
-      // 메시는 특징(코너·경계) 모서리만 그림 → 삼각분할 내부선이 표면에 안 보임. BIM 솔리드는 모든 변(=실제 모서리)
+      // 메시는 특징(코너·경계) 모서리만 그림 → 삼각분할 내부선이 표면에 안 보임.
       if (f.isMesh && f.fe) {
         for (let i = 0; i < P.length; i++) if (f.fe[i]) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
       } else {
-        for (let i = 0; i < P.length; i++) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+        for (let i = 0; i < P.length; i++) {
+          if (f.eid != null && (seam.get(seamKey(f, P[i], P[(i + 1) % P.length])) || 0) >= 2) { seamHidden++; continue; } // 내부 이음선
+          zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+        }
       }
     }
+    v3._seamHidden = seamHidden; // 검증용 카운터
     c.putImageData(img, ox, oy);
   }
   // 반투명(유리·지붕 고스트): 합성 위에 알파로
