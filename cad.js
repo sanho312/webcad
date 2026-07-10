@@ -4341,14 +4341,26 @@ function srfSurfaceSnap(px, py, exclude) {
     let z0 = Infinity, z1 = -Infinity;
     for (const s of parts) { z0 = Math.min(z0, s.z0); z1 = Math.max(z1, s.zt ? Math.max(...s.zt) : s.z1); }
     if (!isFinite(z0)) { z0 = (e.bim.base != null ? e.bim.base : (e.bim.top != null ? e.bim.top - (e.bim.t || 0) : 0)); z1 = z0 + (e.bim.h || e.bim.t || 0); }
+    const isCircle = e.type === 'CIRCLE';
     for (const zf of [z1, z0]) { // 윗면·바닥 높이
       const proj = fp.map(p => proj3D(p[0], p[1], zf));
-      for (let i = 0; i < fp.length; i++) { const d = Math.hypot(px - proj[i][0], py - proj[i][1]); if (d < bVD) { bVD = d; bV = { x: Math.round(fp[i][0]), y: Math.round(fp[i][1]), z: Math.round(zf), kind: '꼭짓점' }; } }
+      if (isCircle) { // 라이노 오스냅 정합: 원은 중심(Cen)·사분점(Quad)만 점 스냅 — 다각형 근사 꼭짓점은 가짜라 스냅 안 함
+        const pc = proj3D(e.cx, e.cy, zf); const dc = Math.hypot(px - pc[0], py - pc[1]);
+        if (dc < bVD) { bVD = dc; bV = { x: Math.round(e.cx), y: Math.round(e.cy), z: Math.round(zf), kind: '중심' }; }
+        for (const q of [[e.cx + e.r, e.cy], [e.cx - e.r, e.cy], [e.cx, e.cy + e.r], [e.cx, e.cy - e.r]]) {
+          const pq = proj3D(q[0], q[1], zf); const dq = Math.hypot(px - pq[0], py - pq[1]);
+          if (dq < bVD) { bVD = dq; bV = { x: Math.round(q[0]), y: Math.round(q[1]), z: Math.round(zf), kind: '사분점' }; }
+        }
+      } else {
+        for (let i = 0; i < fp.length; i++) { const d = Math.hypot(px - proj[i][0], py - proj[i][1]); if (d < bVD) { bVD = d; bV = { x: Math.round(fp[i][0]), y: Math.round(fp[i][1]), z: Math.round(zf), kind: '꼭짓점' }; } }
+      }
       const nE = closed ? fp.length : fp.length - 1;
       for (let i = 0; i < nE; i++) {
         const j = (i + 1) % fp.length;
-        const mx = (fp[i][0] + fp[j][0]) / 2, my = (fp[i][1] + fp[j][1]) / 2, mp = proj3D(mx, my, zf); // 모서리 중점
-        const dm = Math.hypot(px - mp[0], py - mp[1]); if (dm < mMidD) { mMidD = dm; mMid = { x: Math.round(mx), y: Math.round(my), z: Math.round(zf), kind: '중점' }; }
+        if (!isCircle) { // 중점 스냅 — 원의 근사 다각형 변 중점은 가짜라 제외
+          const mx = (fp[i][0] + fp[j][0]) / 2, my = (fp[i][1] + fp[j][1]) / 2, mp = proj3D(mx, my, zf); // 모서리 중점
+          const dm = Math.hypot(px - mp[0], py - mp[1]); if (dm < mMidD) { mMidD = dm; mMid = { x: Math.round(mx), y: Math.round(my), z: Math.round(zf), kind: '중점' }; }
+        }
         const rr = segNear([fp[i][0], fp[i][1], zf], [fp[j][0], fp[j][1], zf]); if (rr.d < hBestD) { hBestD = rr.d; hBest = { x: Math.round(fp[i][0] + (fp[j][0] - fp[i][0]) * rr.t), y: Math.round(fp[i][1] + (fp[j][1] - fp[i][1]) * rr.t), z: Math.round(zf), kind: '모서리' }; }
       }
       if (closed && inPoly(proj)) { const depth = proj.reduce((a, p) => a + p[2], 0) / proj.length; if (depth < sfDepth) { const w = unproj3D(px, py, zf); sfDepth = depth; sfBest = { x: w ? Math.round(w[0]) : Math.round(fp[0][0]), y: w ? Math.round(w[1]) : Math.round(fp[0][1]), z: Math.round(zf), kind: '표면' }; } }
@@ -4517,6 +4529,11 @@ function extrudeFinish() { // 현재 높이로 확정
     if (Math.abs(ex.val) < 0.5) state.entities = state.entities.filter(x => x.id !== ex.side.newId); // 돌출 0 → 생성 안 함
     else { state.selection.clear(); state.selection.add(ex.side.newId); }
   }
+  if (!ex.srf && ex.applied) { // 라이노 ExtrudeCrv(DeleteInput=No): 입력 곡선을 원래 자리에 남김
+    const readd = (c) => { if (!c) return; const ne = addEntity({ ...c }); ne.color = c.color; delete ne.zo; };
+    for (const it of ex.items) if (it.crv0) readd(it.crv0);
+    if (ex.merge2 && ex.mergedDone && ex.merge2.crvs) for (const c of ex.merge2.crvs) readd(c);
+  }
   extrudePend = null; setPrompt('');
   if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.snapCursor = null; v3.srfHi = null; }
   // (겹친 곡선 통짜 합집합 병합은 사용자 요청으로 보류 — 안팎 포갬 벽체만 유지)
@@ -4676,6 +4693,14 @@ function mergeOverlappingExtrusion(items) {
   state.selection.clear(); created.forEach(m => state.selection.add(m.id));
   logLine(`  ✔ 겹친 ${rows.length}개 곡선 → 합집합 하나로 병합`, 'ok');
 }
+// 입력 곡선 지오메트리 스냅샷 — 라이노 ExtrudeCrv(DeleteInput=No)처럼 돌출 후 원본 곡선을 남기기 위함
+function extrudeSnapCrv(e) {
+  const c = { type: e.type, layer: e.layer, color: e.color };
+  if (e.type === 'CIRCLE') { c.cx = e.cx; c.cy = e.cy; c.r = e.r; }
+  else if (e.type === 'LINE') { c.x1 = e.x1; c.y1 = e.y1; c.x2 = e.x2; c.y2 = e.y2; }
+  else { c.points = (e.points || []).map(p => [p[0], p[1]]); c.closed = !!e.closed; }
+  return c;
+}
 function extrudeStart(cmd, sel) {
   pushUndo();
   const srf = (cmd === 'extrudesrf');
@@ -4684,7 +4709,7 @@ function extrudeStart(cmd, sel) {
     // 선택한 것만 사용 — 짝 곡선 '자동 포함' 없음(사용자가 명시적으로 2개를 선택했을 때만 벽체 병합).
     // 이중 외곽선은 여기서 '감지만' — 병합은 실제 생성(기준점 클릭/숫자) 시점에. 선택 단계에선 두 곡선 모두 파란 강조로 보이게.
     var merge2 = sel.length === 2 ? detectDoubleOutlineWall(sel, true) : null;
-    if (merge2) logLine(`  ▷ 이중 외곽선 감지 — 곡선 2개가 생성 시 두께 ${merge2.t} 벽체로 병합됩니다`, 'ok');
+    if (merge2) { merge2.crvs = [extrudeSnapCrv(sel[0]), extrudeSnapCrv(sel[1])]; logLine(`  ▷ 이중 외곽선 감지 — 곡선 2개가 생성 시 두께 ${merge2.t} 벽체로 병합됩니다`, 'ok'); }
   }
   // extrudesrf: 마지막으로 클릭한 면이 '아랫면'이면 윗면을 고정하고 아랫면을 밀당 (라이노처럼 위·아래 면 모두 가능)
   const pf = (srf && typeof v3 !== 'undefined' && v3 && v3.pickFace && sel.some(e => e.id === v3.pickFace.eid)) ? v3.pickFace : null;
@@ -4751,7 +4776,8 @@ function extrudeStart(cmd, sel) {
     else if (e.bim && e.bim.base != null) base = e.bim.base;
     if (e.bim && e.bim.h) { curH = Math.max(curH, e.bim.h); hasSolid = true; }
     if (fromBottom) base = base + ((e.bim && e.bim.h) || 0); // 아랫면 밀당: 고정 기준 = 원래 '윗면' z (val 음수 = 아랫면이 아래로)
-    delete e.zo; items.push({ id: e.id, base, t: (e.bim && e.bim.kind === 'wall' && e.bim.t > 0) ? e.bim.t : null });
+    delete e.zo; items.push({ id: e.id, base, t: (e.bim && e.bim.kind === 'wall' && e.bim.t > 0) ? e.bim.t : null,
+      crv0: (!srf && !e.bim) ? extrudeSnapCrv(e) : null }); // 라이노 DeleteInput=No — 완료 시 원본 곡선 복원용
   }
   if (nSlant) logLine(`  ⚠ 기울어진 3D 선 ${nSlant}개는 낮은 끝 높이 기준으로 수직 돌출`, 'warn');
   const c = footprintCentroid(sel);
