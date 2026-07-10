@@ -2897,6 +2897,19 @@ function renderScene(isActive) {
       c.restore();
     }
   }
+  // extrudesrf 옆면 밀당 축 가이드 — 면 중심을 지나는 법선(수직) 방향 점선 + 현재 면 위치 표시
+  if (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.side && extrudePend.heightPhase === 'awaitTop') {
+    const s = extrudePend.side, dpr = devicePixelRatio || 1, L = v3.fit * 1.2;
+    const a = proj3D(s.mx - s.nx * L, s.my - s.ny * L, s.mz), b = proj3D(s.mx + s.nx * L, s.my + s.ny * L, s.mz);
+    const cur = proj3D(s.mx + s.nx * (extrudePend.val || 0), s.my + s.ny * (extrudePend.val || 0), s.mz);
+    c.save();
+    c.setLineDash([7 * dpr, 5 * dpr]); c.strokeStyle = 'rgba(255,159,10,0.9)'; c.lineWidth = 1.6 * dpr;
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); c.setLineDash([]);
+    c.fillStyle = '#ff9f0a'; c.beginPath(); c.arc(cur[0], cur[1], 5 * dpr, 0, Math.PI * 2); c.fill(); // 현재 면 위치
+    c.font = `700 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
+    c.fillText(`${extrudePend.val || 0}`, cur[0] + 9 * dpr, cur[1] - 8 * dpr);
+    c.restore();
+  }
   // extrudecrv 생성 단계 시각화(기준점 클릭 전) — 선택 crv 파란 실선 + 끝점 스냅표시(초록 사각)만.
   // 미리보기 입체는 만들지 않음(혼란 방지) — 실제 입체는 기준점 클릭 후 0에서부터 커서로 자라남.
   if (typeof extrudePend !== 'undefined' && extrudePend && !extrudePend.srf && extrudePend.stage === 'height' && extrudePend.heightPhase === 'awaitBase') {
@@ -4416,18 +4429,14 @@ function extrudeToggleCap() { extrudeSetCap(!(extrudePend && extrudePend.cap)); 
 // 이후 커서로 높이 결정(다른 객체 스냅). 클릭 전엔 높이 없음(평면 곡선 상태).
 function extrudeSetBase(px, py) {
   const ex = extrudePend; if (!ex || ex.stage !== 'height' || !is3DActive() || typeof v3 === 'undefined' || !v3) return;
-  if (ex.side) { // 옆면 밀당 기준점: 화면상 법선 방향·스케일 계산 → 커서/스냅으로 수평 이동량 조절
+  if (ex.side) { // 옆면 밀당 기준점: 클릭 위치=기준(면은 안 움직임). 이후 커서 이동의 '법선 성분'만큼 밀당
     const s = ex.side;
-    let d0 = ex.val;
-    const sn = srfSurfaceSnap(px, py, null);
-    if (sn && sn.x != null) d0 = s.circle ? (Math.hypot(sn.x - s.cx, sn.y - s.cy) - s.r0) : ((sn.x - s.mx) * s.nx + (sn.y - s.my) * s.ny);
     const a = proj3D(s.mx, s.my, s.mz), b = proj3D(s.mx + s.nx * 100, s.my + s.ny * 100, s.mz);
     const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
-    ex.sdir = [dx / L, dy / L]; ex.sscale = L / 100; ex.anchor2 = [px, py]; ex.h0 = d0; ex.heightPhase = 'awaitTop';
-    extrudeSetVal(d0);
+    ex.sdir = [dx / L, dy / L]; ex.sscale = L / 100; ex.anchor2 = [px, py]; ex.h0 = ex.val; ex.heightPhase = 'awaitTop';
     v3.snapHit = null; extrudeRefresh();
-    setPrompt(`이동 ${ex.val} — 커서로 조절(법선 방향·다른 객체에 스냅) 후 클릭/Enter 확정 · 숫자 · Esc`);
-    logLine('  ▷ 옆면 기준점 지정 — 커서를 움직여 면을 밀고 당기세요 (다른 객체에 스냅), 클릭/Enter 확정', 'info');
+    setPrompt(`이동 ${ex.val} — 면 중심의 수직(법선) 축을 따라 커서로 밀당 · 꼭짓점·모서리 근처에선 자석 스냅 · 클릭/Enter 확정 · 숫자 · Esc`);
+    logLine('  ▷ 기준점 지정 — 커서를 움직이면 선택 면이 수직(법선) 방향으로 밀리고 당겨집니다. 클릭/Enter 확정', 'info');
     return;
   }
   const vi = vpAt(px, py), rct = vpRect(vi), w = v3.views ? v3.views[vi] : null;
@@ -4461,18 +4470,18 @@ function extrudeHover(e) {
     markInteract();
     return;
   }
-  if (ex.side) { // 옆면 밀당: 스냅점의 법선 성분 또는 커서의 화면상 법선 방향 이동량으로 조절
+  if (ex.side) { // 옆면 밀당: '면 중심의 법선 축'을 따라 커서 이동량으로 밀당. 스냅은 '다른 객체'의 꼭짓점·중점·모서리에만
     const s = ex.side;
-    const sn = srfSurfaceSnap(px, py, null);
-    if (sn && sn.x != null) {
-      v3.snapHit = sn; v3.snapCursor = [px, py];
-      extrudeSetVal(s.circle ? (Math.hypot(sn.x - s.cx, sn.y - s.cy) - s.r0) : ((sn.x - s.mx) * s.nx + (sn.y - s.my) * s.ny));
-      setPrompt(`이동 ${ex.val} · 스냅 (${sn.kind || ''}) — 클릭/Enter 확정 · 숫자 · Esc`);
-    } else {
-      v3.snapHit = null; v3.snapCursor = null;
-      extrudeSetVal(ex.h0 + ((px - ex.anchor2[0]) * ex.sdir[0] + (py - ex.anchor2[1]) * ex.sdir[1]) / (ex.sscale || 1));
-      setPrompt(`이동 ${ex.val} — 클릭/Enter 확정 · 숫자 입력 · Esc`);
+    const dragVal = ex.h0 + ((px - ex.anchor2[0]) * ex.sdir[0] + (py - ex.anchor2[1]) * ex.sdir[1]) / (ex.sscale || 1);
+    let useVal = dragVal, snapped = null;
+    const sn = srfSurfaceSnap(px, py, ex._exclude); // 자기 자신 제외 — 자기 모서리에 되끌려가는 것 방지
+    if (sn && sn.x != null && sn.kind !== '표면' && sn.kind !== 'surface') { // 표면 스냅 제외(값 널뛰기 방지)
+      useVal = s.circle ? (Math.hypot(sn.x - s.cx, sn.y - s.cy) - s.r0) : ((sn.x - s.mx) * s.nx + (sn.y - s.my) * s.ny);
+      snapped = sn; // 다른 객체의 꼭짓점·중점·모서리에 조준 → 그 위치의 법선 성분으로 정확 흡착
     }
+    v3.snapHit = snapped; v3.snapCursor = snapped ? [px, py] : null;
+    extrudeSetVal(useVal);
+    setPrompt(snapped ? `이동 ${ex.val} · 스냅 (${snapped.kind}) — 클릭/Enter 확정 · 숫자 · Esc` : `이동 ${ex.val} — 면의 수직 방향으로 밀당 · 클릭/Enter 확정 · 숫자 · Esc`);
     v3.solids = bimSolids();
     markInteract();
     return;
