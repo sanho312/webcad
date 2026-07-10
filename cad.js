@@ -2876,25 +2876,33 @@ function renderScene(isActive) {
   // extrudesrf(면 밀당): 선택된 면(윗면·아랫면·옆면)만 강조 — 객체 전체가 아니라 그 면임을 명확히
   if (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.srf && v3.srfHi && v3.srfHi.size) {
     const dpr = devicePixelRatio || 1, fb = !!extrudePend.fromBottom, sd = extrudePend.side;
-    for (const s of v3.solids) {
-      if (!v3.srfHi.has(s.eid)) continue;
-      if (sd && sd.wall && s.seg != null && s.seg !== sd.i) continue; // 벽 옆면 모드: 클릭한 세그먼트 밴드만 강조
-      const zt = s.zt || s.poly.map(() => s.z1);
-      const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
-      const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
-      // 강조 대상: 옆면 모드=클릭한 옆면 사각(벽은 세그 밴드 윗면), 아랫면 모드=아랫면, 기본=윗면
-      const hi = (sd && sd.wall) ? top : (sd && sd.i != null && sd.i < s.poly.length) ? [bot[sd.i], bot[sd.j], top[sd.j], top[sd.i]] : (fb ? bot : top);
-      const ref = fb ? top : bot; // 점선 참조 윤곽
+    if (sd && sd.ea) { // 옆면: 클릭한 그 면(ea~eb × z0~z1) 사각을 직접 강조 — 어느 면을 잡았는지 명확
+      const q = [proj3D(sd.ea[0], sd.ea[1], sd.z0), proj3D(sd.eb[0], sd.eb[1], sd.z0), proj3D(sd.eb[0], sd.eb[1], sd.z1), proj3D(sd.ea[0], sd.ea[1], sd.z1)];
       c.save();
-      c.beginPath(); hi.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath();
+      c.beginPath(); q.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath();
       c.fillStyle = 'rgba(10,132,255,0.32)'; c.fill();
       c.strokeStyle = '#0A84FF'; c.lineWidth = 2.5 * dpr; c.stroke();
-      // 반대쪽 윤곽 + 수직 모서리 점선 — 붙일 수 있는 스냅 참조(꼭짓점·중점·모서리) 시각화
-      c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(94,177,255,0.9)'; c.lineWidth = 1.4 * dpr;
-      c.beginPath(); ref.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke();
-      c.beginPath(); for (let i = 0; i < top.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
-      c.setLineDash([]);
       c.restore();
+    } else {
+      for (const s of v3.solids) {
+        if (!v3.srfHi.has(s.eid)) continue;
+        const zt = s.zt || s.poly.map(() => s.z1);
+        const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
+        const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
+        // 강조 대상: 원기둥 옆면=클릭 변 사각, 아랫면 모드=아랫면, 기본=윗면
+        const hi = (sd && sd.i != null && sd.i < s.poly.length) ? [bot[sd.i], bot[sd.j], top[sd.j], top[sd.i]] : (fb ? bot : top);
+        const ref = fb ? top : bot; // 점선 참조 윤곽
+        c.save();
+        c.beginPath(); hi.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath();
+        c.fillStyle = 'rgba(10,132,255,0.32)'; c.fill();
+        c.strokeStyle = '#0A84FF'; c.lineWidth = 2.5 * dpr; c.stroke();
+        // 반대쪽 윤곽 + 수직 모서리 점선 — 붙일 수 있는 스냅 참조(꼭짓점·중점·모서리) 시각화
+        c.setLineDash([6 * dpr, 4 * dpr]); c.strokeStyle = 'rgba(94,177,255,0.9)'; c.lineWidth = 1.4 * dpr;
+        c.beginPath(); ref.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); c.stroke();
+        c.beginPath(); for (let i = 0; i < top.length; i++) { c.moveTo(bot[i][0], bot[i][1]); c.lineTo(top[i][0], top[i][1]); } c.stroke();
+        c.setLineDash([]);
+        c.restore();
+      }
     }
   }
   // extrudesrf 옆면 밀당 축 가이드 — 면 중심을 지나는 법선(수직) 방향 점선 + 현재 면 위치 표시
@@ -3180,16 +3188,15 @@ function bind3D(ov, cv3) {
       extrudeSetBase(cpx, cpy); // confirmFace/awaitBase 클릭 → 기준점(스냅) 지정 후 높이 조절로
       return;
     }
-    { // 사분할: 클릭한 뷰포트를 활성화 + 커서 아래 '면'을 항상 기록(검볼이 클릭을 가로채도 extrudesrf가 면을 알 수 있게)
+    { // 사분할: 클릭한 뷰포트를 활성화
       const rv = cv3.getBoundingClientRect();
       const pxv = (e.clientX - rv.left) * (rv.width ? cv3.width / rv.width : 1);
       const pyv = (e.clientY - rv.top) * (rv.height ? cv3.height / rv.height : 1);
       const vi = vpAt(pxv, pyv);
       if (vi !== v3.act) { v3.act = vi; loadVp(vi); render3D(); }
-      try { v3.pickFace = findFaceAt(pxv, pyv) || v3.pickFace; } catch (err) {}
     }
     // 높이 그립 히트 → 리프트 드래그 (벽/기둥 높이 끌어올리기)
-    if (v3.grip && e.button === 0 && !e.shiftKey) {
+    if (v3.grip && e.button === 0 && !e.shiftKey && !extrudePend) { // 돌출 진행 중엔 리프트 그립 비활성 — 면 클릭 우선
       const r = cv3.getBoundingClientRect();
       const kx = r.width ? cv3.width / r.width : 1, ky = r.height ? cv3.height / r.height : 1;
       const px = (e.clientX - r.left) * kx, py = (e.clientY - r.top) * ky;
@@ -3204,8 +3211,8 @@ function bind3D(ov, cv3) {
         }
       }
     }
-    // 검볼 축 히트 → 이동 드래그(1mm 스냅) / 클릭 = 수치 입력
-    if (v3.gum && e.button === 0 && !e.shiftKey) {
+    // 검볼 축 히트 → 이동 드래그(1mm 스냅) / 클릭 = 수치 입력 (돌출 진행 중엔 비활성 — 면 클릭 우선)
+    if (v3.gum && e.button === 0 && !e.shiftKey && !extrudePend) {
       const r2 = cv3.getBoundingClientRect();
       const kx2 = r2.width ? cv3.width / r2.width : 1, ky2 = r2.height ? cv3.height / r2.height : 1;
       const px2 = (e.clientX - r2.left) * kx2, py2 = (e.clientY - r2.top) * ky2;
@@ -4374,22 +4381,17 @@ function srfSurfaceSnap(px, py, exclude) {
 function extrudeSetVal(val) { // height 단계: 모든 항목에 적용 — 양수=위로, 음수=아래로(기준면 아래) 돌출, 0=평면
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
   ex.val = Math.round(val); // 1단위로 부드럽게. 음수 허용 → 아래 방향은 base를 내리고 h=|값|으로 저장
-  if (ex.side) { // 옆면 밀당: '클릭한 그 면만' 법선 방향으로 ex.val 만큼 이동 — 높이/종류는 그대로
-    const s = ex.side, e = state.entities.find(x => x.id === s.id); if (!e) return;
-    const setPt = (idx, x, y) => { if (s.line) { if (idx === s.i) { e.x1 = x; e.y1 = y; } else { e.x2 = x; e.y2 = y; } } else if (e.points) e.points[idx] = [x, y]; };
-    if (s.circle) { e.r = Math.max(1, s.r0 + ex.val); }
-    else if (s.shell) { // 벽 옆 셸: 두께 변화 + 중심선 절반 이동 → 클릭 면은 val만큼, 반대쪽 면은 제자리
-      e.bim.t = Math.max(1, s.t0 + ex.val);
-      const hx = s.nx * ex.val / 2, hy = s.ny * ex.val / 2;
-      setPt(s.i, s.p0[0][0] + hx, s.p0[0][1] + hy);
-      setPt(s.j, s.p0[1][0] + hx, s.p0[1][1] + hy);
-    } else if (s.cap) { // 벽 끝단 캡: 그 끝점만 길이 방향 이동(벽 연장/단축)
-      if (s.cap === 'b') setPt(s.j, s.p0[1][0] + s.nx * ex.val, s.p0[1][1] + s.ny * ex.val);
-      else setPt(s.i, s.p0[0][0] + s.nx * ex.val, s.p0[0][1] + s.ny * ex.val);
-    } else { // 기둥 발자국 변: 그 변만 법선 이동
-      setPt(s.i, s.p0[0][0] + s.nx * ex.val, s.p0[0][1] + s.ny * ex.val);
-      setPt(s.j, s.p0[1][0] + s.nx * ex.val, s.p0[1][1] + s.ny * ex.val);
-    }
+  if (ex.side) { // 옆면: 라이노 ExtrudeSrf 방식 — 원본은 그대로, 클릭한 면에서 법선 방향으로 '새 솔리드'가 자라남
+    const s = ex.side, src = state.entities.find(x => x.id === s.id); if (!src) return;
+    if (s.circle) { src.r = Math.max(1, s.r0 + ex.val); return; } // 원기둥은 반지름 조절
+    const d = ex.val;
+    const fp = [[s.ea[0], s.ea[1]], [s.eb[0], s.eb[1]], [s.eb[0] + s.nx * d, s.eb[1] + s.ny * d], [s.ea[0] + s.nx * d, s.ea[1] + s.ny * d]];
+    let ne = s.newId != null ? state.entities.find(x => x.id === s.newId) : null;
+    if (!ne) {
+      ne = addEntity({ type: 'LWPOLYLINE', closed: true, points: fp, layer: src.layer, color: src.color });
+      ne.bim = { kind: 'column', h: s.z1 - s.z0, base: s.z0 }; delete ne.zo;
+      s.newId = ne.id;
+    } else ne.points = fp;
     return;
   }
   for (const it of ex.items) {
@@ -4481,7 +4483,8 @@ function extrudeHover(e) {
     const s = ex.side;
     const dragVal = ex.h0 + ((px - ex.anchor2[0]) * ex.sdir[0] + (py - ex.anchor2[1]) * ex.sdir[1]) / (ex.sscale || 1);
     let useVal = dragVal, snapped = null;
-    const sn = srfSurfaceSnap(px, py, ex._exclude); // 자기 자신 제외 — 자기 모서리에 되끌려가는 것 방지
+    const excl = new Set(ex._exclude || []); if (s.newId != null) excl.add(s.newId); // 원본 + 자라는 새 솔리드(미리보기) 제외
+    const sn = srfSurfaceSnap(px, py, excl); // 자기 자신 제외 — 자기 모서리에 되끌려가는 것 방지
     if (sn && sn.x != null && sn.kind !== '표면' && sn.kind !== 'surface') { // 표면 스냅 제외(값 널뛰기 방지)
       useVal = s.circle ? (Math.hypot(sn.x - s.cx, sn.y - s.cy) - s.r0) : ((sn.x - s.mx) * s.nx + (sn.y - s.my) * s.ny);
       snapped = sn; // 다른 객체의 꼭짓점·중점·모서리에 조준 → 그 위치의 법선 성분으로 정확 흡착
@@ -4510,6 +4513,10 @@ function extrudeHover(e) {
 }
 function extrudeFinish() { // 현재 높이로 확정
   const ex = extrudePend; if (!ex || ex.stage !== 'height') return;
+  if (ex.side && !ex.side.circle && ex.side.newId != null) { // 옆면: 새 솔리드 정리/선택
+    if (Math.abs(ex.val) < 0.5) state.entities = state.entities.filter(x => x.id !== ex.side.newId); // 돌출 0 → 생성 안 함
+    else { state.selection.clear(); state.selection.add(ex.side.newId); }
+  }
   extrudePend = null; setPrompt('');
   if (typeof v3 !== 'undefined' && v3) { v3.snapHit = null; v3.snapCursor = null; v3.srfHi = null; }
   // (겹친 곡선 통짜 합집합 병합은 사용자 요청으로 보류 — 안팎 포갬 벽체만 유지)
@@ -4683,11 +4690,14 @@ function extrudeStart(cmd, sel) {
   const pf = (srf && typeof v3 !== 'undefined' && v3 && v3.pickFace && sel.some(e => e.id === v3.pickFace.eid)) ? v3.pickFace : null;
   const fromBottom = !!(pf && pf.fk === 'bot');
   // 옆면 밀당: 클릭한 옆면(발자국의 변)을 법선 방향으로 밀고 당김 — 기둥(닫힌 발자국)·원기둥(반지름) 지원
+  // 라이노 ExtrudeSrf 방식: 원본은 그대로 두고, 클릭한 면(ea~eb 구간, z0~z1 높이)에서
+  // 법선(nx,ny) 방향으로 '새 솔리드'가 자라남. sideMode = {ea, eb, nx, ny, mx, my, mz, z0, z1}
   let sideMode = null;
   if (pf && pf.fk === 'side' && sel.length === 1) {
     const e = sel[0];
+    const z0e = (e.bim && e.bim.base) || 0, z1e = z0e + ((e.bim && e.bim.h) || 0), mze = (z0e + z1e) / 2;
     if (e.bim && e.bim.kind === 'column' && e.type === 'CIRCLE') {
-      sideMode = { id: e.id, circle: true, cx: e.cx, cy: e.cy, r0: e.r, mx: 0, my: 0, nx: 0, ny: 0, mz: (e.bim.base || 0) + (e.bim.h || 0) / 2 };
+      sideMode = { id: e.id, circle: true, cx: e.cx, cy: e.cy, r0: e.r, mx: 0, my: 0, nx: 0, ny: 0, mz: mze };
       // 법선(반경 방향)은 클릭 변 기준 — circlePoly(16) 변 fi의 중점 방향
       const cp = circlePoly(e.cx, e.cy, e.r, 16), i0 = pf.fi % 16, j0 = (i0 + 1) % 16;
       const mx = (cp[i0][0] + cp[j0][0]) / 2, my = (cp[i0][1] + cp[j0][1]) / 2;
@@ -4702,7 +4712,7 @@ function extrudeStart(cmd, sel) {
       let ccx = 0, ccy = 0; for (const p of e.points) { ccx += p[0]; ccy += p[1]; } ccx /= n; ccy /= n;
       const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
       if ((mx - ccx) * nx + (my - ccy) * ny < 0) { nx = -nx; ny = -ny; }
-      sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx, ny, mx, my, mz: (e.bim.base || 0) + (e.bim.h || 0) / 2 };
+      sideMode = { id: e.id, ea: [a[0], a[1]], eb: [b[0], b[1]], nx, ny, mx, my, mz: mze, z0: z0e, z1: z1e };
     } else if (e.bim && e.bim.kind === 'wall' && pf.si != null) {
       // 벽(t0 면 포함): 라이노처럼 '클릭한 그 면만' 법선 방향으로 이동.
       //  · 옆 셸(fi 0/2): 두께 t가 변하고 중심선이 절반만 이동 → 클릭 면은 val만큼, 반대쪽 면은 그대로
@@ -4717,20 +4727,19 @@ function extrudeStart(cmd, sel) {
         const ex2 = b[0] - a[0], ey2 = b[1] - a[1], L = Math.hypot(ex2, ey2) || 1;
         const ux = ex2 / L, uy = ey2 / L;               // 길이 방향
         const bnx = -uy, bny = ux;                      // 밴드 +법선 (bimSolids band와 동일 규약: A1=+n 쪽)
-        const t0 = e.bim.t || 0, mz = (e.bim.base || 0) + (e.bim.h || 0) / 2;
-        const mcx = (a[0] + b[0]) / 2, mcy = (a[1] + b[1]) / 2; // 중심선 중점
+        const t0 = e.bim.t || 0;
         const fi = pf.fi != null ? pf.fi : 0;
-        if (fi === 1 || fi === 3) { // 끝단 캡: 길이 방향 이동
+        if (fi === 1 || fi === 3) { // 끝단 캡 면: 그 면(두께 폭)에서 길이 방향으로 새 솔리드
           const capB = fi === 1;    // 1 = j0쪽 끝, 3 = i0쪽 끝
           const dir = capB ? [ux, uy] : [-ux, -uy];
           const ep = capB ? b : a;
-          sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx: dir[0], ny: dir[1],
-            mx: ep[0] + dir[0] * 0, my: ep[1] + dir[1] * 0, mz, wall: true, cap: capB ? 'b' : 'a', line: e.type === 'LINE' };
-        } else { // 옆 셸: 클릭한 쪽(+n=fi0 / −n=fi2)만 이동 — 두께 변화 + 중심선 절반 이동
+          sideMode = { id: e.id, ea: [ep[0] + bnx * t0 / 2, ep[1] + bny * t0 / 2], eb: [ep[0] - bnx * t0 / 2, ep[1] - bny * t0 / 2],
+            nx: dir[0], ny: dir[1], mx: ep[0], my: ep[1], mz: mze, z0: z0e, z1: z1e };
+        } else { // 옆 셸 면(+n=fi0 / −n=fi2): 그 면에서 바깥으로 새 솔리드
           const sgn = fi === 2 ? -1 : 1;
           const nx = bnx * sgn, ny = bny * sgn; // 클릭 셸의 바깥 방향
-          sideMode = { id: e.id, i: i0, j: j0, p0: [[a[0], a[1]], [b[0], b[1]]], nx, ny,
-            mx: mcx + nx * t0 / 2, my: mcy + ny * t0 / 2, mz, wall: true, shell: true, t0, line: e.type === 'LINE' };
+          sideMode = { id: e.id, ea: [a[0] + nx * t0 / 2, a[1] + ny * t0 / 2], eb: [b[0] + nx * t0 / 2, b[1] + ny * t0 / 2],
+            nx, ny, mx: (a[0] + b[0]) / 2 + nx * t0 / 2, my: (a[1] + b[1]) / 2 + ny * t0 / 2, mz: mze, z0: z0e, z1: z1e };
         }
       }
     }
