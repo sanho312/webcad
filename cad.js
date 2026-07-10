@@ -4455,15 +4455,6 @@ function beginExtrude(cmd) {
 // extrudesrf(면 밀당): 대상 솔리드는 현재 높이 그대로 두고, 화면 클릭/숫자로 높이(밀거나 당김) 조절.
 // 안팎 이중 외곽선(같은 모양 스케일/오프셋 쌍 — 안쪽 곡선이 바깥 곡선 안에 완전히 들어감) →
 // 간격을 두께로 하는 '건물 벽체' 하나로 변환. 안쪽 각 꼭짓점→바깥 변 최단거리=두께, 그 중점=중심선.
-// 진단 메시지를 화면 상단 배너로도 표시 (명령 로그가 접혀 있어도 보이게)
-function extrudeDiagBanner(msg) {
-  try {
-    let b = document.getElementById('extDiag');
-    if (!b) { b = document.createElement('div'); b.id = 'extDiag'; b.style.cssText = 'position:fixed;left:50%;top:120px;transform:translateX(-50%);z-index:99998;max-width:90vw;background:#ffcc00;color:#111;padding:10px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.4);font:600 13px system-ui,sans-serif;text-align:center;white-space:pre-line;'; document.body.appendChild(b); }
-    b.textContent = '돌출 진단\n' + msg;
-    clearTimeout(b._t); b._t = setTimeout(() => { try { b.remove(); } catch (e) {} }, 9000);
-  } catch (e) {}
-}
 // 폴리라인이 '고리(닫힌 윤곽)'인가 — closed 플래그거나, 끝점이 시작점 근처(=폴리 도구로 안 닫고 되돌아 찍음)면 참
 function polyIsLoop(e) {
   if (!e || e.type !== 'LWPOLYLINE') return false;
@@ -4476,7 +4467,7 @@ function polyIsLoop(e) {
   return Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < diag * 0.08; // 끝점≈시작점
 }
 function detectDoubleOutlineWall(sel, dryRun) {
-  const DBG = (m) => { try { logLine('  · 이중외곽선 판정: ' + m, 'info'); } catch (e) {} extrudeDiagBanner(m); };
+  const DBG = () => {}; // 진단 표시 제거(사용자 요청) — 판정 실패 시 조용히 개별 돌출로 진행
   if (sel.length !== 2) { if (sel.length > 2) DBG(`선택 ${sel.length}개 — 정확히 2개여야 벽체 병합`); return null; }
   if (!sel.every(e => polyIsLoop(e))) {
     DBG(`고리(닫힌 윤곽) 2개 필요 (지금: ${sel.map(e => (e.type === 'LWPOLYLINE' ? '폴리라인' : e.type) + (polyIsLoop(e) ? '·고리' : e.closed ? '·닫힘' : '·열림') + (e.points ? e.points.length + '점' : '')).join(' , ')}) — 폴리 도구로 그렸으면 끝점을 시작점에 정확히 맞물려 닫으세요`); return null;
@@ -4590,7 +4581,6 @@ function extrudeStart(cmd, sel) {
   const srf = (cmd === 'extrudesrf');
   // 곡선 병합(이중 외곽선→벽체, 겹친 곡선→합집합)은 extrudecrv(곡선 돌출) 전용. extrudesrf(면 밀당)는 손대지 않음.
   if (!srf) {
-    extrudeDiagBanner(`선택 ${sel.length}개: ${sel.map(e => `${e.type === 'LWPOLYLINE' ? '폴리라인' : e.type}${e.closed ? '·닫힘' : '·열림'}·${(e.points || []).length}점${e.bim ? '·BIM' + e.bim.kind : ''}`).join('  |  ')}`);
     // 선택한 것만 사용 — 짝 곡선 '자동 포함' 없음(사용자가 명시적으로 2개를 선택했을 때만 벽체 병합).
     // 이중 외곽선은 여기서 '감지만' — 병합은 실제 생성(기준점 클릭/숫자) 시점에. 선택 단계에선 두 곡선 모두 파란 강조로 보이게.
     var merge2 = sel.length === 2 ? detectDoubleOutlineWall(sel, true) : null;
