@@ -3001,13 +3001,18 @@ function renderScene(isActive) {
   if (isActive && state.selection.size === 1) {
     const sid = [...state.selection][0];
     const ent = state.entities.find(en => en.id === sid);
-    if (ent && (ent.bim || ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(ent.type))) {
+    if (ent && (ent.bim || ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC', 'MESH'].includes(ent.type))) {
       const bb = entityBBox(ent);
       let gx = (bb.xmin + bb.xmax) / 2, gy = (bb.ymin + bb.ymax) / 2;
       let gz = (state.levels[ent.lv || 0] || { elev: 0 }).elev + (ent.zo || 0);
       if (ent.type === 'LINE' && (ent.z1 != null || ent.z2 != null)) gz = ((ent.z1 || 0) + (ent.z2 || 0)) / 2; // 3D 선 중앙
       const parts = v3.solids.filter(s => s.eid === sid);
       if (parts.length) { let zm = 1e18, zM = -1e18; for (const s of parts) { zm = Math.min(zm, s.z0); zM = Math.max(zM, s.zt ? Math.max(...s.zt) : s.z1); } gz = (zm + zM) / 2; }
+      if (ent.type === 'MESH' && ent.tris && ent.tris.length) { // 메시: 정점 z 범위 중앙
+        let zm2 = 1e18, zM2 = -1e18;
+        for (const t of ent.tris) for (const p of t) { if (p[2] < zm2) zm2 = p[2]; if (p[2] > zM2) zM2 = p[2]; }
+        if (zm2 <= zM2) gz = (zm2 + zM2) / 2;
+      }
       const L = v3.fit / 7;
       // Z축: 모든 객체 — 일반 도형=3D 표시 높이(zo), 문·창=씰, 벽·기둥·계단=base, 슬래브=top, 지붕=처마
       const AXES = [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158'], ['z', 0, 0, 1, '#0A84FF']];
@@ -3029,6 +3034,28 @@ function renderScene(isActive) {
         c.closePath(); c.fill();
         c.font = `${11 * dpr}px -apple-system,system-ui,sans-serif`;
         c.fillText(name.toUpperCase(), g1[0] + ux * 8 * dpr + 2, g1[1] + uy * 8 * dpr + 2);
+      }
+      // 회전 링 (라이노식): Z=파랑 링은 모든 객체, X·Y 링은 메시·3D선만 (평면+높이 데이터는 수직 회전 표현 불가)
+      const can3D = ent.type === 'MESH' || (ent.type === 'LINE' && (ent.z1 != null || ent.z2 != null));
+      const RING_R = L * 0.62, RINGS = can3D ? [['x', '#ff453a'], ['y', '#30d158'], ['z', '#0A84FF']] : [['z', '#0A84FF']];
+      v3.gum.rings = [];
+      c.lineWidth = 2 * dpr;
+      for (const [name, color] of RINGS) {
+        const rg = { name, cx: gx, cy: gy, cz: gz, R: RING_R, pts: [] };
+        c.strokeStyle = color; c.globalAlpha = 0.7;
+        c.beginPath();
+        for (let i = 0; i <= 48; i++) {
+          const p = gumRingPt(rg, i / 48 * Math.PI * 2);
+          const sp = proj3D(p[0], p[1], p[2]);
+          if (i < 48) rg.pts.push(sp);
+          i ? c.lineTo(sp[0], sp[1]) : c.moveTo(sp[0], sp[1]);
+        }
+        c.closePath(); c.stroke();
+        v3.gum.rings.push(rg);
+      }
+      if (v3.rotDeg != null) { // 회전 드래그 중 현재 각도 표시
+        c.globalAlpha = 1; c.font = `700 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
+        c.fillStyle = '#ffd60a'; c.fillText(v3.rotDeg + '°', g0[0] + 12 * dpr, g0[1] - 12 * dpr);
       }
       c.beginPath(); c.fillStyle = '#ffd60a'; c.globalAlpha = 0.95; c.arc(g0[0], g0[1], 4 * dpr, 0, Math.PI * 2); c.fill();
       c.globalAlpha = 1;
@@ -3192,8 +3219,40 @@ function cursor3D() {
   if (v3 && v3.wallMode) return 'crosshair';
   return (state.tool === 'select') ? 'default' : (state.tool === 'pan') ? 'grab' : 'crosshair';
 }
+// 검볼 회전 링 위의 3D 점 — θ+ 방향 = 해당 축 기준 오른손 법칙 +회전
+function gumRingPt(rg, th) {
+  const c = Math.cos(th), s = Math.sin(th);
+  if (rg.name === 'x') return [rg.cx, rg.cy + rg.R * c, rg.cz + rg.R * s];
+  if (rg.name === 'y') return [rg.cx + rg.R * s, rg.cy, rg.cz + rg.R * c];
+  return [rg.cx + rg.R * c, rg.cy + rg.R * s, rg.cz];
+}
+// 검볼 회전 적용 — 중심(cx,cy,cz)을 지나는 축 기준 deg도 회전 (오른손 법칙, 반시계 +)
+function gumRotate(ent, axName, cx, cy, cz, deg) {
+  const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  if (ent.type === 'MESH') { // 메시: 정점 3D 회전 — X/Y/Z 모든 축 가능
+    const fn = axName === 'x' ? (x, y, z) => { const dy = y - cy, dz = z - cz; return [x, cy + dy * c - dz * s, cz + dy * s + dz * c]; }
+      : axName === 'y' ? (x, y, z) => { const dx = x - cx, dz = z - cz; return [cx + dx * c + dz * s, y, cz - dx * s + dz * c]; }
+      : (x, y, z) => { const dx = x - cx, dy = y - cy; return [cx + dx * c - dy * s, cy + dx * s + dy * c, z]; };
+    meshXform(ent, fn);
+    return;
+  }
+  if (ent.type === 'LINE' && (ent.z1 != null || ent.z2 != null) && axName !== 'z') { // 3D 선: 양끝점 3D 회전
+    const zb = (state.levels[ent.lv || 0] || { elev: 0 }).elev + (ent.zo || 0);
+    const rot = axName === 'x'
+      ? p => [p[0], cy + (p[1] - cy) * c - (p[2] - cz) * s, cz + (p[1] - cy) * s + (p[2] - cz) * c]
+      : p => [cx + (p[0] - cx) * c + (p[2] - cz) * s, p[1], cz - (p[0] - cx) * s + (p[2] - cz) * c];
+    const p1 = rot([ent.x1, ent.y1, ent.z1 != null ? ent.z1 : zb]);
+    const p2 = rot([ent.x2, ent.y2, ent.z2 != null ? ent.z2 : zb]);
+    [ent.x1, ent.y1, ent.z1] = [p1[0], p1[1], p1[2]];
+    [ent.x2, ent.y2, ent.z2] = [p2[0], p2[1], p2[2]];
+    delete ent.zo;
+    return;
+  }
+  applyTransform(ent, T_rotate(cx, cy, deg)); // 평면 도형·BIM: Z축 평면 회전 (치수·속성 보존)
+}
 // 검볼 이동 적용: X/Y=평면 이동, Z=BIM 기준 높이(base/top/eave) 이동
 function gumMove(ent, ax, d) {
+  if (ent.type === 'MESH') { move3DEnt(ent, ax.vx * d, ax.vy * d, ax.vz * d); return; } // 메시: 정점 직접 이동
   if (ax.vz) {
     const b = ent.bim;
     if (!b) {
@@ -3268,6 +3327,29 @@ function bind3D(ov, cv3) {
         const t = L2 ? Math.max(0, Math.min(1, ((px2 - a.p0[0]) * ddx + (py2 - a.p0[1]) * ddy) / L2)) : 0;
         const d = Math.hypot(px2 - (a.p0[0] + ddx * t), py2 - (a.p0[1] + ddy * t));
         if (d <= hitD) { hitD = d; hitAx = a; }
+      }
+      // 회전 링 히트 — 축과 링 중 화면상 더 가까운 쪽 (라이노식 회전)
+      let hitRing = null, hitTh = 0;
+      for (const rg of (v3.gum.rings || [])) {
+        for (let i = 0; i < rg.pts.length; i++) {
+          const d = Math.hypot(px2 - rg.pts[i][0], py2 - rg.pts[i][1]);
+          if (d < hitD) { hitD = d; hitAx = null; hitRing = rg; hitTh = i / rg.pts.length * Math.PI * 2; }
+        }
+      }
+      if (hitRing) {
+        const ent = state.entities.find(en => en.id === v3.gum.eid);
+        if (ent) {
+          // 회전 = 커서가 중심 둘레를 도는 화면 각도를 그대로 추적 (커서 1바퀴 = 360° — 링이 작아도 폭주하지 않음)
+          const gs = proj3D(hitRing.cx, hitRing.cy, hitRing.cz);
+          const a0 = Math.atan2(hitRing.pts[0][1] - gs[1], hitRing.pts[0][0] - gs[0]);
+          const a1 = Math.atan2(hitRing.pts[1][1] - gs[1], hitRing.pts[1][0] - gs[0]);
+          let dw = a1 - a0; while (dw > Math.PI) dw -= 2 * Math.PI; while (dw < -Math.PI) dw += 2 * Math.PI;
+          const sign = dw >= 0 ? 1 : -1; // 링의 θ+ 방향이 화면에서 도는 방향
+          drag = { mode: 'gumrot', ent, ring: hitRing, gs, sign, th: 0, x0: e.clientX, y0: e.clientY, lastSA: Math.atan2(py2 - gs[1], px2 - gs[0]), kx: kx2, ky: ky2, appliedDeg: 0, pushed: false, moved: 0 };
+          try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
+          cv3.style.cursor = 'grabbing';
+          return;
+        }
       }
       if (hitAx) {
         const ent = state.entities.find(en => en.id === v3.gum.eid);
@@ -3355,6 +3437,27 @@ function bind3D(ov, cv3) {
       }
       return;
     }
+    if (drag.mode === 'gumrot') { // 검볼 회전: 커서가 검볼 중심 둘레를 도는 화면 각도를 추적 (뷰 방향 무관)
+      drag.moved = Math.max(drag.moved, Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0));
+      const rr3 = cv3.getBoundingClientRect();
+      const cpx = (e.clientX - rr3.left) * drag.kx, cpy = (e.clientY - rr3.top) * drag.ky;
+      if (Math.hypot(cpx - drag.gs[0], cpy - drag.gs[1]) > 8 * (devicePixelRatio || 1)) { // 중심 특이점 회피
+        const sa = Math.atan2(cpy - drag.gs[1], cpx - drag.gs[0]);
+        let d = sa - drag.lastSA; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+        drag.lastSA = sa;
+        drag.th += d * drag.sign;
+      }
+      const want = Math.round(drag.th * 180 / Math.PI); // 1° 스냅
+      const delta = want - drag.appliedDeg;
+      if (delta) {
+        if (!drag.pushed) { pushUndo(); drag.pushed = true; }
+        gumRotate(drag.ent, drag.ring.name, drag.ring.cx, drag.ring.cy, drag.ring.cz, delta);
+        drag.appliedDeg = want;
+        v3.rotDeg = want;
+        v3.solids = bimSolids(); markInteract();
+      }
+      return;
+    }
     if (drag.mode === 'lift') {
       const dyc = (e.clientY - drag.y0) * drag.py2cv;         // 화면 아래(+)로 이동한 캔버스 픽셀
       let nh = drag.h0 - dyc / drag.pxPerMm;                  // 위로 끌면 높이 증가
@@ -3388,6 +3491,23 @@ function bind3D(ov, cv3) {
   });
   const end = (e) => {
     if (v3.boxRect) v3.boxRect = null; // 러버밴드 상태 해제 (최종 렌더에서 사라짐)
+    if (drag && drag.mode === 'gumrot') {
+      if (drag.moved < 4 && e && e.type === 'pointerup') { // 링 클릭 = 각도 수치 입력 (라이노식)
+        const v = parseFloat(prompt(`${drag.ring.name.toUpperCase()}축 회전 각도 (도, 반시계 +):`, '0'));
+        if (isFinite(v) && v) {
+          if (!drag.pushed) { pushUndo(); drag.pushed = true; }
+          gumRotate(drag.ent, drag.ring.name, drag.ring.cx, drag.ring.cy, drag.ring.cz, v);
+          drag.appliedDeg = Math.round(v);
+          v3.solids = bimSolids();
+        }
+      }
+      if (drag.pushed) logLine(`  ✔ ${drag.ring.name.toUpperCase()}축 회전 ${drag.appliedDeg}°`, 'ok');
+      v3.rotDeg = null;
+      renderProps(); render3D();
+      drag = null; cv3.style.cursor = cursor3D();
+      saveV3Layout();
+      return;
+    }
     if (drag && drag.mode === 'gum') {
       if (drag.moved < 4 && e && e.type === 'pointerup') { // 축 클릭 = 수치 입력 (라이노식)
         const v = parseFloat(prompt(`${drag.ax.name.toUpperCase()}축 이동 거리 (mm, +방향/-방향):`, '0'));
