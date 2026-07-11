@@ -55,7 +55,7 @@ let hatchSpacing = 5;   // 해치 간격
 const SETTINGS_KEY = 'webcad_settings_v1';
 let settings = {
   units: 'mm',
-  osnapModes: { endpoint: true, midpoint: true, center: true, perp: true, nearest: true, intersection: true, tangent: true },
+  osnapModes: { endpoint: true, midpoint: true, center: true, quad: true, perp: true, nearest: true, intersection: true, tangent: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
   bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180 }, // BIM 기본값(mm)
@@ -410,6 +410,9 @@ function drawSnapMarker(s, type) {
   } else if (type === 'tangent') { // 접선: 원 + 위쪽 접선
     ctx.beginPath(); ctx.arc(s.x, s.y + r * 0.25, r * 0.75, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(s.x - r, s.y - r * 0.5); ctx.lineTo(s.x + r, s.y - r * 0.5); ctx.stroke();
+  } else if (type === 'quad') { // 사분점: ◇ + 중심점
+    ctx.beginPath(); ctx.moveTo(s.x, s.y - r); ctx.lineTo(s.x + r, s.y); ctx.lineTo(s.x, s.y + r); ctx.lineTo(s.x - r, s.y); ctx.closePath(); ctx.stroke();
+    ctx.fillStyle = '#2ee6a6'; ctx.beginPath(); ctx.arc(s.x, s.y, 1.6, 0, Math.PI * 2); ctx.fill();
   } else { // nearest: 모래시계(⧗)
     ctx.beginPath();
     ctx.moveTo(s.x - r, s.y - r); ctx.lineTo(s.x + r, s.y - r); ctx.lineTo(s.x - r, s.y + r);
@@ -787,6 +790,13 @@ function findObjectSnap(raw) {
     if (settings.osnapModes.endpoint) for (const g of entityEndpoints(e)) consider(g.x, g.y, 'endpoint', 1);
     if (settings.osnapModes.midpoint) for (const m of entityMidpoints(e)) consider(m.x, m.y, 'midpoint', 2);
     if (settings.osnapModes.center && (e.type === 'CIRCLE' || e.type === 'ARC')) consider(e.cx, e.cy, 'center', 3);
+    // 사분점(Quad): 원/호의 0°/90°/180°/270° 점 — 호는 각도 범위 안에 있는 것만 (라이노 Quad)
+    if (settings.osnapModes.quad && (e.type === 'CIRCLE' || e.type === 'ARC')) {
+      for (const q of [[e.cx + e.r, e.cy], [e.cx - e.r, e.cy], [e.cx, e.cy + e.r], [e.cx, e.cy - e.r]]) {
+        if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, q[0], q[1]), e.startAngle, e.endAngle)) continue;
+        consider(q[0], q[1], 'quad', 3);
+      }
+    }
     // 수직점(perpendicular): 기준점에서 도형으로 내린 수선의 발. 커서가 그 도형 위에 있을 때 제공
     if (base && settings.osnapModes.perp) {
       for (const sg of entitySegments(e)) {
@@ -863,7 +873,7 @@ function intersectEntities(A, B) {
   }
   return out;
 }
-const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', perp: '수직', nearest: '근처', intersect: '교차', tangent: '접선' };
+const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', quad: '사분점', perp: '수직', nearest: '근처', intersect: '교차', tangent: '접선' };
 
 // ============================================================
 //  이동
@@ -3105,6 +3115,9 @@ function renderScene(isActive) {
       c.moveTo(sp3[0] - rr, sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1] - rr); c.lineTo(sp3[0] - rr, sp3[1] + rr);
       c.lineTo(sp3[0] + rr, sp3[1] + rr); c.closePath();
       c.stroke();
+    } else if (k === 'quad' || k === '사분점') { // 사분점=◇+중심점 (2D 규약과 동일)
+      c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1]); c.lineTo(sp3[0], sp3[1] + rr); c.lineTo(sp3[0] - rr, sp3[1]); c.closePath(); c.stroke();
+      c.fillStyle = '#2ee6a6'; c.beginPath(); c.arc(sp3[0], sp3[1], 1.6 * dpr3, 0, Math.PI * 2); c.fill();
     } else if (k === '표면' || k === 'surface') { // 표면=마름모(꼭짓점과 구분)
       c.beginPath(); c.moveTo(sp3[0], sp3[1] - rr); c.lineTo(sp3[0] + rr, sp3[1]); c.lineTo(sp3[0], sp3[1] + rr); c.lineTo(sp3[0] - rr, sp3[1]); c.closePath(); c.stroke();
     } else { // 꼭짓점/끝점=사각
@@ -3558,7 +3571,14 @@ function snap3D(px, py, w, exclude) {
       try { eps = entityEndpoints(e); mps = entityMidpoints(e); } catch (_) { continue; }
       cands = eps.map(p => ({ x: p.x, y: p.y, z: zb, kind: 'endpoint' }))
         .concat(mps.map(p => ({ x: p.x, y: p.y, z: zb, kind: 'midpoint' })));
-      if (e.type === 'CIRCLE' || e.type === 'ARC') cands.push({ x: e.cx, y: e.cy, z: zb, kind: 'center' }); // 중심 스냅
+      if (e.type === 'CIRCLE' || e.type === 'ARC') {
+        cands.push({ x: e.cx, y: e.cy, z: zb, kind: 'center' }); // 중심 스냅
+        // 사분점(Quad): 0°/90°/180°/270° — 호는 각도 범위 안의 것만 (라이노 Quad)
+        for (const q of [[e.cx + e.r, e.cy], [e.cx - e.r, e.cy], [e.cx, e.cy + e.r], [e.cx, e.cy - e.r]]) {
+          if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, q[0], q[1]), e.startAngle, e.endAngle)) continue;
+          cands.push({ x: q[0], y: q[1], z: zb, kind: 'quad' });
+        }
+      }
     }
     for (const p of cands) {
       if (!p || !isFinite(p.x)) continue;
@@ -4508,7 +4528,7 @@ function srfSurfaceSnap(px, py, exclude) {
   const wasOsnap = osnapEnabled; osnapEnabled = true;
   const sv = snap3D(px, py, null, svExclude); // 비-BIM 선/곡선의 끝점·중점·중심·nearest
   osnapEnabled = wasOsnap;
-  const svVertex = (sv && sv.z != null && ['endpoint', 'center', 'midpoint', 'intersect'].includes(sv.kind)) ? sv : null;
+  const svVertex = (sv && sv.z != null && ['endpoint', 'center', 'midpoint', 'intersect', 'quad'].includes(sv.kind)) ? sv : null;
   const svEdge = (sv && sv.z != null && sv.kind === 'nearest') ? sv : null;
   const segNear = (A, B) => { const pa = proj3D(A[0], A[1], A[2]), pb = proj3D(B[0], B[1], B[2]); const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L2 = dx * dx + dy * dy; const t = L2 ? Math.max(0, Math.min(1, ((px - pa[0]) * dx + (py - pa[1]) * dy) / L2)) : 0; return { d: Math.hypot(px - (pa[0] + dx * t), py - (pa[1] + dy * t)), t }; };
   const inPoly = (pts) => { let ins = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
@@ -4551,13 +4571,14 @@ function srfSurfaceSnap(px, py, exclude) {
     let z0 = Infinity, z1 = -Infinity;
     for (const s of parts) { z0 = Math.min(z0, s.z0); z1 = Math.max(z1, s.zt ? Math.max(...s.zt) : s.z1); }
     if (!isFinite(z0)) { z0 = (e.bim.base != null ? e.bim.base : (e.bim.top != null ? e.bim.top - (e.bim.t || 0) : 0)); z1 = z0 + (e.bim.h || e.bim.t || 0); }
-    const isCircle = e.type === 'CIRCLE';
+    const isCircle = e.type === 'CIRCLE' || e.type === 'ARC';
     for (const zf of [z1, z0]) { // 윗면·바닥 높이
       const proj = fp.map(p => proj3D(p[0], p[1], zf));
-      if (isCircle) { // 라이노 오스냅 정합: 원은 중심(Cen)·사분점(Quad)만 점 스냅 — 다각형 근사 꼭짓점은 가짜라 스냅 안 함
+      if (isCircle) { // 라이노 오스냅 정합: 원/호는 중심(Cen)·사분점(Quad)만 점 스냅 — 다각형 근사 꼭짓점은 가짜라 스냅 안 함
         const pc = proj3D(e.cx, e.cy, zf); const dc = Math.hypot(px - pc[0], py - pc[1]);
         if (dc < bVD) { bVD = dc; bV = { x: Math.round(e.cx), y: Math.round(e.cy), z: Math.round(zf), kind: '중심' }; }
         for (const q of [[e.cx + e.r, e.cy], [e.cx - e.r, e.cy], [e.cx, e.cy + e.r], [e.cx, e.cy - e.r]]) {
+          if (e.type === 'ARC' && !angleInArc(ang(e.cx, e.cy, q[0], q[1]), e.startAngle, e.endAngle)) continue; // 호: 범위 밖 사분점 제외
           const pq = proj3D(q[0], q[1], zf); const dq = Math.hypot(px - pq[0], py - pq[1]);
           if (dq < bVD) { bVD = dq; bV = { x: Math.round(q[0]), y: Math.round(q[1]), z: Math.round(zf), kind: '사분점' }; }
         }
@@ -6985,7 +7006,7 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     document.getElementById('optDimTxt').value = settings.dim.txt || 0;
     document.getElementById('optDimDec').value = String(settings.dim.dec != null ? settings.dim.dec : 2);
     document.getElementById('optDimSuffix').checked = !!settings.dim.suffix;
-    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'tangent', 'nearest', 'intersection'])
+    for (const k of ['endpoint', 'midpoint', 'center', 'quad', 'perp', 'tangent', 'nearest', 'intersection'])
       document.getElementById('os_' + k).checked = !!settings.osnapModes[k];
     // 단축키 목록 (도구명 → 현재 사용자 별칭 역조회)
     const rev = {}; for (const [a, t] of Object.entries(settings.aliases)) if (!rev[t]) rev[t] = a;
@@ -7009,7 +7030,7 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     settings.dim.txt = Math.max(0, parseFloat(document.getElementById('optDimTxt').value) || 0);
     settings.dim.dec = parseInt(document.getElementById('optDimDec').value, 10);
     settings.dim.suffix = document.getElementById('optDimSuffix').checked;
-    for (const k of ['endpoint', 'midpoint', 'center', 'perp', 'tangent', 'nearest', 'intersection'])
+    for (const k of ['endpoint', 'midpoint', 'center', 'quad', 'perp', 'tangent', 'nearest', 'intersection'])
       settings.osnapModes[k] = document.getElementById('os_' + k).checked;
     const aliases = {};
     document.querySelectorAll('#aliasList input').forEach(inp => {
