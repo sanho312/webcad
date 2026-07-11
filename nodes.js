@@ -280,6 +280,75 @@
     return { baked: gh.length };
   }
 
+  // ---------- 그래프 실행취소 / 클립보드 / 로직 라이브러리 ----------
+  const stripPriv = (k, v) => (k && k[0] === '_' ? undefined : v); // _err, _exprFn 등 내부 필드 제외
+  const snapGraph = () => JSON.stringify(graph, stripPriv);
+  let gUndo = [], gRedo = [];
+  function pushGraphUndo() { gUndo.push(snapGraph()); if (gUndo.length > 50) gUndo.shift(); gRedo.length = 0; }
+  function gUndoDo() { if (!gUndo.length) return; gRedo.push(snapGraph()); graph = JSON.parse(gUndo.pop()); ui.sel.clear(); apply(); }
+  function gRedoDo() { if (!gRedo.length) return; gUndo.push(snapGraph()); graph = JSON.parse(gRedo.pop()); ui.sel.clear(); apply(); }
+  let clip = null; // 노드 클립보드 (내부 와이어 포함)
+  function copySel(cut) {
+    if (!ui.sel.size) return;
+    const ids = [...ui.sel];
+    const nodesC = ids.map(id => nodeOf(id)).filter(Boolean)
+      .map(n => JSON.parse(JSON.stringify({ type: n.type, x: n.x, y: n.y, params: n.params, inl: n.inl, label: n.label, sel: n.sel }, stripPriv)));
+    const idx = {}; ids.forEach((id, i) => idx[id] = i);
+    const wiresC = graph.wires.filter(w => idx[w.from.node] != null && idx[w.to.node] != null)
+      .map(w => ({ f: idx[w.from.node], i: w.from.idx, t: idx[w.to.node], k: w.to.key }));
+    clip = { nodes: nodesC, wires: wiresC };
+    if (cut) { pushGraphUndo(); ids.forEach(delNode); ui.sel.clear(); apply(); }
+    if (statEl) statEl.textContent = (cut ? '✂ 잘라내기 ' : '📋 복사 ') + nodesC.length + '개 (Ctrl+V 붙여넣기)';
+  }
+  function pasteClip() {
+    if (!clip || !clip.nodes.length) return;
+    pushGraphUndo();
+    const made = [];
+    for (const c of clip.nodes) {
+      const n = addNode(c.type, c.x + 30, c.y + 30);
+      if (!n) { made.push(null); continue; }
+      n.params = JSON.parse(JSON.stringify(c.params || {}));
+      n.inl = JSON.parse(JSON.stringify(c.inl || {}));
+      if (c.label) n.label = c.label;
+      if (c.sel) n.sel = c.sel.slice();
+      made.push(n);
+    }
+    for (const w of clip.wires) { const a = made[w.f], b = made[w.t]; if (a && b) connect(a.id, w.i, b.id, w.k); }
+    clip.nodes.forEach(c => { c.x += 30; c.y += 30; }); // 연속 붙여넣기 계단식 배치
+    ui.sel = new Set(made.filter(Boolean).map(n => n.id));
+    apply();
+  }
+  const LIB_KEY = 'webcad_gh_lib';
+  const readLib = () => { try { return JSON.parse(localStorage.getItem(LIB_KEY) || '{}') || {}; } catch (e) { return {}; } };
+  function saveLogic() { // Ctrl+S: 현재 노드 로직을 이름으로 저장 (브라우저 보관)
+    if (!graph.nodes.length) { window.alert('저장할 노드가 없습니다.'); return; }
+    const name = window.prompt('로직 이름으로 저장 (같은 이름은 덮어씀):', '내 로직');
+    if (!name) return;
+    const lib = readLib();
+    lib[String(name).slice(0, 40)] = { v: 1, at: Date.now(), graph: JSON.parse(snapGraph()) };
+    try { localStorage.setItem(LIB_KEY, JSON.stringify(lib)); } catch (e) { window.alert('저장 실패 — 브라우저 저장공간 부족'); return; }
+    B().logLine('  ✔ 노드 로직 저장: ' + name + ' (📂 불러오기에서 재사용)', 'ok');
+    if (statEl) statEl.textContent = '💾 저장됨: ' + name;
+  }
+  function loadLogicUI() { // 저장된 로직 목록 → 불러오기/삭제
+    const lib = readLib(), names = Object.keys(lib).sort();
+    const old = document.getElementById('ghLib'); if (old) old.remove();
+    const box = el('div', { id: 'ghLib' });
+    box.appendChild(el('div', { class: 'hd' }, '📂 저장된 노드 로직'));
+    if (!names.length) box.appendChild(el('div', { class: 'empty' }, '저장된 로직이 없습니다 — Ctrl+S로 저장하세요'));
+    for (const nm of names) {
+      const row = el('div', { class: 'row' });
+      const b1 = el('button', { class: 'ld' }, nm + ' <span>' + new Date(lib[nm].at).toLocaleDateString() + '</span>');
+      b1.addEventListener('click', () => { pushGraphUndo(); graph = JSON.parse(JSON.stringify(lib[nm].graph)); ui.sel.clear(); box.remove(); apply(); if (statEl) statEl.textContent = '📂 불러옴: ' + nm; });
+      const b2 = el('button', { class: 'del', title: '삭제' }, '✕');
+      b2.addEventListener('click', () => { const l2 = readLib(); delete l2[nm]; localStorage.setItem(LIB_KEY, JSON.stringify(l2)); box.remove(); loadLogicUI(); });
+      row.appendChild(b1); row.appendChild(b2); box.appendChild(row);
+    }
+    const bc = el('button', { class: 'close' }, '닫기'); bc.addEventListener('click', () => box.remove());
+    box.appendChild(bc);
+    ov.appendChild(box);
+  }
+
   // ---------- UI ----------
   const NW = 168, TITLE_H = 24, ROW = 22, PORT_R = 5;
   const ui = { open: false, view: { x: 0, y: 0, s: 1 }, drag: null, hits: null, sel: new Set() }; // sel = 선택된 노드 (GH 녹색 하이라이트)
@@ -410,13 +479,13 @@
       // 포트
       for (const p of H.ports) if (Math.hypot(mx - p.x, my - p.y) < 11 * (devicePixelRatio || 1)) {
         if (p.io === 'out') { ui.drag = { mode: 'wire', from: portGraphPos(nodeOf(p.node), 'out', p.idx), fromNode: p.node, fromIdx: p.idx, cur: [mx, my] }; }
-        else { graph.wires = graph.wires.filter(w => !(w.to.node === p.node && w.to.key === p.key)); apply(); }
+        else if (graph.wires.some(w => w.to.node === p.node && w.to.key === p.key)) { pushGraphUndo(); graph.wires = graph.wires.filter(w => !(w.to.node === p.node && w.to.key === p.key)); apply(); }
         return;
       }
       // 인라인 값 편집
       for (const v of H.vals) if (inRect(mx, my, v.rect)) { editVal(v.node, v.key); return; }
       // 슬라이더
-      for (const s of H.sliders) if (inRect(mx, my, s.rect, 10)) { ui.drag = { mode: 'slider', node: s.node, rect: s.rect }; sliderSet(s.node, mx, s.rect); return; }
+      for (const s of H.sliders) if (inRect(mx, my, s.rect, 10)) { pushGraphUndo(); ui.drag = { mode: 'slider', node: s.node, rect: s.rect }; sliderSet(s.node, mx, s.rect); return; }
       // 노드 클릭 (GH: 클릭=단일 선택, Shift=추가/토글, Ctrl=선택 해제, 드래그=선택된 노드 전체 이동)
       for (let i = H.nodes.length - 1; i >= 0; i--) {
         const nd = H.nodes[i];
@@ -430,7 +499,7 @@
         }
       }
       // 와이어 삭제
-      for (const wh of H.wires) if (Math.hypot(mx - wh.mid[0], my - wh.mid[1]) < 12 * (devicePixelRatio || 1)) { graph.wires = graph.wires.filter(w => w !== wh.w); apply(); return; }
+      for (const wh of H.wires) if (Math.hypot(mx - wh.mid[0], my - wh.mid[1]) < 12 * (devicePixelRatio || 1)) { pushGraphUndo(); graph.wires = graph.wires.filter(w => w !== wh.w); apply(); return; }
       // 빈 곳 좌드래그 = 박스 선택 (GH — 화면 이동은 우클릭/휠클릭 드래그)
       ui.drag = { mode: 'box', x0: mx, y0: my, cur: [mx, my], shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, moved: 0 };
     });
@@ -439,7 +508,7 @@
       if (!ui.drag) return;
       const d = ui.drag;
       if (d.mode === 'pan') { ui.view.x = d.vx + (mx - d.sx); ui.view.y = d.vy + (my - d.sy); render(); }
-      else if (d.mode === 'node') { for (const it of d.items) { const n = nodeOf(it.id); if (n) { n.x = it.nx + (mx - d.ox) / ui.view.s; n.y = it.ny + (my - d.oy) / ui.view.s; } } render(); }
+      else if (d.mode === 'node') { if (!d.gpushed) { d.gpushed = true; pushGraphUndo(); } for (const it of d.items) { const n = nodeOf(it.id); if (n) { n.x = it.nx + (mx - d.ox) / ui.view.s; n.y = it.ny + (my - d.oy) / ui.view.s; } } render(); }
       else if (d.mode === 'wire') { d.cur = [mx, my]; render(); }
       else if (d.mode === 'box') { d.cur = [mx, my]; d.moved = Math.max(d.moved, Math.abs(mx - d.x0) + Math.abs(my - d.y0)); render(); }
       else if (d.mode === 'slider') sliderSet(d.node, mx, d.rect);
@@ -448,7 +517,7 @@
       const mx = e.offsetX * (devicePixelRatio || 1), my = e.offsetY * (devicePixelRatio || 1);
       const d = ui.drag; ui.drag = null;
       if (d && d.mode === 'wire' && ui.hits) {
-        for (const p of ui.hits.ports) if (p.io === 'in' && Math.hypot(mx - p.x, my - p.y) < 13 * (devicePixelRatio || 1)) { connect(d.fromNode, d.fromIdx, p.node, p.key); apply(); return; }
+        for (const p of ui.hits.ports) if (p.io === 'in' && Math.hypot(mx - p.x, my - p.y) < 13 * (devicePixelRatio || 1)) { pushGraphUndo(); connect(d.fromNode, d.fromIdx, p.node, p.key); apply(); return; }
       }
       if (d && d.mode === 'box') { // 박스 선택 확정 (GH: 걸친 노드 모두 선택, Shift=추가, Ctrl=제거)
         if (d.moved < 4) { if (!d.shift && !d.ctrl) ui.sel.clear(); } // 빈 곳 클릭 = 선택 해제
@@ -472,25 +541,33 @@
       ui.view.s = Math.max(0.3, Math.min(2.5, ui.view.s * k));
       const sp = S.apply(null, gp); ui.view.x += mx - sp[0]; ui.view.y += my - sp[1]; render();
     }, { passive: false });
-    // 키보드 편집 (GH: Delete=선택 삭제, Ctrl+A=전체 선택, Esc=선택 해제)
+    // 키보드 편집 (GH 규약) — 캡처 단계: 에디터가 열려 있으면 도면 단축키(Ctrl+Z 등)보다 우선
     window.addEventListener('keydown', (e) => {
       if (!ui.open) return;
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      const stop = () => { e.preventDefault(); e.stopPropagation(); };
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (ui.sel.size) { e.preventDefault(); [...ui.sel].forEach(delNode); ui.sel.clear(); apply(); }
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
-        e.preventDefault(); ui.sel = new Set(graph.nodes.map(n => n.id)); render();
-      } else if (e.key === 'Escape') {
-        if (ui.sel.size) { ui.sel.clear(); render(); }
-      }
-    });
+        stop();
+        if (ui.sel.size) { pushGraphUndo(); [...ui.sel].forEach(delNode); ui.sel.clear(); apply(); }
+      } else if (mod && k === 'z') { stop(); e.shiftKey ? gRedoDo() : gUndoDo(); }
+      else if (mod && k === 'y') { stop(); gRedoDo(); }
+      else if (mod && k === 'c') { stop(); copySel(false); }
+      else if (mod && k === 'x') { stop(); copySel(true); }
+      else if (mod && k === 'v') { stop(); pasteClip(); }
+      else if (mod && k === 's') { stop(); saveLogic(); }
+      else if (mod && k === 'a') { stop(); ui.sel = new Set(graph.nodes.map(n => n.id)); render(); }
+      else if (e.key === 'Escape') { if (ui.sel.size) { ui.sel.clear(); render(); } }
+    }, true);
   }
   function sliderSet(id, mx, rect) { const n = nodeOf(id); const frac = Math.max(0, Math.min(1, (mx - rect[0]) / rect[2])); let v = n.params.min + frac * (n.params.max - n.params.min); const st = n.params.step || 1; v = Math.round(v / st) * st; n.params.v = +v.toFixed(4); apply(); }
   function editVal(id, key) {
     const n = nodeOf(id);
     if (key === '__cap') { // 도면 참조: 현재 선택 개체를 다시 가져오기
       const S2 = B().state;
+      pushGraphUndo();
       n.sel = [...S2.selection].filter(sid => { const e = S2.entities.find(x => x.id === sid); return e && !e._gh; }).slice(0, 500);
       B().logLine('  ▷ 노드 [도면 참조]: 선택 개체 ' + n.sel.length + '개를 가져왔습니다', 'info');
       apply(); return;
@@ -499,12 +576,14 @@
       const pk = key.slice(4);
       const s3 = window.prompt('수식 입력 — 변수 x,y,z · 함수 sin cos tan sqrt abs min max floor round pow exp log · 상수 pi\n예: sin(x/1000)*500 + y', String(n.params[pk]));
       if (s3 == null) return;
+      pushGraphUndo();
       n.params[pk] = String(s3).slice(0, 200);
       delete n._exprFn; apply(); return;
     }
     const cur = key === '__numv' ? n.params.v : n.inl[key];
     const s2 = window.prompt('값 입력:', String(cur)); if (s2 == null) return;
     const v = parseFloat(s2); if (!isFinite(v)) return;
+    pushGraphUndo();
     if (key === '__numv') n.params.v = v; else n.inl[key] = v; apply();
   }
   const inRect = (x, y, r, pad) => { pad = pad || 0; return x >= r[0] - pad && x <= r[0] + r[2] + pad && y >= r[1] - pad && y <= r[1] + r[3] + pad; };
@@ -539,6 +618,16 @@
   #ghCtrl .lb b{color:#eaf2ff;font-weight:600}
   #ghCtrl input[type=range]{width:100%;accent-color:#5ad1ff;height:18px;cursor:pointer}
   #ghCtrl .pv{background:#0e1730;border-radius:5px;padding:4px 8px;color:#8fe6c8;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ghLib{position:absolute;top:52px;right:12px;z-index:10;width:260px;background:#111a30;border:1px solid #33406a;border-radius:10px;
+    box-shadow:0 10px 30px rgba(0,0,0,.55);font:12px system-ui;color:#dbe6ff;padding:8px;max-height:60vh;overflow-y:auto}
+  #ghLib .hd{font-weight:700;font-size:12.5px;margin:2px 2px 8px}
+  #ghLib .empty{color:#8fa4d4;padding:4px 2px 8px}
+  #ghLib .row{display:flex;gap:5px;margin-bottom:5px}
+  #ghLib .row .ld{flex:1;text-align:left;background:#182238;color:#cfe0ff;border:1px solid #2a3a5c;border-radius:6px;padding:6px 8px;cursor:pointer}
+  #ghLib .row .ld:hover{background:#22304e}
+  #ghLib .row .ld span{float:right;color:#7f95c8;font-size:10.5px}
+  #ghLib .row .del{width:26px;background:#2a1b22;color:#ff9aa5;border:1px solid #5a2a38;border-radius:6px;cursor:pointer}
+  #ghLib .close{display:block;width:100%;margin-top:4px;background:#22314e;color:#dbe6ff;border:1px solid #34477a;border-radius:6px;padding:5px;cursor:pointer}
   `;
   function el(t, a, html) { const e = document.createElement(t); if (a) for (const k in a) e.setAttribute(k, a[k]); if (html != null) e.innerHTML = html; return e; }
   function build() {
@@ -550,9 +639,11 @@
     top.appendChild(el('b', null, '◇ 파라메트릭 노드 에디터'));
     const bBake = el('button', { class: 'pri' }, '✔ 베이크(확정)'); bBake.addEventListener('click', () => { bake(); });
     const bClear = el('button', null, '프리뷰 지우기'); bClear.addEventListener('click', () => { clearPreview(); lastPreviewCount = 0; B().refresh(); render(); }); // 재생성 없이 프리뷰만 제거 (다음 편집 시 복귀)
-    const bReset = el('button', null, '그래프 초기화'); bReset.addEventListener('click', () => { if (confirm('노드 그래프를 모두 지울까요?')) { graph = { nodes: [], wires: [], seq: 1 }; apply(); } });
+    const bReset = el('button', null, '그래프 초기화'); bReset.addEventListener('click', () => { if (confirm('노드 그래프를 모두 지울까요? (Ctrl+Z로 복구 가능)')) { pushGraphUndo(); graph = { nodes: [], wires: [], seq: 1 }; ui.sel.clear(); apply(); } });
+    const bSave = el('button', null, '💾 저장'); bSave.setAttribute('title', 'Ctrl+S — 노드 로직을 이름으로 저장'); bSave.addEventListener('click', saveLogic);
+    const bLoad = el('button', null, '📂 불러오기'); bLoad.addEventListener('click', loadLogicUI);
     const bClose = el('button', null, '✕ 닫기'); bClose.addEventListener('click', toggle);
-    top.appendChild(bBake); top.appendChild(bClear); top.appendChild(bReset); top.appendChild(bClose);
+    top.appendChild(bBake); top.appendChild(bClear); top.appendChild(bReset); top.appendChild(bSave); top.appendChild(bLoad); top.appendChild(bClose);
     ov.appendChild(top);
     const wrap = el('div', { id: 'ghWrap' });
     const pal = el('div', { id: 'ghPal' });
@@ -560,7 +651,7 @@
       pal.appendChild(el('div', { class: 'grp' }, cat));
       for (const type in DEFS) if (DEFS[type].cat === cat) {
         const b = el('button', null, DEFS[type].title);
-        b.addEventListener('click', () => { const g = G(cv.width / 2, cv.height / 2); addNode(type, g[0] - NW / 2, g[1] - 20); apply(); });
+        b.addEventListener('click', () => { pushGraphUndo(); const g = G(cv.width / 2, cv.height / 2); addNode(type, g[0] - NW / 2, g[1] - 20); apply(); });
         pal.appendChild(b);
       }
     }
@@ -606,6 +697,7 @@
         lb.appendChild(valEl);
         row.appendChild(lb);
         const inp = el('input', { type: 'range', min: n.params.min, max: n.params.max, step: n.params.step || 1, value: n.params.v });
+        inp.addEventListener('pointerdown', () => pushGraphUndo()); // 드래그 1회 = undo 1단계
         inp.addEventListener('input', () => { const nn = nodeOf(n.id); if (!nn) return; nn.params.v = +inp.value; valEl.textContent = fmt(nn.params.v); apply(); });
         row.appendChild(inp);
         ctrlBody.appendChild(row);
@@ -691,6 +783,7 @@
       if (list.length > 60) return { error: '노드는 최대 60개까지 가능합니다.' };
       const r = specToGraph(list);
       if (!r.graph.nodes.length) return { error: '유효한 노드가 없습니다.', errors: r.errors };
+      if (graph.nodes.length) pushGraphUndo(); // AI 교체도 Ctrl+Z로 복구 가능
       graph = r.graph;
       ui.view = { x: 80, y: 120, s: 1 };
       ui.sel.clear();
