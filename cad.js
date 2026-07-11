@@ -202,16 +202,17 @@ function ensureLayer(name, color) {
   if (!l) { l = { name, color: color || '#ffffff', visible: true }; state.layers.push(l); }
   return l;
 }
-// 화이트 모드에서 밝은 잉크(흰색 등)는 안 보이므로 어둡게 매핑 (DXF 저장에는 영향 없음 — 원본 색 별도 사용)
+// 선택한 색 = 그려지는 색 (WYSIWYG). 배경과 겹쳐 아예 안 보이는 극단만 CAD 관례대로 자동 반전:
+// 화이트 테마의 거의 흰색(L>=0.93) → 어두운 잉크, 다크 테마의 거의 검정(L<=0.06) → 밝은 잉크.
+// 그 외 모든 색(밝은 노랑·하늘색 포함)은 변형 없이 그대로 그린다. (DXF 저장은 항상 원본 색)
 function themedInk(c) {
-  if (!document.documentElement.classList.contains('light')) return c;
   if (!/^#[0-9a-fA-F]{6}$/.test(c)) return c;
   const r = parseInt(c.slice(1, 3), 16) / 255, g = parseInt(c.slice(3, 5), 16) / 255, b = parseInt(c.slice(5, 7), 16) / 255;
   const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  if (L < 0.8) return c;
-  if (c.toLowerCase() === '#ffffff') return '#1a1d29';
-  const d = (v) => Math.round(v * 255 * 0.45).toString(16).padStart(2, '0');
-  return '#' + d(r) + d(g) + d(b);
+  const light = document.documentElement.classList.contains('light');
+  if (light && L >= 0.93) return '#1a1d29';
+  if (!light && L <= 0.06) return '#e6e9f2';
+  return c;
 }
 function entityColor(e) {
   const raw = e.color || ((getLayer(e.layer) || {}).color) || '#ffffff';
@@ -6774,6 +6775,54 @@ document.querySelectorAll('.tool').forEach(el =>
     setTool(t); if (t !== 'select') lastCommand = t;
   }));
 
+// ── 레이어 색상 선택 팝오버: 고정 프리셋 + 최근 사용 5색 + 팔레트(네이티브 컬러 픽커) ──
+const PRESET_COLORS = ['#ff0000', '#ff7f00', '#ffff00', '#00ff00', '#00ffff', '#0000ff', '#ff00ff', '#ffffff', '#808080', '#000000'];
+const RECENT_COLOR_KEY = 'webcad_recent_colors';
+function readRecentColors() {
+  try { const a = JSON.parse(localStorage.getItem(RECENT_COLOR_KEY) || '[]'); return Array.isArray(a) ? a.filter(c => /^#[0-9a-fA-F]{6}$/.test(c)) : []; } catch (e) { return []; }
+}
+function pushRecentColor(c) {
+  c = rgbHex(c).toLowerCase();
+  const a = readRecentColors().filter(x => x.toLowerCase() !== c);
+  a.unshift(c);
+  try { localStorage.setItem(RECENT_COLOR_KEY, JSON.stringify(a.slice(0, 5))); } catch (e) { }
+}
+function closeColorPop() {
+  const p = document.getElementById('colorPop');
+  if (p) { p.remove(); document.removeEventListener('pointerdown', colorPopOutside, true); }
+}
+function colorPopOutside(e) {
+  const p = document.getElementById('colorPop');
+  if (p && !p.contains(e.target)) closeColorPop();
+}
+function openColorPop(anchor, current, onPick) {
+  closeColorPop();
+  const cur = rgbHex(current).toLowerCase();
+  const pop = document.createElement('div');
+  pop.id = 'colorPop';
+  const chip = (c) => `<span class="cp${c.toLowerCase() === cur ? ' on' : ''}" data-c="${c}" title="${c}" style="background:${c}"></span>`;
+  const rec = readRecentColors();
+  pop.innerHTML =
+    `<div class="cpTtl">기본 색</div><div class="cpRow">${PRESET_COLORS.map(chip).join('')}</div>` +
+    (rec.length ? `<div class="cpTtl">최근 사용</div><div class="cpRow">${rec.map(chip).join('')}</div>` : '') +
+    `<button class="cpPal" type="button">🎨 팔레트에서 선택…</button>`;
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(window.innerWidth - pop.offsetWidth - 8, r.left)) + 'px';
+  pop.style.top = Math.min(window.innerHeight - pop.offsetHeight - 8, r.bottom + 6) + 'px';
+  pop.querySelectorAll('.cp').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation(); onPick(el.dataset.c); closeColorPop();
+  }));
+  pop.querySelector('.cpPal').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const inp = document.createElement('input'); inp.type = 'color'; inp.value = cur;
+    inp.addEventListener('input', () => onPick(inp.value));
+    inp.addEventListener('change', () => { pushRecentColor(inp.value); closeColorPop(); });
+    inp.click();
+  });
+  setTimeout(() => document.addEventListener('pointerdown', colorPopOutside, true), 0);
+}
+
 // 레이어 목록 렌더
 function renderLayers() {
   const list = document.getElementById('layerList');
@@ -6809,9 +6858,10 @@ function renderLayers() {
     });
     div.querySelector('.sw').addEventListener('click', (e) => {
       e.stopPropagation();
-      const inp = document.createElement('input'); inp.type = 'color'; inp.value = rgbHex(l.color);
-      inp.addEventListener('input', () => { l.color = inp.value; renderLayers(); draw(); });
-      inp.click();
+      openColorPop(e.currentTarget, l.color, (c) => {
+        l.color = c; renderLayers(); draw();
+        if (typeof v3 !== 'undefined' && v3 && document.getElementById('bim3d') && document.getElementById('bim3d').style.display !== 'none') { v3.solids = bimSolids(); render3D(); }
+      });
     });
     div.querySelector('.eye').addEventListener('click', (e) => {
       e.stopPropagation(); l.visible = !l.visible; renderLayers(); draw();
@@ -8730,6 +8780,8 @@ window.__CADTEST__ = {
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
+  // 색상 (WYSIWYG 잉크 + 팝오버)
+  themedInk, entityColor, readRecentColors, pushRecentColor, openColorPop, closeColorPop, PRESET_COLORS,
 };
 
 // ============================================================
