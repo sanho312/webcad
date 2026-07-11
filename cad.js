@@ -94,9 +94,11 @@ let otrackAlign = null;    // 'x' | 'y' | 'xy' — 추적 정렬 활성
 
 // ---------- 실행취소 스택 ----------
 const undoStack = [], redoStack = [];
+// 노드 에디터 라이브 프리뷰(_gh) 개체는 영구 저장·실행취소 대상에서 제외 (베이크해야 진짜 개체가 됨)
+function liveEnts() { return state.entities.filter(e => !e._gh); }
 function snapshot() {
   return JSON.stringify({
-    entities: state.entities, layers: state.layers,
+    entities: liveEnts(), layers: state.layers,
     currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks,
   });
 }
@@ -7775,7 +7777,7 @@ async function shareDecode(enc) {
   return new TextDecoder().decode(await new Response(stream).arrayBuffer());
 }
 function drawingPayload() {
-  return JSON.stringify({ v: 1, entities: state.entities, layers: state.layers, currentLayer: state.currentLayer, blocks: state.blocks, nextId: state.nextId, view: state.view, fileName: currentFileName });
+  return JSON.stringify({ v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer, blocks: state.blocks, nextId: state.nextId, view: state.view, fileName: currentFileName });
 }
 async function shareLink() {
   if (!state.entities.length) { logLine('  공유할 도형이 없습니다.', 'warn'); return; }
@@ -8520,7 +8522,7 @@ function updateDimHint() {
 let docs = [], curDoc = 0;
 function captureDoc() {
   return {
-    entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
+    entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer,
     nextId: state.nextId, blocks: state.blocks, view: { ...state.view }, views: state.views,
     levels: state.levels, curLv: state.curLv, ghostLv: state.ghostLv,
     fileName: currentFileName, fileLoc: currentFileLoc, fileHandle,
@@ -8750,7 +8752,7 @@ window.WEBCAD_API = {
   // 현재 도면 스냅샷 (클라우드 저장용)
   getDoc: () => ({
     name: currentFileName,
-    data: { v: 1, entities: state.entities, layers: state.layers, currentLayer: state.currentLayer,
+    data: { v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer,
             blocks: state.blocks, nextId: state.nextId, view: state.view, views: state.views,
             levels: state.levels, curLv: state.curLv },
   }),
