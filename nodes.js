@@ -282,7 +282,7 @@
 
   // ---------- UI ----------
   const NW = 168, TITLE_H = 24, ROW = 22, PORT_R = 5;
-  const ui = { open: false, view: { x: 0, y: 0, s: 1 }, drag: null, hits: null };
+  const ui = { open: false, view: { x: 0, y: 0, s: 1 }, drag: null, hits: null, sel: new Set() }; // sel = 선택된 노드 (GH 녹색 하이라이트)
   let ov, cv, ctx, statEl;
   function nodeH(n) { const def = DEFS[n.type]; const rows = Math.max(def.ins.length, def.outs.length) + (def.slider ? 1 : 0) + (def.panel ? 1 : 0) + ((def.textK || def.capture) ? 1 : 0); return TITLE_H + rows * ROW + 8; }
   const S = (x, y) => [x * ui.view.s + ui.view.x, y * ui.view.s + ui.view.y];
@@ -324,7 +324,9 @@
     for (const n of graph.nodes) {
       const def = DEFS[n.type], p = S(n.x, n.y), w = NW * ui.view.s, h = nodeH(n) * ui.view.s;
       hits.nodes.push({ n, rect: [p[0], p[1], w, h] });
-      ctx.fillStyle = n._err ? '#3a1e26' : '#182238'; ctx.strokeStyle = '#31456e'; ctx.lineWidth = 1.5 * dpr;
+      const isSel = ui.sel.has(n.id); // GH: 선택 = 녹색
+      ctx.fillStyle = n._err ? '#3a1e26' : (isSel ? '#1d3a2b' : '#182238');
+      ctx.strokeStyle = isSel ? '#7ee2a8' : '#31456e'; ctx.lineWidth = (isSel ? 2.4 : 1.5) * dpr;
       roundRect(p[0], p[1], w, h, 7 * ui.view.s); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#22314e'; roundRectTop(p[0], p[1], w, TITLE_H * ui.view.s, 7 * ui.view.s); ctx.fill();
       ctx.fillStyle = '#dbe6ff'; ctx.font = (13 * ui.view.s) + 'px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
@@ -382,8 +384,15 @@
         ctx.fillText(txt, p[0] + w / 2, ty);
       }
     }
+    // 박스 선택 마퀴 (GH 스타일)
+    if (ui.drag && ui.drag.mode === 'box' && ui.drag.moved > 3) {
+      const d = ui.drag, bx = Math.min(d.x0, d.cur[0]), by = Math.min(d.y0, d.cur[1]);
+      const bw = Math.abs(d.cur[0] - d.x0), bh = Math.abs(d.cur[1] - d.y0);
+      ctx.fillStyle = 'rgba(126,226,168,.08)'; ctx.strokeStyle = 'rgba(126,226,168,.85)'; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([5, 4]);
+      ctx.fillRect(bx, by, bw, bh); ctx.strokeRect(bx, by, bw, bh); ctx.setLineDash([]);
+    }
     ui.hits = hits;
-    if (statEl) statEl.textContent = '노드 ' + graph.nodes.length + ' · 프리뷰 개체 ' + lastPreviewCount;
+    if (statEl) statEl.textContent = '노드 ' + graph.nodes.length + (ui.sel.size ? ' · 선택 ' + ui.sel.size + '개 (Del=삭제)' : '') + ' · 프리뷰 개체 ' + lastPreviewCount + ' · 좌드래그=선택 · 우드래그=이동';
   }
   function panelText(id) { const outs = window.__GH_LASTEVAL__ || {}; const v = outs[id] && outs[id][0]; if (v == null) return '—'; if (Array.isArray(v)) return '리스트[' + v.length + ']'; if (v.gh) return v.gh; return fmt(v); }
   function drawPort(sp, filled) { ctx.beginPath(); ctx.arc(sp[0], sp[1], PORT_R * ui.view.s, 0, Math.PI * 2); ctx.fillStyle = filled ? '#5ad1ff' : '#26365a'; ctx.fill(); ctx.strokeStyle = '#1a2740'; ctx.lineWidth = 1; ctx.stroke(); }
@@ -408,20 +417,31 @@
       for (const v of H.vals) if (inRect(mx, my, v.rect)) { editVal(v.node, v.key); return; }
       // 슬라이더
       for (const s of H.sliders) if (inRect(mx, my, s.rect, 10)) { ui.drag = { mode: 'slider', node: s.node, rect: s.rect }; sliderSet(s.node, mx, s.rect); return; }
-      // 노드 이동
-      for (let i = H.nodes.length - 1; i >= 0; i--) { const nd = H.nodes[i]; if (inRect(mx, my, nd.rect)) { ui.drag = { mode: 'node', node: nd.n.id, ox: mx, oy: my, nx: nd.n.x, ny: nd.n.y }; return; } }
+      // 노드 클릭 (GH: 클릭=단일 선택, Shift=추가/토글, Ctrl=선택 해제, 드래그=선택된 노드 전체 이동)
+      for (let i = H.nodes.length - 1; i >= 0; i--) {
+        const nd = H.nodes[i];
+        if (inRect(mx, my, nd.rect)) {
+          const id = nd.n.id;
+          if (e.ctrlKey || e.metaKey) { ui.sel.delete(id); render(); return; }
+          if (e.shiftKey) { if (ui.sel.has(id)) ui.sel.delete(id); else ui.sel.add(id); render(); return; }
+          if (!ui.sel.has(id)) { ui.sel.clear(); ui.sel.add(id); }
+          ui.drag = { mode: 'node', ox: mx, oy: my, items: [...ui.sel].map(sid => { const n2 = nodeOf(sid); return n2 && { id: sid, nx: n2.x, ny: n2.y }; }).filter(Boolean) };
+          render(); return;
+        }
+      }
       // 와이어 삭제
       for (const wh of H.wires) if (Math.hypot(mx - wh.mid[0], my - wh.mid[1]) < 12 * (devicePixelRatio || 1)) { graph.wires = graph.wires.filter(w => w !== wh.w); apply(); return; }
-      // 빈 곳 → 팬
-      ui.drag = { mode: 'pan', sx: mx, sy: my, vx: ui.view.x, vy: ui.view.y };
+      // 빈 곳 좌드래그 = 박스 선택 (GH — 화면 이동은 우클릭/휠클릭 드래그)
+      ui.drag = { mode: 'box', x0: mx, y0: my, cur: [mx, my], shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, moved: 0 };
     });
     cv.addEventListener('pointermove', (e) => {
       const mx = e.offsetX * (devicePixelRatio || 1), my = e.offsetY * (devicePixelRatio || 1);
       if (!ui.drag) return;
       const d = ui.drag;
       if (d.mode === 'pan') { ui.view.x = d.vx + (mx - d.sx); ui.view.y = d.vy + (my - d.sy); render(); }
-      else if (d.mode === 'node') { const n = nodeOf(d.node); n.x = d.nx + (mx - d.ox) / ui.view.s; n.y = d.ny + (my - d.oy) / ui.view.s; render(); }
+      else if (d.mode === 'node') { for (const it of d.items) { const n = nodeOf(it.id); if (n) { n.x = it.nx + (mx - d.ox) / ui.view.s; n.y = it.ny + (my - d.oy) / ui.view.s; } } render(); }
       else if (d.mode === 'wire') { d.cur = [mx, my]; render(); }
+      else if (d.mode === 'box') { d.cur = [mx, my]; d.moved = Math.max(d.moved, Math.abs(mx - d.x0) + Math.abs(my - d.y0)); render(); }
       else if (d.mode === 'slider') sliderSet(d.node, mx, d.rect);
     });
     cv.addEventListener('pointerup', (e) => {
@@ -430,15 +450,41 @@
       if (d && d.mode === 'wire' && ui.hits) {
         for (const p of ui.hits.ports) if (p.io === 'in' && Math.hypot(mx - p.x, my - p.y) < 13 * (devicePixelRatio || 1)) { connect(d.fromNode, d.fromIdx, p.node, p.key); apply(); return; }
       }
+      if (d && d.mode === 'box') { // 박스 선택 확정 (GH: 걸친 노드 모두 선택, Shift=추가, Ctrl=제거)
+        if (d.moved < 4) { if (!d.shift && !d.ctrl) ui.sel.clear(); } // 빈 곳 클릭 = 선택 해제
+        else {
+          const g0 = G(Math.min(d.x0, d.cur[0]), Math.min(d.y0, d.cur[1]));
+          const g1 = G(Math.max(d.x0, d.cur[0]), Math.max(d.y0, d.cur[1]));
+          const hit = graph.nodes.filter(n => n.x < g1[0] && n.x + NW > g0[0] && n.y < g1[1] && n.y + nodeH(n) > g0[1]).map(n => n.id);
+          if (d.ctrl) hit.forEach(id => ui.sel.delete(id));
+          else { if (!d.shift) ui.sel.clear(); hit.forEach(id => ui.sel.add(id)); }
+        }
+      }
       render();
     });
     cv.addEventListener('contextmenu', e => e.preventDefault());
     cv.addEventListener('wheel', (e) => {
       e.preventDefault(); const mx = e.offsetX * (devicePixelRatio || 1), my = e.offsetY * (devicePixelRatio || 1);
-      const gp = G(mx, my), k = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const gp = G(mx, my);
+      // 델타 크기에 비례한 부드러운 줌 (고해상도 휠·트랙패드의 연속 이벤트 과잉 줌 방지, 이벤트당 최대 ±8%)
+      let k = Math.pow(1.0008, -e.deltaY);
+      k = Math.max(0.92, Math.min(1.08, k));
       ui.view.s = Math.max(0.3, Math.min(2.5, ui.view.s * k));
       const sp = S.apply(null, gp); ui.view.x += mx - sp[0]; ui.view.y += my - sp[1]; render();
     }, { passive: false });
+    // 키보드 편집 (GH: Delete=선택 삭제, Ctrl+A=전체 선택, Esc=선택 해제)
+    window.addEventListener('keydown', (e) => {
+      if (!ui.open) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (ui.sel.size) { e.preventDefault(); [...ui.sel].forEach(delNode); ui.sel.clear(); apply(); }
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault(); ui.sel = new Set(graph.nodes.map(n => n.id)); render();
+      } else if (e.key === 'Escape') {
+        if (ui.sel.size) { ui.sel.clear(); render(); }
+      }
+    });
   }
   function sliderSet(id, mx, rect) { const n = nodeOf(id); const frac = Math.max(0, Math.min(1, (mx - rect[0]) / rect[2])); let v = n.params.min + frac * (n.params.max - n.params.min); const st = n.params.step || 1; v = Math.round(v / st) * st; n.params.v = +v.toFixed(4); apply(); }
   function editVal(id, key) {
@@ -647,6 +693,7 @@
       if (!r.graph.nodes.length) return { error: '유효한 노드가 없습니다.', errors: r.errors };
       graph = r.graph;
       ui.view = { x: 80, y: 120, s: 1 };
+      ui.sel.clear();
       ctrlHidden = false; ctrlSig = ''; // 사용자용 컨트롤 패널 표시 (노드 에디터는 열지 않음 — 고급 사용자만 ◇로)
       if (opts && opts.openEditor && !ui.open) toggle(); else { apply(); if (ui.open) render(); }
       const sliders = graph.nodes.filter(n => n.type === 'slider').map(n => n.label || '슬라이더');
@@ -668,7 +715,7 @@
       previewEntities: lastPreviewCount,
     }),
     bake,
-    clearGraph: () => { graph = { nodes: [], wires: [], seq: 1 }; clearPreview(); lastPreviewCount = 0; ctrlSig = ''; B().refresh(); if (ui.open) render(); updateCtrl(); return { cleared: true }; },
+    clearGraph: () => { graph = { nodes: [], wires: [], seq: 1 }; clearPreview(); lastPreviewCount = 0; ctrlSig = ''; ui.sel.clear(); B().refresh(); if (ui.open) render(); updateCtrl(); return { cleared: true }; },
     open: () => { if (!ui.open) toggle(); },
   };
 
