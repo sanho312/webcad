@@ -44,6 +44,98 @@
     if (g.gh === 'solid') { const o = Object.assign({}, g); o.ent = xformGeo(g.ent, fn, dz); o.bim = Object.assign({}, g.bim, { base: (g.bim.base || 0) + dz }); return o; }
     return null;
   }
+  // ---------- 커브 공통 유틸 (분할·오프셋·투영 — GH Divide/Offset 대응) ----------
+  function crvPts(g) { // 커브 → 정점 배열 (원은 48각 근사)
+    if (!g || g.gh !== 'crv') return null;
+    if (g.t === 'LINE') return { pts: [[g.x1, g.y1], [g.x2, g.y2]], closed: false };
+    if (g.t === 'PL') return { pts: g.points.slice(), closed: !!g.closed };
+    if (g.t === 'CIR') { const p = []; for (let i = 0; i < 48; i++) { const a = i / 48 * 2 * Math.PI; p.push([g.cx + g.r * Math.cos(a), g.cy + g.r * Math.sin(a)]); } return { pts: p, closed: true }; }
+    return null;
+  }
+  function divideCrv(g, n) { // n등분 → {pts:[mkPt], tan:[접선각 deg]} — 열린 커브는 양끝 포함(n+1점), 닫힌 커브는 n점 (GH 규약)
+    const c = crvPts(g); if (!c || c.pts.length < 2) return { pts: [], tan: [] };
+    const P = c.pts, m = c.closed ? P.length : P.length - 1, segs = [];
+    let total = 0;
+    for (let i = 0; i < m; i++) { const a = P[i], b = P[(i + 1) % P.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]); segs.push({ a, b, L }); total += L; }
+    if (total < 1e-9) return { pts: [], tan: [] };
+    const cnt = Math.max(1, Math.min(1000, Math.round(n) || 1));
+    const N = c.closed ? cnt : cnt + 1, outP = [], outT = [];
+    for (let i = 0; i < N; i++) {
+      let d = total * (i / cnt); if (d > total) d = total;
+      let acc = 0, s = segs[segs.length - 1], t = 1;
+      for (const sg of segs) { if (d <= acc + sg.L + 1e-9) { s = sg; t = sg.L > 1e-9 ? (d - acc) / sg.L : 0; break; } acc += sg.L; }
+      outP.push(mkPt(s.a[0] + (s.b[0] - s.a[0]) * t, s.a[1] + (s.b[1] - s.a[1]) * t, g.z || 0));
+      outT.push(Math.atan2(s.b[1] - s.a[1], s.b[0] - s.a[0]) * 180 / Math.PI);
+    }
+    return { pts: outP, tan: outT };
+  }
+  function lineX(a, b, c, d) { // 무한 직선 교차
+    const d1x = b[0] - a[0], d1y = b[1] - a[1], d2x = d[0] - c[0], d2y = d[1] - c[1];
+    const den = d1x * d2y - d1y * d2x; if (Math.abs(den) < 1e-9) return null;
+    const t = ((c[0] - a[0]) * d2y - (c[1] - a[1]) * d2x) / den;
+    return [a[0] + d1x * t, a[1] + d1y * t];
+  }
+  function offsetPoly(pts, closed, d) { // 미터 오프셋 (d+ = 진행방향 오른쪽)
+    const n = pts.length, m = closed ? n : n - 1, segs = [];
+    for (let i = 0; i < m; i++) {
+      const a = pts[i], b = pts[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+      const nx = dy / L * d, ny = -dx / L * d;
+      segs.push({ a: [a[0] + nx, a[1] + ny], b: [b[0] + nx, b[1] + ny] });
+    }
+    const out = [];
+    const K = closed ? m : m + 1;
+    for (let i = 0; i < K; i++) {
+      if (!closed && i === 0) { out.push(segs[0].a); continue; }
+      if (!closed && i === m) { out.push(segs[m - 1].b); continue; }
+      const s1 = segs[(i - 1 + m) % m], s2 = segs[i % m];
+      out.push(lineX(s1.a, s1.b, s2.a, s2.b) || s2.a.slice());
+    }
+    return out;
+  }
+  function projWidth(c, dirRad) { // 바람 진행방향에 수직인 투영 폭(mm)
+    const px = -Math.sin(dirRad), py = Math.cos(dirRad);
+    const cp = crvPts(c); if (!cp) return 0;
+    let mn = Infinity, mx = -Infinity;
+    for (const p of cp.pts) { const s = p[0] * px + p[1] * py; mn = Math.min(mn, s); mx = Math.max(mx, s); }
+    return Math.max(0, mx - mn);
+  }
+  function solidWallArea(s) { // 외피 면적(㎡) = 둘레길이 × 높이
+    const c = s.ent, h = (s.bim.h || 0) / 1000;
+    const cp = crvPts(c); if (!cp || h <= 0) return 0;
+    const P = cp.pts, m = cp.closed ? P.length : P.length - 1;
+    let len = 0;
+    for (let i = 0; i < m; i++) { const a = P[i], b = P[(i + 1) % P.length]; len += Math.hypot(b[0] - a[0], b[1] - a[1]); }
+    return len / 1000 * h;
+  }
+  function heatColor(t) { // 파랑(낮음)→빨강(높음)
+    t = Math.max(0, Math.min(1, t));
+    const a = [58, 123, 213], b = [255, 69, 58];
+    return '#' + a.map((v, i) => Math.round(v + (b[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  }
+  const rng = seed => { let s = (seed >>> 0) || 1; return () => { s |= 0; s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; };
+  function compileExpr(src) { // 안전한 수식 컴파일 (x,y,z + Math 화이트리스트)
+    src = String(src || '').slice(0, 200);
+    if (!/^[-+*/%^(),.\s0-9a-zA-Z_<>=?:!&|]*$/.test(src)) return null;
+    const ids = src.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
+    const allow = new Set(['x', 'y', 'z', 'abs', 'min', 'max', 'sqrt', 'pow', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'floor', 'ceil', 'round', 'exp', 'log', 'pi', 'PI']);
+    for (const id of ids) if (!allow.has(id)) return null;
+    const body = src.replace(/\^/g, '**')
+      .replace(/\b(abs|min|max|sqrt|pow|sin|cos|tan|asin|acos|atan|atan2|floor|ceil|round|exp|log)\b/g, 'Math.$1')
+      .replace(/\b(pi|PI)\b/g, 'Math.PI');
+    try { return new Function('x', 'y', 'z', '"use strict";return (' + body + ');'); } catch (e) { return null; }
+  }
+  function entToGeo(e) { // 도면 개체 → 그래프 지오메트리 (geoIn용)
+    const z = e.zo || 0;
+    if (e.type === 'LINE') return { gh: 'crv', t: 'LINE', x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, z };
+    if (e.type === 'LWPOLYLINE') return { gh: 'crv', t: 'PL', closed: !!e.closed, points: e.points.map(p => [p[0], p[1]]), z };
+    if (e.type === 'CIRCLE') return { gh: 'crv', t: 'CIR', cx: e.cx, cy: e.cy, r: e.r, z };
+    if (e.type === 'ARC') {
+      const pts = [], n = 24, a0 = e.startAngle, sw = ((e.endAngle - e.startAngle) % 360 + 360) % 360 || 360;
+      for (let i = 0; i <= n; i++) { const a = (a0 + sw * i / n) * Math.PI / 180; pts.push([e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]); }
+      return { gh: 'crv', t: 'PL', closed: false, points: pts, z };
+    }
+    return null;
+  }
 
   // ---------- 노드 정의 ----------
   // ins: {k, label, kind:'num'|'geo', def}  ·  outs:[label]  ·  ev(I, params, node) -> [출력...]
@@ -58,10 +150,29 @@
     move: { title: '이동', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'dx', kind: 'num', def: 1000 }, { k: 'dy', kind: 'num', def: 0 }, { k: 'dz', kind: 'num', def: 0 }], outs: ['결과'], ev: (I) => [mapGeo(I.geo, g => xformGeo(g, (x, y) => [x + num(I.dx), y + num(I.dy)], num(I.dz)))] },
     rotate: { title: '회전', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'cx', kind: 'num', def: 0 }, { k: 'cy', kind: 'num', def: 0 }, { k: 'deg', kind: 'num', def: 30 }], outs: ['결과'], ev: (I) => { const a = num(I.deg) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a), cx = num(I.cx), cy = num(I.cy); return [mapGeo(I.geo, g => xformGeo(g, (x, y) => [cx + (x - cx) * cs - (y - cy) * sn, cy + (x - cx) * sn + (y - cy) * cs], 0))]; } },
     arrayL: { title: '선형 배열', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'count', kind: 'num', def: 5 }, { k: 'dx', kind: 'num', def: 1500 }, { k: 'dy', kind: 'num', def: 0 }, { k: 'dz', kind: 'num', def: 0 }], outs: ['배열'], ev: (I) => { const cnt = Math.max(1, Math.min(500, Math.round(num(I.count)))), out = []; for (const g of asList(I.geo).filter(Boolean)) for (let i = 0; i < cnt; i++) out.push(xformGeo(g, (x, y) => [x + num(I.dx) * i, y + num(I.dy) * i], num(I.dz) * i)); return [out]; } },
-    extrude: { title: '돌출', cat: 'BIM', ins: [{ k: 'geo', kind: 'geo' }, { k: 'h', kind: 'num', def: 2400 }], outs: ['솔리드'], ev: (I) => [mapGeo(I.geo, g => { if (!g || g.gh !== 'crv') return null; const h = Math.max(1, num(I.h)); if (g.t === 'LINE') return { gh: 'solid', ent: g, bim: { kind: 'wall', h, t: 100, base: g.z || 0 } }; return { gh: 'solid', ent: g, bim: { kind: 'column', h, base: g.z || 0 } }; })] },
+    extrude: { title: '돌출', cat: 'BIM', ins: [{ k: 'geo', kind: 'geo' }, { k: 'h', kind: 'num', def: 2400 }], outs: ['솔리드'], ev: (I) => [mapGeo(I.geo, g => { if (!g || g.gh !== 'crv') return null; const h = Math.max(1, num(I.h)); if (g.t === 'LINE' || (g.t === 'PL' && !g.closed)) return { gh: 'solid', ent: g, bim: { kind: 'wall', h, t: 100, base: g.z || 0 } }; return { gh: 'solid', ent: g, bim: { kind: 'column', h, base: g.z || 0 } }; })] },
     panel: { title: '값 보기', cat: '입력', panel: true, ins: [{ k: 'v', kind: 'geo' }], outs: ['v'], ev: (I) => [I.v] },
+    // ---- 데이터 (GH: Range / Random / ReMap / Expression) ----
+    range: { title: '범위분할', cat: '입력', ins: [{ k: 'start', kind: 'num', def: 0 }, { k: 'end', kind: 'num', def: 10000 }, { k: 'count', kind: 'num', def: 10 }], outs: ['수열'], ev: (I) => { const c = Math.max(1, Math.min(1000, Math.round(num(I.count)))), a = num(I.start), b = num(I.end), o = []; for (let i = 0; i <= c; i++) o.push(a + (b - a) * i / c); return [o]; } },
+    rand: { title: '난수', cat: '입력', ins: [{ k: 'count', kind: 'num', def: 10 }, { k: 'min', kind: 'num', def: 0 }, { k: 'max', kind: 'num', def: 1000 }, { k: 'seed', kind: 'num', def: 1 }], outs: ['난수열'], ev: (I) => { const c = Math.max(1, Math.min(1000, Math.round(num(I.count)))), r = rng(Math.round(num(I.seed))), a = num(I.min), b = num(I.max), o = []; for (let i = 0; i < c; i++) o.push(a + (b - a) * r()); return [o]; } },
+    remap: { title: '값 재매핑', cat: '입력', ins: [{ k: 'v', kind: 'num', def: 0 }, { k: 'f0', kind: 'num', def: 0 }, { k: 'f1', kind: 'num', def: 1 }, { k: 't0', kind: 'num', def: 0 }, { k: 't1', kind: 'num', def: 100 }], outs: ['결과'], ev: (I) => [zip([I.v, I.f0, I.f1, I.t0, I.t1], (v, f0, f1, t0, t1) => { const d = (f1 - f0) || 1e-9; return t0 + (v - f0) / d * (t1 - t0); })] },
+    expr: { title: '수식', cat: '입력', textK: 'f', ins: [{ k: 'x', kind: 'num', def: 0 }, { k: 'y', kind: 'num', def: 0 }, { k: 'z', kind: 'num', def: 0 }], params: [{ k: 'f', def: 'x*2' }], outs: ['결과'], ev: (I, P, n) => { if (!n._exprFn || n._exprSrc !== P.f) { n._exprFn = compileExpr(P.f); n._exprSrc = P.f; } const fn = n._exprFn; if (!fn) { n._err = '수식 오류'; return [[]]; } return [zip([I.x, I.y, I.z], (x, y, z) => { const r = fn(num(x), num(y), num(z)); return isFinite(r) ? r : 0; })]; } },
+    geoIn: { title: '도면 참조', cat: '입력', capture: true, ins: [], outs: ['지오메트리'], ev: (I, P, n) => { const S = B().state, out = []; for (const id of (n.sel || [])) { const e = S.entities.find(x => x.id === id && !x._gh); if (!e) continue; const g = entToGeo(e); if (g) out.push(g); } return [out]; } },
+    // ---- 커브 (GH: Polygon / Arc / PolyLine / Divide Curve / Offset) ----
+    polygon: { title: '다각형', cat: '지오메트리', ins: [{ k: 'c', kind: 'geo' }, { k: 'r', kind: 'num', def: 1000 }, { k: 'sides', kind: 'num', def: 6 }], outs: ['다각형'], ev: (I) => [clean(zip([I.c, I.r, I.sides], (c, r, sd) => { if (!c || c.gh !== 'pt') return null; const n2 = Math.max(3, Math.min(64, Math.round(num(sd)))), R = Math.abs(num(r)), pts = []; for (let i = 0; i < n2; i++) { const a = i / n2 * 2 * Math.PI; pts.push([c.x + R * Math.cos(a), c.y + R * Math.sin(a)]); } return { gh: 'crv', t: 'PL', closed: true, points: pts, z: c.z || 0 }; }))] },
+    arc: { title: '호', cat: '지오메트리', ins: [{ k: 'c', kind: 'geo' }, { k: 'r', kind: 'num', def: 1000 }, { k: 'a0', kind: 'num', def: 0 }, { k: 'a1', kind: 'num', def: 90 }], outs: ['호'], ev: (I) => [clean(zip([I.c, I.r, I.a0, I.a1], (c, r, a0, a1) => { if (!c || c.gh !== 'pt') return null; const R = Math.abs(num(r)), sw = ((num(a1) - num(a0)) % 360 + 360) % 360 || 360; const seg = Math.max(8, Math.min(90, Math.round(sw / 5))), pts = []; for (let i = 0; i <= seg; i++) { const a = (num(a0) + sw * i / seg) * Math.PI / 180; pts.push([c.x + R * Math.cos(a), c.y + R * Math.sin(a)]); } return { gh: 'crv', t: 'PL', closed: false, points: pts, z: c.z || 0 }; }))] },
+    plineN: { title: '폴리라인', cat: '지오메트리', ins: [{ k: 'pts', kind: 'geo' }, { k: 'closed', kind: 'num', def: 0 }], outs: ['폴리라인'], ev: (I) => { const ps = asList(I.pts).filter(p => p && p.gh === 'pt'); if (ps.length < 2) return [null]; return [{ gh: 'crv', t: 'PL', closed: num(I.closed) >= 0.5, points: ps.map(p => [p.x, p.y]), z: ps[0].z || 0 }]; } },
+    divide: { title: '커브 분할', cat: '지오메트리', ins: [{ k: 'crv', kind: 'geo' }, { k: 'count', kind: 'num', def: 10 }], outs: ['점들', '접선각'], ev: (I) => { const P = [], T = []; for (const g of asList(I.crv).filter(x => x && x.gh === 'crv')) { const d = divideCrv(g, num(I.count)); P.push.apply(P, d.pts); T.push.apply(T, d.tan); } return [P, T]; } },
+    offsetC: { title: '오프셋', cat: '지오메트리', ins: [{ k: 'crv', kind: 'geo' }, { k: 'd', kind: 'num', def: 200 }], outs: ['결과'], ev: (I) => [mapGeo(I.crv, g => { if (!g || g.gh !== 'crv') return null; const d = num(I.d); if (g.t === 'CIR') return Object.assign({}, g, { r: Math.max(1, g.r + d) }); const c = crvPts(g); if (!c) return null; return { gh: 'crv', t: 'PL', closed: c.closed, points: offsetPoly(c.pts, c.closed, d), z: g.z || 0 }; })] },
+    // ---- 배치 (GH: Polar Array / Orient / 루버 프리셋) ----
+    arrayP: { title: '원형 배열', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'count', kind: 'num', def: 6 }, { k: 'cx', kind: 'num', def: 0 }, { k: 'cy', kind: 'num', def: 0 }, { k: 'sweep', kind: 'num', def: 360 }], outs: ['배열'], ev: (I) => { const cnt = Math.max(1, Math.min(500, Math.round(num(I.count)))), cx = num(I.cx), cy = num(I.cy), sw = num(I.sweep), out = []; for (const g of asList(I.geo).filter(Boolean)) for (let i = 0; i < cnt; i++) { const a = (sw * i / cnt) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a); out.push(xformGeo(g, (x, y) => [cx + (x - cx) * cs - (y - cy) * sn, cy + (x - cx) * sn + (y - cy) * cs], 0)); } return [out]; } },
+    orientPts: { title: '점들에 배치', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'pts', kind: 'geo' }, { k: 'deg', kind: 'num', def: 0 }], outs: ['배열'], ev: (I) => { const geos = asList(I.geo).filter(Boolean), pts = asList(I.pts).filter(p => p && p.gh === 'pt'), degs = asList(I.deg), out = []; for (let i = 0; i < pts.length && out.length < 3000; i++) { const p = pts[i], dg = (Number(degs[i % Math.max(1, degs.length)]) || 0) * Math.PI / 180, cs = Math.cos(dg), sn = Math.sin(dg); for (const g of geos) { if (out.length >= 3000) break; out.push(xformGeo(g, (x, y) => { const rx = x * cs - y * sn, ry = x * sn + y * cs; return [p.x + rx, p.y + ry]; }, p.z || 0)); } } return [out]; } },
+    louver: { title: '루버', cat: '변환', ins: [{ k: 'crv', kind: 'geo' }, { k: 'count', kind: 'num', def: 12 }, { k: 'depth', kind: 'num', def: 400 }, { k: 'deg', kind: 'num', def: 90 }, { k: 'h', kind: 'num', def: 2400 }, { k: 't', kind: 'num', def: 50 }], outs: ['핀 솔리드'], ev: (I) => { const out = []; for (const g of asList(I.crv).filter(x => x && x.gh === 'crv')) { const d = divideCrv(g, num(I.count)); d.pts.forEach((p, i) => { if (out.length >= 1000) return; const a = (d.tan[i] + num(I.deg)) * Math.PI / 180, hx = Math.cos(a) * num(I.depth) / 2, hy = Math.sin(a) * num(I.depth) / 2; out.push({ gh: 'solid', ent: { gh: 'crv', t: 'LINE', x1: p.x - hx, y1: p.y - hy, x2: p.x + hx, y2: p.y + hy, z: g.z || 0 }, bim: { kind: 'wall', h: Math.max(1, num(I.h)), t: Math.max(10, num(I.t)), base: (g.z || 0) } }); }); } return [out]; } },
+    // ---- 분석 (개산 — 예비 설계용) ----
+    thermal: { title: '열관류 분석', cat: '분석', ins: [{ k: 'geo', kind: 'geo' }, { k: 'U', kind: 'num', def: 0.24 }, { k: 'dT', kind: 'num', def: 20 }], outs: ['히트맵', 'Q합계 W', '개별Q W'], ev: (I) => { const sol = asList(I.geo).filter(s => s && s.gh === 'solid'); if (!sol.length) return [[], 0, []]; const U = Math.abs(num(I.U)), dT = num(I.dT); const Qs = sol.map(s => U * solidWallArea(s) * dT); const mx = Math.max.apply(null, Qs.concat([1e-9])); const colored = sol.map((s, i) => Object.assign({}, s, { _color: heatColor(Qs[i] / mx) })); return [colored, Math.round(Qs.reduce((a, b) => a + b, 0)), Qs.map(q => Math.round(q))]; } },
+    wind: { title: '풍압 분석', cat: '분석', ins: [{ k: 'geo', kind: 'geo' }, { k: 'V', kind: 'num', def: 26 }, { k: 'dir', kind: 'num', def: 0 }, { k: 'Cp', kind: 'num', def: 0.8 }], outs: ['색상맵', 'F합계 kN', '개별F N'], ev: (I) => { const sol = asList(I.geo).filter(s => s && s.gh === 'solid'); if (!sol.length) return [[], 0, []]; const V = Math.abs(num(I.V)), q = 0.613 * V * V, dir = num(I.dir) * Math.PI / 180, Cp = num(I.Cp); const Fs = sol.map(s => { const w = projWidth(s.ent, dir) / 1000, A = w * ((s.bim.h || 0) / 1000); return q * Cp * A; }); const mx = Math.max.apply(null, Fs.concat([1e-9])); const colored = sol.map((s, i) => Object.assign({}, s, { _color: heatColor(Fs[i] / mx) })); return [colored, +((Fs.reduce((a, b) => a + b, 0)) / 1000).toFixed(1), Fs.map(f => Math.round(f))]; } },
   };
-  const CATS = ['입력', '지오메트리', '변환', 'BIM'];
+  const CATS = ['입력', '지오메트리', '변환', 'BIM', '분석'];
 
   // ---------- 그래프 모델 ----------
   let graph = { nodes: [], wires: [], seq: 1 };
@@ -128,7 +239,7 @@
     let made = 0;
     for (const id in outs) for (const output of outs[id]) for (const v of asList(output)) { // 노드 출력 → (스칼라|리스트) 2겹 펼침
       if (made >= MAX_PREVIEW) break;
-      if (v && v.gh) { const e = geoToEntity(v); if (e) { e._gh = true; e.color = PREVIEW_COLOR; made++; } }
+      if (v && v.gh) { const e = geoToEntity(v); if (e) { e._gh = true; e.color = v._color || PREVIEW_COLOR; made++; } } // 분석 노드는 _color 히트맵
     }
     lastPreviewCount = made;
     B().refresh();
@@ -148,7 +259,7 @@
   const NW = 168, TITLE_H = 24, ROW = 22, PORT_R = 5;
   const ui = { open: false, view: { x: 0, y: 0, s: 1 }, drag: null, hits: null };
   let ov, cv, ctx, statEl;
-  function nodeH(n) { const def = DEFS[n.type]; const rows = Math.max(def.ins.length, def.outs.length) + (def.slider ? 1 : 0) + (def.panel ? 1 : 0); return TITLE_H + rows * ROW + 8; }
+  function nodeH(n) { const def = DEFS[n.type]; const rows = Math.max(def.ins.length, def.outs.length) + (def.slider ? 1 : 0) + (def.panel ? 1 : 0) + ((def.textK || def.capture) ? 1 : 0); return TITLE_H + rows * ROW + 8; }
   const S = (x, y) => [x * ui.view.s + ui.view.x, y * ui.view.s + ui.view.y];
   const G = (x, y) => [(x - ui.view.x) / ui.view.s, (y - ui.view.y) / ui.view.s];
   function portGraphPos(n, io, idx) {
@@ -226,6 +337,15 @@
         ctx.fillText(fmt(n.params.v), tx + tw / 2, ty - 10 * ui.view.s);
         hits.sliders.push({ node: n.id, rect: [tx, ty - 8 * ui.view.s, tw, 16 * ui.view.s] });
       }
+      // 수식(textK) / 도면 참조(capture) 칩
+      if (def.textK || def.capture) {
+        const ty = p[1] + (TITLE_H + def.ins.length * ROW + ROW / 2) * ui.view.s;
+        const txt = def.capture ? ('선택 ' + ((n.sel || []).length) + '개 · 클릭=가져오기') : ('f = ' + String(n.params[def.textK]));
+        ctx.fillStyle = '#0e1730'; roundRect(p[0] + 8 * ui.view.s, ty - 8 * ui.view.s, w - 16 * ui.view.s, 16 * ui.view.s, 3); ctx.fill();
+        ctx.fillStyle = '#ffd88f'; ctx.textAlign = 'center'; ctx.font = (10 * ui.view.s) + 'px system-ui';
+        ctx.fillText(txt.slice(0, 26), p[0] + w / 2, ty);
+        hits.vals.push({ node: n.id, key: def.capture ? '__cap' : '__t:' + def.textK, rect: [p[0] + 8 * ui.view.s, ty - 8 * ui.view.s, w - 16 * ui.view.s, 16 * ui.view.s] });
+      }
       // 값 보기(panel) / 숫자 노드 값
       if (def.panel || n.type === 'num') {
         const ty = p[1] + (TITLE_H + def.ins.length * ROW + ROW / 2) * ui.view.s;
@@ -298,6 +418,19 @@
   function sliderSet(id, mx, rect) { const n = nodeOf(id); const frac = Math.max(0, Math.min(1, (mx - rect[0]) / rect[2])); let v = n.params.min + frac * (n.params.max - n.params.min); const st = n.params.step || 1; v = Math.round(v / st) * st; n.params.v = +v.toFixed(4); apply(); }
   function editVal(id, key) {
     const n = nodeOf(id);
+    if (key === '__cap') { // 도면 참조: 현재 선택 개체를 다시 가져오기
+      const S2 = B().state;
+      n.sel = [...S2.selection].filter(sid => { const e = S2.entities.find(x => x.id === sid); return e && !e._gh; }).slice(0, 500);
+      B().logLine('  ▷ 노드 [도면 참조]: 선택 개체 ' + n.sel.length + '개를 가져왔습니다', 'info');
+      apply(); return;
+    }
+    if (key.indexOf('__t:') === 0) { // 수식 편집
+      const pk = key.slice(4);
+      const s3 = window.prompt('수식 입력 — 변수 x,y,z · 함수 sin cos tan sqrt abs min max floor round pow exp log · 상수 pi\n예: sin(x/1000)*500 + y', String(n.params[pk]));
+      if (s3 == null) return;
+      n.params[pk] = String(s3).slice(0, 200);
+      delete n._exprFn; apply(); return;
+    }
     const cur = key === '__numv' ? n.params.v : n.inl[key];
     const s2 = window.prompt('값 입력:', String(cur)); if (s2 == null) return;
     const v = parseFloat(s2); if (!isFinite(v)) return;
@@ -385,6 +518,8 @@
       if (!s.id || idMap[s.id]) { errors.push('id 누락/중복: ' + (s.id || '(없음)')); continue; }
       const n = { id: 'n' + (g.seq++), type: s.type, x: 0, y: 0, params: {}, inl: {}, _spec: s };
       (def.params || []).forEach(p => n.params[p.k] = (s.params && okNum(s.params[p.k])) ? s.params[p.k] : p.def);
+      if (def.textK && s.params && typeof s.params[def.textK] === 'string') n.params[def.textK] = String(s.params[def.textK]).slice(0, 200); // 수식 문자열 파라미터
+      if (def.capture && Array.isArray(s.ids)) n.sel = s.ids.filter(v => Number.isFinite(v)).slice(0, 500); // 도면 참조 개체 id
       def.ins.forEach(i => { if (i.kind === 'num') n.inl[i.k] = i.def || 0; });
       idMap[s.id] = n;
       g.nodes.push(n);
@@ -437,7 +572,9 @@
           if (w) inputs[i.k] = w.from.node + (w.from.idx ? ':' + w.from.idx : '');
           else if (i.kind === 'num') inputs[i.k] = n.inl[i.k];
         });
-        return { id: n.id, type: n.type, params: n.params, inputs };
+        const o = { id: n.id, type: n.type, params: n.params, inputs };
+        if (def.capture) o.ids = n.sel || [];
+        return o;
       }),
       previewEntities: lastPreviewCount,
     }),
