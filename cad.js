@@ -7039,21 +7039,23 @@ function zoomFit(robust) {
 //  키보드
 // ============================================================
 window.addEventListener('keydown', (ev) => {
-  if (ev.key === 'F8') { ev.preventDefault(); toggleOrtho(); return; }  // 직교 모드(입력창 포커스 중에도 동작)
-  if (ev.key === 'F3') { ev.preventDefault(); toggleOsnap(); return; }  // 객체 스냅
-  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  const key = typeof ev.key === 'string' ? ev.key : ''; // 일부 브라우저 확장·IME가 key 없는 합성 이벤트를 보냄 — undefined 방어
+  if (key === 'F8') { ev.preventDefault(); toggleOrtho(); return; }  // 직교 모드(입력창 포커스 중에도 동작)
+  if (key === 'F3') { ev.preventDefault(); toggleOsnap(); return; }  // 객체 스냅
+  const ae = document.activeElement;
+  if (ae && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
   // 글자를 치면 곧장 명령창으로 — Space/Enter 없이 즉시 명령 입력 가능
-  if (cmdInputEl && ev.key.length === 1 && ev.key !== ' ' && !ev.ctrlKey && !ev.metaKey && !ev.altKey
+  if (cmdInputEl && key.length === 1 && key !== ' ' && !ev.ctrlKey && !ev.metaKey && !ev.altKey
       && !document.body.classList.contains('authLocked')) {
     cmdInputEl.focus({ preventScroll: true }); return; // 이 키 입력은 그대로 명령창에 들어감
   }
-  if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
-  if (ev.ctrlKey && (ev.key.toLowerCase() === 'y' || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); return; }
-  if (ev.ctrlKey && ev.key.toLowerCase() === 's') { ev.preventDefault(); saveDXF(); return; }
-  if (ev.ctrlKey && ev.key.toLowerCase() === 'a') { ev.preventDefault(); state.entities.forEach(e => { if (onLv(e)) state.selection.add(e.id); }); renderProps(); draw(); return; }
-  if (ev.ctrlKey && ev.key.toLowerCase() === 'c') { ev.preventDefault(); copySelection(); return; }
-  if (ev.ctrlKey && ev.key.toLowerCase() === 'v') { ev.preventDefault(); startPaste(); return; }
-  switch (ev.key) {
+  if (ev.ctrlKey && key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
+  if (ev.ctrlKey && (key.toLowerCase() === 'y' || (ev.shiftKey && key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); return; }
+  if (ev.ctrlKey && key.toLowerCase() === 's') { ev.preventDefault(); saveDXF(); return; }
+  if (ev.ctrlKey && key.toLowerCase() === 'a') { ev.preventDefault(); state.entities.forEach(e => { if (onLv(e)) state.selection.add(e.id); }); renderProps(); draw(); return; }
+  if (ev.ctrlKey && key.toLowerCase() === 'c') { ev.preventDefault(); copySelection(); return; }
+  if (ev.ctrlKey && key.toLowerCase() === 'v') { ev.preventDefault(); startPaste(); return; }
+  switch (key) {
     case 'Escape': if (extrudePend) { extrudePendCancel(); break; } if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); } setTool('select'); state.selection.clear(); renderProps(); draw(); break;
     case 'Enter': if (state.tool === 'pline') finishPolyline(); break;
     case 'Delete': case 'Backspace': deleteSelection(); break;
@@ -7615,7 +7617,7 @@ if (cmdInputEl) {
     if (ev.key === 'F8' || ev.key === 'F3') return;
     // 입력창이 항상 포커스되므로, 앱 전역 단축키를 여기서도 처리
     if (ev.ctrlKey) {
-      const k = ev.key.toLowerCase();
+      const k = (typeof ev.key === 'string' ? ev.key : '').toLowerCase(); // key 없는 합성 이벤트 방어
       if (k === 'z') { ev.preventDefault(); ev.stopPropagation(); undo(); return; }
       if (k === 'y') { ev.preventDefault(); ev.stopPropagation(); redo(); return; }
       if (k === 's') { ev.preventDefault(); ev.stopPropagation(); saveDXF(); return; }

@@ -547,7 +547,7 @@
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const mod = e.ctrlKey || e.metaKey;
-      const k = e.key.toLowerCase();
+      const k = (typeof e.key === 'string' ? e.key : '').toLowerCase(); // key 없는 합성 이벤트 방어
       const stop = () => { e.preventDefault(); e.stopPropagation(); };
       if (e.key === 'Delete' || e.key === 'Backspace') {
         stop();
