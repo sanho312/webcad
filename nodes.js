@@ -22,6 +22,20 @@
     return out;
   }
   const mapGeo = (v, fn) => Array.isArray(v) ? clean(v.map(fn)) : fn(v);
+  function zipGeoNum(geoV, nums, fn) { // GH 데이터 매칭: 지오 리스트 × 숫자 리스트를 인덱스 짝으로 (짧은 쪽 순환) — 개체별 다른 값 적용
+    const geos = asList(geoV).filter(Boolean);
+    if (!geos.length) return null;
+    const lists = nums.map(a => Array.isArray(a) ? a : null);
+    if (!Array.isArray(geoV) && lists.every(l => !l)) return fn(geos[0], nums.map(num)); // 스칼라×스칼라 = 기존 동작
+    let maxLen = geos.length;
+    for (const l of lists) if (l) maxLen = Math.max(maxLen, l.length);
+    const out = [];
+    for (let i = 0; i < maxLen && i < 3000; i++) {
+      const args = nums.map((a, ai) => lists[ai] ? (Number(lists[ai][i % lists[ai].length]) || 0) : num(a));
+      out.push(fn(geos[i % geos.length], args));
+    }
+    return clean(out);
+  }
 
   // ---------- 지오메트리 값 생성/변환 ----------
   const mkPt = (x, y, z) => ({ gh: 'pt', x: +x || 0, y: +y || 0, z: +z || 0 });
@@ -147,10 +161,10 @@
     line: { title: '선', cat: '지오메트리', ins: [{ k: 'a', kind: 'geo' }, { k: 'b', kind: 'geo' }], outs: ['선'], ev: (I) => [clean(zip([I.a, I.b], (a, b) => (a && b && a.gh === 'pt' && b.gh === 'pt') ? mkLine(a, b) : null))] },
     rect: { title: '사각형', cat: '지오메트리', ins: [{ k: 'c', kind: 'geo' }, { k: 'w', kind: 'num', def: 2000 }, { k: 'h', kind: 'num', def: 1000 }], outs: ['사각형'], ev: (I) => [clean(zip([I.c, I.w, I.h], (c, w, h) => (c && c.gh === 'pt') ? mkRect(c, num(w), num(h)) : null))] },
     circle: { title: '원', cat: '지오메트리', ins: [{ k: 'c', kind: 'geo' }, { k: 'r', kind: 'num', def: 500 }], outs: ['원'], ev: (I) => [clean(zip([I.c, I.r], (c, r) => (c && c.gh === 'pt') ? mkCircle(c, num(r)) : null))] },
-    move: { title: '이동', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'dx', kind: 'num', def: 1000 }, { k: 'dy', kind: 'num', def: 0 }, { k: 'dz', kind: 'num', def: 0 }], outs: ['결과'], ev: (I) => [mapGeo(I.geo, g => xformGeo(g, (x, y) => [x + num(I.dx), y + num(I.dy)], num(I.dz)))] },
-    rotate: { title: '회전', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'cx', kind: 'num', def: 0 }, { k: 'cy', kind: 'num', def: 0 }, { k: 'deg', kind: 'num', def: 30 }], outs: ['결과'], ev: (I) => { const a = num(I.deg) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a), cx = num(I.cx), cy = num(I.cy); return [mapGeo(I.geo, g => xformGeo(g, (x, y) => [cx + (x - cx) * cs - (y - cy) * sn, cy + (x - cx) * sn + (y - cy) * cs], 0))]; } },
+    move: { title: '이동', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'dx', kind: 'num', def: 1000 }, { k: 'dy', kind: 'num', def: 0 }, { k: 'dz', kind: 'num', def: 0 }], outs: ['결과'], ev: (I) => [zipGeoNum(I.geo, [I.dx, I.dy, I.dz], (g, a) => xformGeo(g, (x, y) => [x + a[0], y + a[1]], a[2]))] },
+    rotate: { title: '회전', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'cx', kind: 'num', def: 0 }, { k: 'cy', kind: 'num', def: 0 }, { k: 'deg', kind: 'num', def: 30 }], outs: ['결과'], ev: (I) => [zipGeoNum(I.geo, [I.cx, I.cy, I.deg], (g, a) => { const rd = a[2] * Math.PI / 180, cs = Math.cos(rd), sn = Math.sin(rd); return xformGeo(g, (x, y) => [a[0] + (x - a[0]) * cs - (y - a[1]) * sn, a[1] + (x - a[0]) * sn + (y - a[1]) * cs], 0); })] },
     arrayL: { title: '선형 배열', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'count', kind: 'num', def: 5 }, { k: 'dx', kind: 'num', def: 1500 }, { k: 'dy', kind: 'num', def: 0 }, { k: 'dz', kind: 'num', def: 0 }], outs: ['배열'], ev: (I) => { const cnt = Math.max(1, Math.min(500, Math.round(num(I.count)))), out = []; for (const g of asList(I.geo).filter(Boolean)) for (let i = 0; i < cnt; i++) out.push(xformGeo(g, (x, y) => [x + num(I.dx) * i, y + num(I.dy) * i], num(I.dz) * i)); return [out]; } },
-    extrude: { title: '돌출', cat: 'BIM', ins: [{ k: 'geo', kind: 'geo' }, { k: 'h', kind: 'num', def: 2400 }], outs: ['솔리드'], ev: (I) => [mapGeo(I.geo, g => { if (!g || g.gh !== 'crv') return null; const h = Math.max(1, num(I.h)); if (g.t === 'LINE' || (g.t === 'PL' && !g.closed)) return { gh: 'solid', ent: g, bim: { kind: 'wall', h, t: 100, base: g.z || 0 } }; return { gh: 'solid', ent: g, bim: { kind: 'column', h, base: g.z || 0 } }; })] },
+    extrude: { title: '돌출', cat: 'BIM', ins: [{ k: 'geo', kind: 'geo' }, { k: 'h', kind: 'num', def: 2400 }], outs: ['솔리드'], ev: (I) => [zipGeoNum(I.geo, [I.h], (g, a) => { if (!g || g.gh !== 'crv') return null; const h = Math.max(1, a[0]); if (g.t === 'LINE' || (g.t === 'PL' && !g.closed)) return { gh: 'solid', ent: g, bim: { kind: 'wall', h, t: 100, base: g.z || 0 } }; return { gh: 'solid', ent: g, bim: { kind: 'column', h, base: g.z || 0 } }; })] },
     panel: { title: '값 보기', cat: '입력', panel: true, ins: [{ k: 'v', kind: 'geo' }], outs: ['v'], ev: (I) => [I.v] },
     // ---- 데이터 (GH: Range / Random / ReMap / Expression) ----
     range: { title: '범위분할', cat: '입력', ins: [{ k: 'start', kind: 'num', def: 0 }, { k: 'end', kind: 'num', def: 10000 }, { k: 'count', kind: 'num', def: 10 }], outs: ['수열'], ev: (I) => { const c = Math.max(1, Math.min(1000, Math.round(num(I.count)))), a = num(I.start), b = num(I.end), o = []; for (let i = 0; i <= c; i++) o.push(a + (b - a) * i / c); return [o]; } },
@@ -158,6 +172,7 @@
     remap: { title: '값 재매핑', cat: '입력', ins: [{ k: 'v', kind: 'num', def: 0 }, { k: 'f0', kind: 'num', def: 0 }, { k: 'f1', kind: 'num', def: 1 }, { k: 't0', kind: 'num', def: 0 }, { k: 't1', kind: 'num', def: 100 }], outs: ['결과'], ev: (I) => [zip([I.v, I.f0, I.f1, I.t0, I.t1], (v, f0, f1, t0, t1) => { const d = (f1 - f0) || 1e-9; return t0 + (v - f0) / d * (t1 - t0); })] },
     expr: { title: '수식', cat: '입력', textK: 'f', ins: [{ k: 'x', kind: 'num', def: 0 }, { k: 'y', kind: 'num', def: 0 }, { k: 'z', kind: 'num', def: 0 }], params: [{ k: 'f', def: 'x*2' }], outs: ['결과'], ev: (I, P, n) => { if (!n._exprFn || n._exprSrc !== P.f) { n._exprFn = compileExpr(P.f); n._exprSrc = P.f; } const fn = n._exprFn; if (!fn) { n._err = '수식 오류'; return [[]]; } return [zip([I.x, I.y, I.z], (x, y, z) => { const r = fn(num(x), num(y), num(z)); return isFinite(r) ? r : 0; })]; } },
     geoIn: { title: '도면 참조', cat: '입력', capture: true, ins: [], outs: ['지오메트리'], ev: (I, P, n) => { const S = B().state, out = []; for (const id of (n.sel || [])) { const e = S.entities.find(x => x.id === id && !x._gh); if (!e) continue; const g = entToGeo(e); if (g) out.push(g); } return [out]; } },
+    ptGrid: { title: '점 격자', cat: '지오메트리', ins: [{ k: 'nx', kind: 'num', def: 5 }, { k: 'ny', kind: 'num', def: 4 }, { k: 'dx', kind: 'num', def: 2000 }, { k: 'dy', kind: 'num', def: 2000 }], outs: ['점들'], ev: (I) => { const nx = Math.max(1, Math.min(60, Math.round(num(I.nx)))), ny = Math.max(1, Math.min(60, Math.round(num(I.ny)))), sx = num(I.dx), sy = num(I.dy), o = []; for (let j = 0; j < ny && o.length < 2500; j++) for (let i = 0; i < nx && o.length < 2500; i++) o.push(mkPt(i * sx, j * sy, 0)); return [o]; } },
     // ---- 커브 (GH: Polygon / Arc / PolyLine / Divide Curve / Offset) ----
     polygon: { title: '다각형', cat: '지오메트리', ins: [{ k: 'c', kind: 'geo' }, { k: 'r', kind: 'num', def: 1000 }, { k: 'sides', kind: 'num', def: 6 }], outs: ['다각형'], ev: (I) => [clean(zip([I.c, I.r, I.sides], (c, r, sd) => { if (!c || c.gh !== 'pt') return null; const n2 = Math.max(3, Math.min(64, Math.round(num(sd)))), R = Math.abs(num(r)), pts = []; for (let i = 0; i < n2; i++) { const a = i / n2 * 2 * Math.PI; pts.push([c.x + R * Math.cos(a), c.y + R * Math.sin(a)]); } return { gh: 'crv', t: 'PL', closed: true, points: pts, z: c.z || 0 }; }))] },
     arc: { title: '호', cat: '지오메트리', ins: [{ k: 'c', kind: 'geo' }, { k: 'r', kind: 'num', def: 1000 }, { k: 'a0', kind: 'num', def: 0 }, { k: 'a1', kind: 'num', def: 90 }], outs: ['호'], ev: (I) => [clean(zip([I.c, I.r, I.a0, I.a1], (c, r, a0, a1) => { if (!c || c.gh !== 'pt') return null; const R = Math.abs(num(r)), sw = ((num(a1) - num(a0)) % 360 + 360) % 360 || 360; const seg = Math.max(8, Math.min(90, Math.round(sw / 5))), pts = []; for (let i = 0; i <= seg; i++) { const a = (num(a0) + sw * i / seg) * Math.PI / 180; pts.push([c.x + R * Math.cos(a), c.y + R * Math.sin(a)]); } return { gh: 'crv', t: 'PL', closed: false, points: pts, z: c.z || 0 }; }))] },
@@ -237,13 +252,23 @@
     const outs = evalGraph();
     window.__GH_LASTEVAL__ = outs; // 값 보기(panel) 표시용 캐시
     let made = 0;
-    for (const id in outs) for (const output of outs[id]) for (const v of asList(output)) { // 노드 출력 → (스칼라|리스트) 2겹 펼침
-      if (made >= MAX_PREVIEW) break;
-      if (v && v.gh) { const e = geoToEntity(v); if (e) { e._gh = true; e.color = v._color || PREVIEW_COLOR; made++; } } // 분석 노드는 _color 히트맵
+    // GH처럼 '최종 결과'만 프리뷰: 다른 노드(값 보기 제외)의 입력으로 소비된 출력은 중간 산물이므로 생략 (분석 통과 시 이중 표시 방지)
+    const consumed = new Set();
+    for (const w of graph.wires) { const toN = graph.nodes.find(n2 => n2.id === w.to.node); if (toN && !DEFS[toN.type].panel) consumed.add(w.from.node + ':' + w.from.idx); }
+    for (const id in outs) {
+      const arr = outs[id];
+      for (let oi = 0; oi < arr.length; oi++) {
+        if (consumed.has(id + ':' + oi)) continue;
+        for (const v of asList(arr[oi])) {
+          if (made >= MAX_PREVIEW) break;
+          if (v && v.gh) { const e = geoToEntity(v); if (e) { e._gh = true; e.color = v._color || PREVIEW_COLOR; made++; } } // 분석 노드는 _color 히트맵
+        }
+      }
     }
     lastPreviewCount = made;
     B().refresh();
     if (ui.open) render();
+    updateCtrl();
   }
   function bake() { // 프리뷰 → 영구 개체 (실행취소 1단계)
     const S = B().state, gh = S.entities.filter(e => e._gh);
@@ -303,7 +328,7 @@
       roundRect(p[0], p[1], w, h, 7 * ui.view.s); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#22314e'; roundRectTop(p[0], p[1], w, TITLE_H * ui.view.s, 7 * ui.view.s); ctx.fill();
       ctx.fillStyle = '#dbe6ff'; ctx.font = (13 * ui.view.s) + 'px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-      ctx.fillText(def.title, p[0] + 8 * ui.view.s, p[1] + TITLE_H * ui.view.s / 2);
+      ctx.fillText((n.label ? def.title + ' · ' + n.label : def.title).slice(0, 18), p[0] + 8 * ui.view.s, p[1] + TITLE_H * ui.view.s / 2);
       // 입력 포트
       def.ins.forEach((ins, i) => {
         const gp = portGraphPos(n, 'in', i), sp = S.apply(null, gp);
@@ -457,6 +482,17 @@
   #ghCanWrap{flex:1;position:relative;min-width:0}
   #ghCv{width:100%;height:100%;display:block;cursor:default}
   #ghStat{position:absolute;left:8px;bottom:6px;font-size:11px;color:#8fa4d4;pointer-events:none}
+  #ghCtrl{position:fixed;left:14px;bottom:64px;z-index:9000;width:238px;background:#111a30;border:1px solid #33406a;border-radius:10px;
+    box-shadow:0 8px 26px rgba(0,0,0,.5);font:12px system-ui;color:#dbe6ff;display:none;overflow:hidden}
+  #ghCtrl .hd{display:flex;align-items:center;padding:7px 10px;background:#16213c;border-bottom:1px solid #2a3760;font-weight:700;font-size:12.5px}
+  #ghCtrl .hd span{flex:1}
+  #ghCtrl .hd button{background:none;border:none;color:#8fa4d4;cursor:pointer;font-size:13px;padding:0 3px}
+  #ghCtrl .bd{padding:8px 10px;max-height:46vh;overflow-y:auto}
+  #ghCtrl .row{margin-bottom:9px}
+  #ghCtrl .lb{display:flex;justify-content:space-between;color:#9fb2d8;font-size:11.5px;margin-bottom:2px}
+  #ghCtrl .lb b{color:#eaf2ff;font-weight:600}
+  #ghCtrl input[type=range]{width:100%;accent-color:#5ad1ff;height:18px;cursor:pointer}
+  #ghCtrl .pv{background:#0e1730;border-radius:5px;padding:4px 8px;color:#8fe6c8;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   `;
   function el(t, a, html) { const e = document.createElement(t); if (a) for (const k in a) e.setAttribute(k, a[k]); if (html != null) e.innerHTML = html; return e; }
   function build() {
@@ -490,6 +526,55 @@
     document.body.appendChild(fab); document.body.appendChild(ov);
     ctx = cv.getContext('2d');
     bindCanvas();
+    buildCtrl();
+  }
+  // ---------- 컨트롤 패널 — 사용자는 노드 에디터 없이 슬라이더만 조작 (로직은 AI/에디터가, 사용은 여기서) ----------
+  let ctrl, ctrlBody, ctrlHidden = false, ctrlSig = '';
+  function buildCtrl() {
+    ctrl = el('div', { id: 'ghCtrl' });
+    const hd = el('div', { class: 'hd' });
+    hd.appendChild(el('span', null, '🎛 패턴 컨트롤'));
+    const bEd = el('button', { title: '노드 에디터 열기(고급)' }, '◇'); bEd.addEventListener('click', () => { if (!ui.open) toggle(); });
+    const bX = el('button', { title: '닫기' }, '✕'); bX.addEventListener('click', () => { ctrlHidden = true; updateCtrl(); });
+    hd.appendChild(bEd); hd.appendChild(bX);
+    ctrl.appendChild(hd);
+    ctrlBody = el('div', { class: 'bd' });
+    ctrl.appendChild(ctrlBody);
+    document.body.appendChild(ctrl);
+  }
+  function updateCtrl() {
+    if (!ctrl) return;
+    const sliders = graph.nodes.filter(n => n.type === 'slider');
+    const panels = graph.nodes.filter(n => DEFS[n.type].panel);
+    if ((!sliders.length && !panels.length) || ctrlHidden) { ctrl.style.display = 'none'; return; }
+    ctrl.style.display = 'block';
+    const sig = sliders.map(n => n.id + '/' + n.params.min + '/' + n.params.max + '/' + n.params.step + '/' + (n.label || '')).join('|') + '#' + panels.map(n => n.id + '/' + (n.label || '')).join('|');
+    if (sig !== ctrlSig) { // 구조가 바뀌었을 때만 DOM 재구축 (드래그 중 재구축 방지)
+      ctrlSig = sig;
+      ctrlBody.innerHTML = '';
+      for (const n of sliders) {
+        const row = el('div', { class: 'row' });
+        const lb = el('div', { class: 'lb' });
+        lb.appendChild(el('b', null, n.label || '슬라이더'));
+        const valEl = el('span', { 'data-v': n.id }, fmt(n.params.v));
+        lb.appendChild(valEl);
+        row.appendChild(lb);
+        const inp = el('input', { type: 'range', min: n.params.min, max: n.params.max, step: n.params.step || 1, value: n.params.v });
+        inp.addEventListener('input', () => { const nn = nodeOf(n.id); if (!nn) return; nn.params.v = +inp.value; valEl.textContent = fmt(nn.params.v); apply(); });
+        row.appendChild(inp);
+        ctrlBody.appendChild(row);
+      }
+      for (const n of panels) {
+        const row = el('div', { class: 'row' });
+        const lb = el('div', { class: 'lb' }); lb.appendChild(el('b', null, n.label || '값'));
+        row.appendChild(lb);
+        row.appendChild(el('div', { class: 'pv', 'data-p': n.id }, panelText(n.id)));
+        ctrlBody.appendChild(row);
+      }
+    } else { // 값만 갱신
+      for (const n of sliders) { const e2 = ctrlBody.querySelector('[data-v="' + n.id + '"]'); if (e2) e2.textContent = fmt(n.params.v); }
+      for (const n of panels) { const e2 = ctrlBody.querySelector('[data-p="' + n.id + '"]'); if (e2) e2.textContent = panelText(n.id); }
+    }
   }
   function sizeCanvas() { const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1; cv.width = Math.max(2, r.width * dpr); cv.height = Math.max(2, r.height * dpr); }
   function toggle() {
@@ -520,6 +605,7 @@
       (def.params || []).forEach(p => n.params[p.k] = (s.params && okNum(s.params[p.k])) ? s.params[p.k] : p.def);
       if (def.textK && s.params && typeof s.params[def.textK] === 'string') n.params[def.textK] = String(s.params[def.textK]).slice(0, 200); // 수식 문자열 파라미터
       if (def.capture && Array.isArray(s.ids)) n.sel = s.ids.filter(v => Number.isFinite(v)).slice(0, 500); // 도면 참조 개체 id
+      if (typeof s.label === 'string' && s.label) n.label = String(s.label).slice(0, 40); // 컨트롤 패널 표시용 라벨
       def.ins.forEach(i => { if (i.kind === 'num') n.inl[i.k] = i.def || 0; });
       idMap[s.id] = n;
       g.nodes.push(n);
@@ -554,15 +640,17 @@
   }
   window.WEBCAD_NODES = {
     types: () => Object.keys(DEFS).map(t => { const d = DEFS[t]; return { type: t, title: d.title, ins: d.ins.map(i => i.k + ':' + (i.kind || 'num')), params: (d.params || []).map(p => p.k), outs: d.outs.length }; }),
-    setGraph: (list) => {
+    setGraph: (list, opts) => {
       if (!Array.isArray(list) || !list.length) return { error: 'nodes 배열이 필요합니다.' };
       if (list.length > 60) return { error: '노드는 최대 60개까지 가능합니다.' };
       const r = specToGraph(list);
       if (!r.graph.nodes.length) return { error: '유효한 노드가 없습니다.', errors: r.errors };
       graph = r.graph;
       ui.view = { x: 80, y: 120, s: 1 };
-      if (!ui.open) toggle(); else { apply(); render(); }
-      return { ok: true, nodes: graph.nodes.length, wires: graph.wires.length, previewEntities: lastPreviewCount, errors: r.errors.length ? r.errors : undefined };
+      ctrlHidden = false; ctrlSig = ''; // 사용자용 컨트롤 패널 표시 (노드 에디터는 열지 않음 — 고급 사용자만 ◇로)
+      if (opts && opts.openEditor && !ui.open) toggle(); else { apply(); if (ui.open) render(); }
+      const sliders = graph.nodes.filter(n => n.type === 'slider').map(n => n.label || '슬라이더');
+      return { ok: true, nodes: graph.nodes.length, wires: graph.wires.length, previewEntities: lastPreviewCount, controlPanel: sliders, errors: r.errors.length ? r.errors : undefined };
     },
     getGraph: () => ({
       nodes: graph.nodes.map(n => {
@@ -574,12 +662,13 @@
         });
         const o = { id: n.id, type: n.type, params: n.params, inputs };
         if (def.capture) o.ids = n.sel || [];
+        if (n.label) o.label = n.label;
         return o;
       }),
       previewEntities: lastPreviewCount,
     }),
     bake,
-    clearGraph: () => { graph = { nodes: [], wires: [], seq: 1 }; clearPreview(); lastPreviewCount = 0; B().refresh(); if (ui.open) render(); return { cleared: true }; },
+    clearGraph: () => { graph = { nodes: [], wires: [], seq: 1 }; clearPreview(); lastPreviewCount = 0; ctrlSig = ''; B().refresh(); if (ui.open) render(); updateCtrl(); return { cleared: true }; },
     open: () => { if (!ui.open) toggle(); },
   };
 
