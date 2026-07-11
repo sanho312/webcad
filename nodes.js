@@ -373,6 +373,79 @@
     ui.view = { x: cv.width / 2 - 40, y: cv.height / 2, s: 1 };
   }
 
+  // ---------- 외부 API (AI 코워커 연동) ----------
+  const okNum = v => typeof v === 'number' && isFinite(v) && Math.abs(v) <= 1e7;
+  function specToGraph(list) { // 선언형 스펙 [{id,type,params?,inputs?}] → 그래프 (검증 + 자동 배치)
+    const errors = [];
+    const g = { nodes: [], wires: [], seq: 1 };
+    const idMap = {};
+    for (const s of list) {
+      const def = DEFS[s && s.type];
+      if (!def) { errors.push('알 수 없는 노드 type: ' + (s && s.type)); continue; }
+      if (!s.id || idMap[s.id]) { errors.push('id 누락/중복: ' + (s.id || '(없음)')); continue; }
+      const n = { id: 'n' + (g.seq++), type: s.type, x: 0, y: 0, params: {}, inl: {}, _spec: s };
+      (def.params || []).forEach(p => n.params[p.k] = (s.params && okNum(s.params[p.k])) ? s.params[p.k] : p.def);
+      def.ins.forEach(i => { if (i.kind === 'num') n.inl[i.k] = i.def || 0; });
+      idMap[s.id] = n;
+      g.nodes.push(n);
+    }
+    for (const n of g.nodes) {
+      const s = n._spec, def = DEFS[n.type];
+      if (s.inputs) for (const k in s.inputs) {
+        const ins = def.ins.find(i => i.k === k);
+        if (!ins) { errors.push(s.id + ': 없는 입력 포트 "' + k + '"'); continue; }
+        const v = s.inputs[k];
+        if (typeof v === 'number') {
+          if (ins.kind === 'num' && okNum(v)) n.inl[k] = v;
+          else errors.push(s.id + '.' + k + ': 숫자 입력 불가/비정상');
+        } else if (typeof v === 'string') {
+          const ref = v.split(':'), src = idMap[ref[0]];
+          if (!src) { errors.push(s.id + '.' + k + ': 참조 노드 "' + ref[0] + '" 없음'); continue; }
+          g.wires.push({ from: { node: src.id, idx: Math.max(0, parseInt(ref[1] || '0', 10) || 0) }, to: { node: n.id, key: k } });
+        }
+      }
+      delete n._spec;
+    }
+    // 자동 배치: 의존 깊이 = 열, 열 내 순서 = 행
+    const depth = {}; g.nodes.forEach(n => depth[n.id] = 0);
+    for (let it = 0; it < g.nodes.length; it++) {
+      let ch = false;
+      for (const w of g.wires) { const d = depth[w.from.node] + 1; if (d > depth[w.to.node] && d < 100) { depth[w.to.node] = d; ch = true; } }
+      if (!ch) break;
+    }
+    const col = {};
+    for (const n of g.nodes) { const d = depth[n.id]; col[d] = col[d] || 0; n.x = d * 230; n.y = col[d] * 150; col[d]++; }
+    return { graph: g, errors };
+  }
+  window.WEBCAD_NODES = {
+    types: () => Object.keys(DEFS).map(t => { const d = DEFS[t]; return { type: t, title: d.title, ins: d.ins.map(i => i.k + ':' + (i.kind || 'num')), params: (d.params || []).map(p => p.k), outs: d.outs.length }; }),
+    setGraph: (list) => {
+      if (!Array.isArray(list) || !list.length) return { error: 'nodes 배열이 필요합니다.' };
+      if (list.length > 60) return { error: '노드는 최대 60개까지 가능합니다.' };
+      const r = specToGraph(list);
+      if (!r.graph.nodes.length) return { error: '유효한 노드가 없습니다.', errors: r.errors };
+      graph = r.graph;
+      ui.view = { x: 80, y: 120, s: 1 };
+      if (!ui.open) toggle(); else { apply(); render(); }
+      return { ok: true, nodes: graph.nodes.length, wires: graph.wires.length, previewEntities: lastPreviewCount, errors: r.errors.length ? r.errors : undefined };
+    },
+    getGraph: () => ({
+      nodes: graph.nodes.map(n => {
+        const def = DEFS[n.type], inputs = {};
+        def.ins.forEach(i => {
+          const w = graph.wires.find(w2 => w2.to.node === n.id && w2.to.key === i.k);
+          if (w) inputs[i.k] = w.from.node + (w.from.idx ? ':' + w.from.idx : '');
+          else if (i.kind === 'num') inputs[i.k] = n.inl[i.k];
+        });
+        return { id: n.id, type: n.type, params: n.params, inputs };
+      }),
+      previewEntities: lastPreviewCount,
+    }),
+    bake,
+    clearGraph: () => { graph = { nodes: [], wires: [], seq: 1 }; clearPreview(); lastPreviewCount = 0; B().refresh(); if (ui.open) render(); return { cleared: true }; },
+    open: () => { if (!ui.open) toggle(); },
+  };
+
   function init() { if (!window.WEBCAD_AI_BRIDGE) { setTimeout(init, 300); return; } build(); window.addEventListener('resize', () => { if (ui.open) { sizeCanvas(); render(); } }); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 
