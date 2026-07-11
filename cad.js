@@ -8732,7 +8732,7 @@ window.__CADTEST__ = {
 //  AI 코워크 브리지 — ai.js(자연어 챗봇)가 도면을 조작할 때 쓰는 내부 API
 // ============================================================
 window.WEBCAD_AI_BRIDGE = {
-  state, pushUndo, addEntity, logLine, selectedEntities,
+  state, pushUndo, addEntity, logLine, selectedEntities, ensureLayer,
   entityBBox, entityLength, polyArea,
   translateEntity, applyTransform, T_rotate, move3DEnt, gumRotate, meshSphere, meshCone,
   runBoolean, isBoolable, bimSolids,
