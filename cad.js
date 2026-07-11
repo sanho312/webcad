@@ -8729,6 +8729,21 @@ window.__CADTEST__ = {
 };
 
 // ============================================================
+//  AI 코워크 브리지 — ai.js(자연어 챗봇)가 도면을 조작할 때 쓰는 내부 API
+// ============================================================
+window.WEBCAD_AI_BRIDGE = {
+  state, pushUndo, addEntity, logLine, selectedEntities,
+  entityBBox, entityLength, polyArea,
+  translateEntity, applyTransform, T_rotate, move3DEnt, gumRotate, meshSphere, meshCone,
+  runBoolean, isBoolable, bimSolids,
+  is3D: is3DActive,
+  refresh: () => {
+    renderLayers(); renderProps(); draw(); updateStat();
+    if (is3DActive() && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); }
+  },
+};
+
+// ============================================================
 //  공식 외부 API — 클라우드 모듈(cloud.js)이 사용
 // ============================================================
 window.WEBCAD_API = {
