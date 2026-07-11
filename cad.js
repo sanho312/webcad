@@ -3035,8 +3035,8 @@ function renderScene(isActive) {
         c.font = `${11 * dpr}px -apple-system,system-ui,sans-serif`;
         c.fillText(name.toUpperCase(), g1[0] + ux * 8 * dpr + 2, g1[1] + uy * 8 * dpr + 2);
       }
-      // 회전 링 (라이노식): Z=파랑 링은 모든 객체, X·Y 링은 메시·3D선만 (평면+높이 데이터는 수직 회전 표현 불가)
-      const can3D = ent.type === 'MESH' || (ent.type === 'LINE' && (ent.z1 != null || ent.z2 != null));
+      // 회전 링 (라이노식): Z=파랑 링은 모든 객체, X·Y 링은 메시·선·BIM 솔리드(수직 회전 시 메시로 변환됨)
+      const can3D = ent.type === 'MESH' || (ent.type === 'LINE' && !ent.bim) || isBoolable(ent);
       const RING_R = L * 0.62, RINGS = can3D ? [['x', '#ff453a'], ['y', '#30d158'], ['z', '#0A84FF']] : [['z', '#0A84FF']];
       v3.gum.rings = [];
       c.lineWidth = 2 * dpr;
@@ -3229,6 +3229,18 @@ function gumRingPt(rg, th) {
 // 검볼 회전 적용 — 중심(cx,cy,cz)을 지나는 축 기준 deg도 회전 (오른손 법칙, 반시계 +)
 function gumRotate(ent, axName, cx, cy, cz, deg) {
   const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  // 수직(X/Y) 회전을 받은 BIM 솔리드(벽 LINE 포함)는 메시로 변환 — 기울어진 입체는 발자국+높이로 표현 불가 (라이노 자유 회전과 동일)
+  if (axName !== 'z' && ent.type !== 'MESH' && ent.bim) {
+    const tris = entityToTris(ent);
+    if (tris.length) {
+      ent.type = 'MESH'; ent.tris = tris;
+      delete ent.bim; delete ent.points; delete ent.closed; delete ent.zo;
+      delete ent.x1; delete ent.y1; delete ent.x2; delete ent.y2; delete ent.z1; delete ent.z2;
+      delete ent.cx; delete ent.cy; delete ent.r; delete ent.startAngle; delete ent.endAngle;
+      delete ent._feat; delete ent._featRef;
+      logLine('  ▷ 수직 회전: BIM 솔리드를 메시로 변환 (벽 두께·높이 속성 해제 — 원복은 실행취소)', 'info');
+    }
+  }
   if (ent.type === 'MESH') { // 메시: 정점 3D 회전 — X/Y/Z 모든 축 가능
     const fn = axName === 'x' ? (x, y, z) => { const dy = y - cy, dz = z - cz; return [x, cy + dy * c - dz * s, cz + dy * s + dz * c]; }
       : axName === 'y' ? (x, y, z) => { const dx = x - cx, dz = z - cz; return [cx + dx * c + dz * s, y, cz - dx * s + dz * c]; }
@@ -3236,7 +3248,7 @@ function gumRotate(ent, axName, cx, cy, cz, deg) {
     meshXform(ent, fn);
     return;
   }
-  if (ent.type === 'LINE' && (ent.z1 != null || ent.z2 != null) && axName !== 'z') { // 3D 선: 양끝점 3D 회전
+  if (ent.type === 'LINE' && axName !== 'z' && !ent.bim) { // 선: 양끝점 3D 회전 (평면 선도 3D 선이 됨)
     const zb = (state.levels[ent.lv || 0] || { elev: 0 }).elev + (ent.zo || 0);
     const rot = axName === 'x'
       ? p => [p[0], cy + (p[1] - cy) * c - (p[2] - cz) * s, cz + (p[1] - cy) * s + (p[2] - cz) * c]
