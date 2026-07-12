@@ -6255,11 +6255,12 @@ const realDraw = draw;
 const cmdPromptEl = document.getElementById('cmdPrompt');
 const cmdInputEl = document.getElementById('cmdInput');
 const cmdLogEl = document.getElementById('cmdLog');
-function setPrompt(t) { if (cmdPromptEl) { cmdPromptEl.style.maxWidth = ''; cmdPromptEl.textContent = t; } hint(t); }
+function setPrompt(t) { if (cmdPromptEl) { cmdPromptEl.style.maxWidth = ''; cmdPromptEl.textContent = t; cmdPromptEl.style.display = 'none'; } hint(t); } // 텍스트 안내는 숨김(사용자 요청) — 로그창엔 남음
 // 명령창에 텍스트 + 클릭 가능한 선택 버튼 (예: cap y/n) 표시. choices=[{label,on}]
 function setPromptChoices(text, choices) {
   if (!cmdPromptEl) return;
   cmdPromptEl.style.maxWidth = '62%';
+  cmdPromptEl.style.display = ''; // 클릭 가능한 선택지가 있을 때만 프롬프트 표시(텍스트 안내는 setPrompt에서 숨김)
   cmdPromptEl.textContent = text + ' ';
   for (const ch of choices) {
     const b = document.createElement('button');

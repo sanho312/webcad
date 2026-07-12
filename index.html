@@ -231,7 +231,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   #coords{position:absolute;left:12px;bottom:12px;font-size:12px;color:var(--muted);
     font-family:var(--mono);background:var(--topbar-bg,rgba(13,20,38,0.66));-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     padding:4px 10px;border-radius:var(--radius);pointer-events:none;}
-  #hint{position:absolute;left:50%;top:12px;transform:translateX(-50%);
+  /* 캔버스 가운데 떠 있던 안내문 숨김(공간 낭비·중복). hint()가 inline display:block을 넣으므로 !important로 덮어씀 */
+  #hint{display:none !important;position:absolute;left:50%;top:12px;transform:translateX(-50%);
     font-size:12px;color:var(--text);background:var(--topbar-bg,rgba(13,20,38,0.72));-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     padding:5px 14px;border-radius:var(--radius-pill);pointer-events:none;max-width:80%;text-align:center;}
 
@@ -777,7 +778,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <div id="cmdLog" aria-label="명령 기록"></div>
     <div id="cmdInputRow">
       <span id="cmdLabel">명령:</span>
-      <span id="cmdPrompt">도형을 그리거나 명령을 입력하세요 (line, trim, extend, fillet, scale, stretch …)</span>
+      <span id="cmdPrompt" style="display:none">도형을 그리거나 명령을 입력하세요 (line, trim, extend, fillet, scale, stretch …)</span>
       <span id="dimHint"></span>
       <div class="cmdInputWrap">
         <div id="cmdSuggest"></div>
@@ -804,7 +805,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712m"></script>
+<script src="cad.js?v=20260712n"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
