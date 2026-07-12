@@ -89,9 +89,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
     background:var(--bg);color:var(--text);overflow:hidden;user-select:none;}
   #app{display:flex;flex-direction:column;height:100%;}
-  /* 라이노식 배치: 문서탭(0) → 상단바(1) → 명령창(2) → 작업영역(3) → 상태바(4) */
-  /* 파일 탭을 하단(상태바 바로 위)으로 — 상단 공간 회수. 상태바는 좌표·스냅이라 맨 아래 유지 */
-  #topbar{order:1;} #console{order:2;border-top:none;border-bottom:0.5px solid var(--line);position:relative;z-index:56;} #main{order:3;} #docTabs{order:4;} #statusBar{order:5;}
+  /* 배치: 상단바(1) → 명령창(2) → 작업영역(3) → 상태바(4). 문서탭은 flex 흐름에서 빠져 캔버스 좌하단에 떠 있음(공간 예약 안 함) */
+  #topbar{order:1;} #console{order:2;border-top:none;border-bottom:0.5px solid var(--line);position:relative;z-index:56;} #main{order:3;} #statusBar{order:4;}
   #cmdSuggest{top:calc(100% + 8px) !important;bottom:auto !important;} /* 명령창이 위로 갔으니 제안은 아래로 */
   #statusBar{display:flex;gap:12px;align-items:center;flex:0 0 auto;flex-wrap:wrap;
     padding:3px 12px;font-size:11.5px;color:var(--muted);background:var(--bg);
@@ -103,12 +102,13 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   #stCoords{font-family:var(--mono);min-width:200px;}
 
   /* 문서 탭 — 브라우저 탭처럼 여러 작업물 스택. safe-area는 여기서 흡수 */
-  #docTabs{display:flex;align-items:flex-start;gap:4px;flex:0 0 auto;overflow-x:auto;
-    padding:0 calc(10px + env(safe-area-inset-right,0px)) calc(4px + env(safe-area-inset-bottom,0px)) calc(10px + env(safe-area-inset-left,0px));
-    background:var(--bg);border-top:0.5px solid var(--line);scrollbar-width:thin;}
+  /* 캔버스 좌하단에 떠 있는 콤팩트 탭 클러스터(전용 줄 예약 안 함). 탭 생성 시 오른쪽으로 추가, 넘치면 가로 스크롤 */
+  #docTabs{position:absolute;left:8px;bottom:8px;z-index:12;display:flex;align-items:flex-end;gap:4px;max-width:calc(100% - 16px);overflow-x:auto;
+    padding:3px 6px 0;background:var(--topbar-bg,rgba(13,20,38,0.72));-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
+    border:0.5px solid var(--line);border-radius:10px;box-shadow:var(--spec);scrollbar-width:thin;}
   .dtab{display:flex;align-items:center;gap:7px;max-width:180px;min-width:88px;flex:0 0 auto;
     padding:5px 8px 6px 12px;font-size:12.5px;color:var(--muted);cursor:pointer;
-    background:transparent;border:none;border-radius:0 0 10px 10px;transition:background .15s,color .15s;
+    background:transparent;border:none;border-radius:10px 10px 0 0;transition:background .15s,color .15s;
     white-space:nowrap;}
   .dtab:hover{background:rgba(255,255,255,0.05);color:var(--text);}
   .dtab .dname{overflow:hidden;text-overflow:ellipsis;flex:1;}
@@ -117,7 +117,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   .dtab .dclose{flex:0 0 auto;width:18px;height:18px;line-height:16px;text-align:center;border-radius:5px;
     font-size:13px;color:var(--muted);transition:background .15s,color .15s;}
   .dtab .dclose:hover{background:rgba(255,69,58,0.18);color:#ff6961;}
-  .dtabNew{flex:0 0 auto;width:28px;height:28px;margin-top:3px;border-radius:8px;border:none;
+  .dtabNew{flex:0 0 auto;width:28px;height:28px;margin-bottom:3px;border-radius:8px;border:none;
     background:rgba(255,255,255,0.06);color:var(--text);font-size:16px;cursor:pointer;transition:background .15s;}
   .dtabNew:hover{background:rgba(255,255,255,0.12);}
 
@@ -377,8 +377,6 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
 </head>
 <body>
 <div id="app">
-  <!-- 문서 탭 (다중 작업) -->
-  <div id="docTabs"></div>
   <!-- Top bar -->
   <div id="topbar">
     <span class="title">▦ WebCAD</span>
@@ -548,6 +546,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <!-- Canvas -->
     <div id="canvasWrap">
       <canvas id="cv"></canvas>
+      <!-- 문서 탭: 캔버스 좌하단에 떠 있음 (다중 작업, + 로 새 탭이 오른쪽에 추가) -->
+      <div id="docTabs"></div>
       <div id="hint">선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요.</div>
       <!-- 캔버스 좌하단 좌표: 하단 상태바(#stCoords)와 중복 → 화면에서 숨김. 단 이 요소가 상태바 좌표의 원본(cad.js가 텍스트를 여기 씀)이라 DOM은 유지 -->
       <div id="coords" style="display:none">X: 0.00  Y: 0.00</div>
@@ -804,7 +804,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712i"></script>
+<script src="cad.js?v=20260712j"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
