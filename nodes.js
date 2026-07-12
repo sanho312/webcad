@@ -55,8 +55,26 @@
       else if (g.t === 'CIR') { const c = fn(g.cx, g.cy); o.cx = c[0]; o.cy = c[1]; }
       return o;
     }
-    if (g.gh === 'solid') { const o = Object.assign({}, g); o.ent = xformGeo(g.ent, fn, dz); o.bim = Object.assign({}, g.bim, { base: (g.bim.base || 0) + dz }); return o; }
+    if (g.gh === 'solid') {
+      const o = Object.assign({}, g); o.ent = xformGeo(g.ent, fn, dz);
+      o.bim = g.bim.kind === 'slab' ? Object.assign({}, g.bim, { top: (g.bim.top || 0) + dz })
+        : Object.assign({}, g.bim, { base: (g.bim.base || 0) + dz });
+      return o;
+    }
+    if (g.gh === 'mesh') return { gh: 'mesh', tris: g.tris.map(t => t.map(p => { const q = fn(p[0], p[1]); return [q[0], q[1], (p[2] || 0) + dz]; })) };
     return null;
+  }
+  const mkMesh = tris => ({ gh: 'mesh', tris });
+  function uvSphere(cx, cy, cz, r, seg) { // UV 구 메시 (cad.js meshSphere와 동일 규약)
+    const rings = Math.max(3, Math.round(seg / 2)), tris = [];
+    const pt = (i, j) => { const th = Math.PI * j / rings, ph = 2 * Math.PI * i / seg;
+      return [cx + r * Math.sin(th) * Math.cos(ph), cy + r * Math.sin(th) * Math.sin(ph), cz + r * Math.cos(th)]; };
+    for (let j = 0; j < rings; j++) for (let i = 0; i < seg; i++) {
+      const a = pt(i, j), b = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
+      if (j !== 0) tris.push([a, b, c]);
+      if (j !== rings - 1) tris.push([a, c, d]);
+    }
+    return tris;
   }
   // ---------- 커브 공통 유틸 (분할·오프셋·투영 — GH Divide/Offset 대응) ----------
   function crvPts(g) { // 커브 → 정점 배열 (원은 48각 근사)
@@ -106,6 +124,34 @@
     }
     return out;
   }
+  function curveLen(g) { // 커브 길이(mm)
+    const c = crvPts(g); if (!c) return 0;
+    if (g.t === 'CIR') return 2 * Math.PI * g.r;
+    const m = c.closed ? c.pts.length : c.pts.length - 1; let L = 0;
+    for (let i = 0; i < m; i++) { const a = c.pts[i], b = c.pts[(i + 1) % c.pts.length]; L += Math.hypot(b[0] - a[0], b[1] - a[1]); }
+    return L;
+  }
+  function polyAreaCent(g) { // 닫힌 커브 면적(mm²)+도심 (신발끈 공식)
+    const c = crvPts(g); if (!c || !c.closed || c.pts.length < 3) return null;
+    const P = c.pts; let A = 0, cx = 0, cy = 0;
+    for (let i = 0; i < P.length; i++) {
+      const [x1, y1] = P[i], [x2, y2] = P[(i + 1) % P.length], cr = x1 * y2 - x2 * y1;
+      A += cr; cx += (x1 + x2) * cr; cy += (y1 + y2) * cr;
+    }
+    A /= 2; if (Math.abs(A) < 1e-9) return null;
+    return { area: Math.abs(A), cx: cx / (6 * A), cy: cy / (6 * A) };
+  }
+  function geoBounds(g) { // 지오메트리 1개의 XY 경계 (mesh·solid 포함)
+    let xs = [], ys = [];
+    if (!g) return null;
+    if (g.gh === 'pt') { xs = [g.x]; ys = [g.y]; }
+    else if (g.gh === 'crv') { const c = crvPts(g); if (!c) return null; c.pts.forEach(p => { xs.push(p[0]); ys.push(p[1]); }); }
+    else if (g.gh === 'solid') return geoBounds(g.ent);
+    else if (g.gh === 'mesh') g.tris.forEach(t => t.forEach(p => { xs.push(p[0]); ys.push(p[1]); }));
+    if (!xs.length) return null;
+    const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    return { x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0 };
+  }
   function projWidth(c, dirRad) { // 바람 진행방향에 수직인 투영 폭(mm)
     const px = -Math.sin(dirRad), py = Math.cos(dirRad);
     const cp = crvPts(c); if (!cp) return 0;
@@ -148,6 +194,7 @@
       for (let i = 0; i <= n; i++) { const a = (a0 + sw * i / n) * Math.PI / 180; pts.push([e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]); }
       return { gh: 'crv', t: 'PL', closed: false, points: pts, z };
     }
+    if (e.type === 'MESH' && Array.isArray(e.tris)) return { gh: 'mesh', tris: JSON.parse(JSON.stringify(e.tris)) };
     return null;
   }
 
@@ -186,8 +233,35 @@
     // ---- 분석 (개산 — 예비 설계용) ----
     thermal: { title: '열관류 분석', cat: '분석', ins: [{ k: 'geo', kind: 'geo' }, { k: 'U', kind: 'num', def: 0.24 }, { k: 'dT', kind: 'num', def: 20 }], outs: ['히트맵', 'Q합계 W', '개별Q W'], ev: (I) => { const sol = asList(I.geo).filter(s => s && s.gh === 'solid'); if (!sol.length) return [[], 0, []]; const U = Math.abs(num(I.U)), dT = num(I.dT); const Qs = sol.map(s => U * solidWallArea(s) * dT); const mx = Math.max.apply(null, Qs.concat([1e-9])); const colored = sol.map((s, i) => Object.assign({}, s, { _color: heatColor(Qs[i] / mx) })); return [colored, Math.round(Qs.reduce((a, b) => a + b, 0)), Qs.map(q => Math.round(q))]; } },
     wind: { title: '풍압 분석', cat: '분석', ins: [{ k: 'geo', kind: 'geo' }, { k: 'V', kind: 'num', def: 26 }, { k: 'dir', kind: 'num', def: 0 }, { k: 'Cp', kind: 'num', def: 0.8 }], outs: ['색상맵', 'F합계 kN', '개별F N'], ev: (I) => { const sol = asList(I.geo).filter(s => s && s.gh === 'solid'); if (!sol.length) return [[], 0, []]; const V = Math.abs(num(I.V)), q = 0.613 * V * V, dir = num(I.dir) * Math.PI / 180, Cp = num(I.Cp); const Fs = sol.map(s => { const w = projWidth(s.ent, dir) / 1000, A = w * ((s.bim.h || 0) / 1000); return q * Cp * A; }); const mx = Math.max.apply(null, Fs.concat([1e-9])); const colored = sol.map((s, i) => Object.assign({}, s, { _color: heatColor(Fs[i] / mx) })); return [colored, +((Fs.reduce((a, b) => a + b, 0)) / 1000).toFixed(1), Fs.map(f => Math.round(f))]; } },
+    // ---- 데이터/리스트 (GH: List Item / Sub List / Reverse / Shift / Cull / Dispatch / Merge / Sort / Mass) ----
+    listItem: { title: '리스트 항목', cat: '데이터', ins: [{ k: 'list', kind: 'geo' }, { k: 'i', kind: 'num', def: 0 }], outs: ['항목'], ev: (I) => { const L = asList(I.list); if (!L.length) return [null]; return [zip([I.i], (i) => L[((Math.round(num(i)) % L.length) + L.length) % L.length])]; } },
+    subList: { title: '부분 리스트', cat: '데이터', ins: [{ k: 'list', kind: 'geo' }, { k: 'start', kind: 'num', def: 0 }, { k: 'count', kind: 'num', def: 5 }], outs: ['부분'], ev: (I) => { const L = asList(I.list), s = Math.max(0, Math.round(num(I.start))); return [L.slice(s, s + Math.max(0, Math.round(num(I.count))))]; } },
+    revList: { title: '리스트 뒤집기', cat: '데이터', ins: [{ k: 'list', kind: 'geo' }], outs: ['결과'], ev: (I) => [asList(I.list).slice().reverse()] },
+    shiftL: { title: '리스트 밀기', cat: '데이터', ins: [{ k: 'list', kind: 'geo' }, { k: 'n', kind: 'num', def: 1 }], outs: ['결과'], ev: (I) => { const L = asList(I.list); if (!L.length) return [[]]; const n = ((Math.round(num(I.n)) % L.length) + L.length) % L.length; return [L.slice(n).concat(L.slice(0, n))]; } },
+    cull: { title: '패턴 걸러내기', cat: '데이터', ins: [{ k: 'list', kind: 'geo' }, { k: 'pattern', kind: 'num', def: 1 }], outs: ['남김', '제거'], ev: (I) => { const L = asList(I.list), P = asList(I.pattern), keep = [], cut = []; L.forEach((v, i) => { ((P.length ? Number(P[i % P.length]) : 1) >= 0.5 ? keep : cut).push(v); }); return [keep, cut]; } },
+    merge: { title: '리스트 합치기', cat: '데이터', ins: [{ k: 'a', kind: 'geo' }, { k: 'b', kind: 'geo' }, { k: 'c', kind: 'geo' }], outs: ['결과'], ev: (I) => [asList(I.a).concat(asList(I.b), asList(I.c)).filter(x => x != null)] },
+    listLen: { title: '개수', cat: '데이터', ins: [{ k: 'list', kind: 'geo' }], outs: ['n'], ev: (I) => [asList(I.list).length] },
+    sortL: { title: '정렬', cat: '데이터', ins: [{ k: 'keys', kind: 'num', def: 0 }, { k: 'values', kind: 'geo' }], outs: ['정렬키', '정렬값'], ev: (I) => { const K = asList(I.keys).map(x => Number(x) || 0), V = asList(I.values).filter(x => x != null); const idx = K.map((k, i) => i).sort((a, b) => K[a] - K[b]); return [idx.map(i => K[i]), V.length ? idx.map(i => V[i % V.length]) : []]; } },
+    stats: { title: '통계', cat: '데이터', ins: [{ k: 'list', kind: 'num', def: 0 }], outs: ['합', '평균', '최소', '최대'], ev: (I) => { const L = asList(I.list).map(x => Number(x) || 0); if (!L.length) return [0, 0, 0, 0]; const s = L.reduce((a, b) => a + b, 0); return [s, s / L.length, Math.min.apply(null, L), Math.max.apply(null, L)]; } },
+    dist: { title: '두 점 거리', cat: '데이터', ins: [{ k: 'a', kind: 'geo' }, { k: 'b', kind: 'geo' }], outs: ['거리'], ev: (I) => [clean(zip([I.a, I.b], (a, b) => (a && b && a.gh === 'pt' && b.gh === 'pt') ? Math.hypot(b.x - a.x, b.y - a.y, (b.z || 0) - (a.z || 0)) : null))] },
+    ptXYZ: { title: '점 분해', cat: '데이터', ins: [{ k: 'pt', kind: 'geo' }], outs: ['x', 'y', 'z'], ev: (I) => { const P = asList(I.pt).filter(p => p && p.gh === 'pt'); return [P.map(p => p.x), P.map(p => p.y), P.map(p => p.z || 0)]; } },
+    // ---- 커브 분석 (GH: End Points / Length / Area / Bounding Box) ----
+    endPts: { title: '커브 끝점', cat: '지오메트리', ins: [{ k: 'crv', kind: 'geo' }], outs: ['시작', '끝'], ev: (I) => { const A = [], E = []; for (const g of asList(I.crv).filter(x => x && x.gh === 'crv')) { const c = crvPts(g); if (!c || !c.pts.length) continue; A.push(mkPt(c.pts[0][0], c.pts[0][1], g.z || 0)); const e = c.closed ? c.pts[0] : c.pts[c.pts.length - 1]; E.push(mkPt(e[0], e[1], g.z || 0)); } return [A, E]; } },
+    lenC: { title: '커브 길이', cat: '지오메트리', ins: [{ k: 'crv', kind: 'geo' }], outs: ['길이mm'], ev: (I) => [asList(I.crv).filter(x => x && x.gh === 'crv').map(curveLen)] },
+    areaC: { title: '면적·도심', cat: '지오메트리', ins: [{ k: 'crv', kind: 'geo' }], outs: ['면적㎡', '도심'], ev: (I) => { const As = [], Cs = []; for (const g of asList(I.crv).filter(x => x && x.gh === 'crv')) { const r = polyAreaCent(g); if (!r) continue; As.push(r.area / 1e6); Cs.push(mkPt(r.cx, r.cy, g.z || 0)); } return [As, Cs]; } },
+    bboxN: { title: '경계 상자', cat: '지오메트리', ins: [{ k: 'geo', kind: 'geo' }], outs: ['상자', '중심', 'w', 'h'], ev: (I) => { const R = [], C = [], W = [], H = []; for (const g of asList(I.geo).filter(Boolean)) { const b = geoBounds(g); if (!b) continue; R.push(mkRect(mkPt(b.cx, b.cy, 0), Math.max(1, b.w), Math.max(1, b.h))); C.push(mkPt(b.cx, b.cy, 0)); W.push(b.w); H.push(b.h); } return [R, C, W, H]; } },
+    // ---- 변환 확장 (GH: Mirror / Scale) ----
+    mirror: { title: '대칭', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'x1', kind: 'num', def: 0 }, { k: 'y1', kind: 'num', def: 0 }, { k: 'x2', kind: 'num', def: 0 }, { k: 'y2', kind: 'num', def: 1000 }], outs: ['결과'], ev: (I) => [zipGeoNum(I.geo, [I.x1, I.y1, I.x2, I.y2], (g, a) => { const dx = a[2] - a[0], dy = a[3] - a[1], L2 = dx * dx + dy * dy || 1; return xformGeo(g, (x, y) => { const t = ((x - a[0]) * dx + (y - a[1]) * dy) / L2, px = a[0] + t * dx, py = a[1] + t * dy; return [2 * px - x, 2 * py - y]; }, 0); })] },
+    scaleN: { title: '크기 조절', cat: '변환', ins: [{ k: 'geo', kind: 'geo' }, { k: 'cx', kind: 'num', def: 0 }, { k: 'cy', kind: 'num', def: 0 }, { k: 'f', kind: 'num', def: 2 }], outs: ['결과'], ev: (I) => [zipGeoNum(I.geo, [I.cx, I.cy, I.f], (g, a) => { const f = a[2] || 1; let o = xformGeo(g, (x, y) => [a[0] + (x - a[0]) * f, a[1] + (y - a[1]) * f], 0); if (!o) return null; if (o.gh === 'crv' && o.t === 'CIR') o.r = Math.abs(g.r * f); if (o.gh === 'solid') { if (o.ent.t === 'CIR') o.ent = Object.assign({}, o.ent, { r: Math.abs(g.ent.r * f) }); o.bim = Object.assign({}, o.bim); if (o.bim.h) o.bim.h = Math.max(1, Math.abs(o.bim.h * f)); if (o.bim.t) o.bim.t = Math.max(1, Math.abs(o.bim.t * f)); } return o; })] },
+    // ---- 솔리드/메시 (GH: Slab·Sphere·Loft·Revolve 대응 — 메시 근사) ----
+    slab: { title: '슬래브', cat: 'BIM', ins: [{ k: 'crv', kind: 'geo' }, { k: 't', kind: 'num', def: 200 }, { k: 'top', kind: 'num', def: 0 }], outs: ['슬래브'], ev: (I) => [zipGeoNum(I.crv, [I.t, I.top], (g, a) => { if (!g || g.gh !== 'crv') return null; let ent = g; if (g.t === 'CIR') { const c = crvPts(g); ent = { gh: 'crv', t: 'PL', closed: true, points: c.pts, z: g.z || 0 }; } if (ent.t === 'LINE' || (ent.t === 'PL' && !ent.closed)) return null; return { gh: 'solid', ent, bim: { kind: 'slab', t: Math.max(10, a[0]), top: a[1] } }; })] },
+    sphereN: { title: '구', cat: 'BIM', ins: [{ k: 'c', kind: 'geo' }, { k: 'r', kind: 'num', def: 500 }, { k: 'seg', kind: 'num', def: 16 }], outs: ['구'], ev: (I) => [clean(zip([I.c, I.r, I.seg], (c, r, sg) => { if (!c || c.gh !== 'pt') return null; return mkMesh(uvSphere(c.x, c.y, c.z || 0, Math.abs(num(r)) || 1, Math.max(6, Math.min(32, Math.round(num(sg)) || 16)))); }))] },
+    loft: { title: '로프트', cat: 'BIM', ins: [{ k: 'a', kind: 'geo' }, { k: 'b', kind: 'geo' }, { k: 'seg', kind: 'num', def: 24 }], outs: ['메시'], ev: (I) => { const A = asList(I.a).filter(x => x && x.gh === 'crv'), Bs = asList(I.b).filter(x => x && x.gh === 'crv'); if (!A.length || !Bs.length) return [[]]; const n = Math.max(2, Math.min(120, Math.round(num(I.seg)) || 24)), out = [], m = Math.max(A.length, Bs.length); for (let i = 0; i < m && i < 200; i++) { const ga = A[i % A.length], gb = Bs[i % Bs.length]; const da = divideCrv(ga, n), db = divideCrv(gb, n); const P = da.pts.map(p => [p.x, p.y, p.z || 0]), Q = db.pts.map(p => [p.x, p.y, p.z || 0]); const N = Math.min(P.length, Q.length); if (N < 2) continue; const closed = crvPts(ga).closed && crvPts(gb).closed, M = closed ? N : N - 1, tris = []; for (let k = 0; k < M; k++) { const k2 = (k + 1) % N; tris.push([P[k], Q[k], Q[k2]]); tris.push([P[k], Q[k2], P[k2]]); } out.push(mkMesh(tris)); } return [out]; } },
+    revolve: { title: '회전체', cat: 'BIM', ins: [{ k: 'profile', kind: 'geo' }, { k: 'cx', kind: 'num', def: 0 }, { k: 'cy', kind: 'num', def: 0 }, { k: 'seg', kind: 'num', def: 24 }, { k: 'sweep', kind: 'num', def: 360 }], outs: ['메시'], ev: (I) => { const out = [], seg = Math.max(4, Math.min(64, Math.round(num(I.seg)) || 24)), sw = (num(I.sweep) || 360) * Math.PI / 180, cx = num(I.cx), cy = num(I.cy); for (const g of asList(I.profile).filter(x => x && x.gh === 'crv')) { const c = crvPts(g); if (!c || c.pts.length < 2) continue; const prof = c.closed ? c.pts.concat([c.pts[0]]) : c.pts; const ring = (p, a) => [cx + p[0] * Math.cos(a), cy + p[0] * Math.sin(a), (g.z || 0) + p[1]]; const tris = []; for (let i = 0; i < prof.length - 1; i++) for (let j = 0; j < seg; j++) { const a0 = sw * j / seg, a1 = sw * (j + 1) / seg; const A2 = ring(prof[i], a0), B2 = ring(prof[i], a1), C2 = ring(prof[i + 1], a1), D2 = ring(prof[i + 1], a0); tris.push([A2, B2, C2]); tris.push([A2, C2, D2]); } out.push(mkMesh(tris)); } return [out]; } },
+    // ---- 분석 확장 (GH: Gradient — 임의 값 리스트로 색칠 = 어트랙터 시각화) ----
+    gradient: { title: '색 그라디언트', cat: '분석', ins: [{ k: 'geo', kind: 'geo' }, { k: 'v', kind: 'num', def: 0 }, { k: 'lo', kind: 'num', def: 0 }, { k: 'hi', kind: 'num', def: 0 }], outs: ['색칠된 지오', '정규화값'], ev: (I) => { const G = asList(I.geo).filter(Boolean), V = asList(I.v).map(x => Number(x) || 0); if (!G.length) return [[], []]; let lo = num(I.lo), hi = num(I.hi); if (!(hi > lo)) { lo = Math.min.apply(null, V.length ? V : [0]); hi = Math.max.apply(null, V.length ? V : [1]); } const d = (hi - lo) || 1e-9; const ts = G.map((g, i) => Math.max(0, Math.min(1, ((V.length ? V[i % V.length] : 0) - lo) / d))); return [G.map((g, i) => Object.assign({}, g, { _color: heatColor(ts[i]) })), ts]; } },
   };
-  const CATS = ['입력', '지오메트리', '변환', 'BIM', '분석'];
+  const CATS = ['입력', '데이터', '지오메트리', '변환', 'BIM', '분석'];
 
   // ---------- 그래프 모델 ----------
   let graph = { nodes: [], wires: [], seq: 1 };
@@ -235,6 +309,8 @@
       else if (v.t === 'PL') e = add({ type: 'LWPOLYLINE', points: v.points.map(p => [p[0], p[1]]), closed: !!v.closed });
       else if (v.t === 'CIR') e = add({ type: 'CIRCLE', cx: v.cx, cy: v.cy, r: v.r });
       if (e && v.z) e.zo = v.z;
+    } else if (v.gh === 'mesh') {
+      if (Array.isArray(v.tris) && v.tris.length) e = add({ type: 'MESH', tris: JSON.parse(JSON.stringify(v.tris)) });
     } else if (v.gh === 'solid') {
       const c = v.ent;
       if (c.t === 'LINE') e = add({ type: 'LINE', x1: c.x1, y1: c.y1, x2: c.x2, y2: c.y2 });
