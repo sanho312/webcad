@@ -215,6 +215,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   #btnTbEdit{grid-column:1 / -1;margin:2px 3px 6px;background:var(--glass-fill);border:none;color:var(--muted);
     cursor:pointer;font-size:10px;padding:5px 4px;border-radius:var(--radius);box-shadow:var(--spec);}
   #btnTbEdit:hover{background:var(--glass-fill-hi);color:var(--text);}
+  .tool.tbDragging{opacity:.45;outline:1.5px dashed var(--accent);outline-offset:-1px;}
   .uiEdH{font-size:12px;color:var(--accent-text);margin:6px 0 6px;}
   #uiEdTools{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;}
   #uiEdTools label,#uiEdSecs label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);
@@ -554,7 +555,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
             <span style="flex:1"></span>
             <button class="miniBtn" id="uiEditReset">기본값 복원</button>
             <button class="miniBtn" id="uiEditClose">닫기</button></h2>
-          <div class="dlgHint">체크를 끄면 화면에서 숨겨집니다(기능은 명령어 입력으로 계속 사용 가능). 변경은 즉시 반영·저장됩니다.</div>
+          <div class="dlgHint">체크를 끄면 화면에서 숨겨집니다(기능은 명령어 입력으로 계속 사용 가능). 변경은 즉시 반영·저장됩니다. <b>도구 순서는 도구막대에서 아이콘을 직접 드래그</b>해 바꿀 수 있습니다.</div>
           <div style="display:flex;gap:14px;overflow:auto;min-height:0;">
             <div style="flex:1;min-width:0;">
               <h4 class="uiEdH">왼쪽 도구막대</h4>
@@ -799,7 +800,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712f"></script>
+<script src="cad.js?v=20260712g"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
@@ -851,13 +852,64 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   const uieSave = () => { try { localStorage.setItem(UIE_KEY, JSON.stringify(uie)); } catch (e) {} };
   const allTools = () => [...document.querySelectorAll('#toolbar .tool')];
   const allSecs = () => [...document.querySelectorAll('#side .section[data-sec]')];
+  // 도구 순서: 구분선·그룹 라벨은 고정 '슬롯' 구조로 두고, 도구들만 저장된 순서대로 슬롯을 채움
+  const tbEl = document.getElementById('toolbar');
+  const DEFAULT_TOOL_ORDER = allTools().map(el => el.dataset.tool);
+  function applyToolOrder() {
+    const byName = new Map(allTools().map(el => [el.dataset.tool, el]));
+    const want = (uie.order && uie.order.length ? uie.order : DEFAULT_TOOL_ORDER).filter(t => byName.has(t));
+    for (const t of DEFAULT_TOOL_ORDER) if (!want.includes(t)) want.push(t); // 새로 추가된 도구는 뒤에
+    const cur = allTools();
+    if (cur.map(el => el.dataset.tool).join() === want.join()) return;
+    // 현재 도구 위치들을 placeholder로 바꾼 뒤, 원하는 순서로 다시 채움 (구분선·라벨 위치 불변)
+    const markers = cur.map(el => { const m = document.createComment('slot'); tbEl.replaceChild(m, el); return m; });
+    markers.forEach((m, i) => tbEl.replaceChild(byName.get(want[i]), m));
+  }
   function applyUie() {
+    applyToolOrder();
     allTools().forEach(el => el.classList.toggle('userHide', uie.tools.includes(el.dataset.tool)));
     allSecs().forEach(el => {
       el.classList.toggle('userHide', uie.secs.includes(el.dataset.sec));
       el.classList.toggle('secFold', uie.fold.includes(el.dataset.sec));
     });
   }
+  // ── 도구막대에서 직접 드래그로 순서 변경 (6px 이동부터 드래그 — 제자리 클릭은 기존대로 도구 실행) ──
+  let tDrag = null, tDragged = false;
+  tbEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.pointerType === 'touch') return; // 터치는 스크롤과 충돌 — 마우스/펜만
+    const t = e.target.closest('#toolbar .tool');
+    if (t) tDrag = { el: t, x: e.clientX, y: e.clientY, on: false };
+  });
+  tbEl.addEventListener('pointermove', (e) => {
+    if (!tDrag) return;
+    if (!tDrag.on) {
+      if (Math.hypot(e.clientX - tDrag.x, e.clientY - tDrag.y) <= 6) return;
+      tDrag.on = true; tDrag.el.classList.add('tbDragging');
+      try { tbEl.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    const overEl = document.elementFromPoint(e.clientX, e.clientY);
+    const over = overEl && overEl.closest ? overEl.closest('#toolbar .tool') : null;
+    if (!over || over === tDrag.el) return;
+    const ord = allTools().map(el => el.dataset.tool);
+    const dn = tDrag.el.dataset.tool, on = over.dataset.tool;
+    const di = ord.indexOf(dn), oi = ord.indexOf(on);
+    ord.splice(di, 1);
+    ord.splice(ord.indexOf(on) + (di < oi ? 1 : 0), 0, dn); // 아래로 끌면 대상 뒤, 위로 끌면 대상 앞
+    uie.order = ord; applyToolOrder(); // 실시간 미리보기 = 저장 모델과 동일
+  });
+  const tDragEnd = () => {
+    if (!tDrag) return;
+    if (tDrag.on) {
+      tDrag.el.classList.remove('tbDragging'); uieSave();
+      tDragged = true; setTimeout(() => { tDragged = false; }, 0); // 직후의 click 1회만 차단 — 안 오면 자동 해제
+    }
+    tDrag = null;
+  };
+  tbEl.addEventListener('pointerup', tDragEnd);
+  tbEl.addEventListener('pointercancel', tDragEnd);
+  tbEl.addEventListener('click', (e) => { // 드래그 직후의 클릭은 도구 실행으로 이어지지 않게 차단
+    if (tDragged) { tDragged = false; e.stopPropagation(); e.preventDefault(); }
+  }, true);
   // 섹션 제목 클릭 = 접기/펼치기
   allSecs().forEach(el => el.querySelector('h3').addEventListener('click', () => {
     const k = el.dataset.sec;
@@ -902,7 +954,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   document.getElementById('btnTbEdit').addEventListener('click', openUiEdit);
   document.getElementById('btnUiEdit').addEventListener('click', openUiEdit);
   document.getElementById('uiEditClose').addEventListener('click', () => uiDlg.style.display = 'none');
-  document.getElementById('uiEditReset').addEventListener('click', () => { uie = { tools: [], secs: [], fold: [] }; uieSave(); applyUie(); openUiEdit(); });
+  document.getElementById('uiEditReset').addEventListener('click', () => { uie = { tools: [], secs: [], fold: [], order: [] }; uieSave(); applyUie(); openUiEdit(); });
   uiDlg.addEventListener('pointerdown', (e) => { if (e.target === uiDlg) uiDlg.style.display = 'none'; });
   applyUie();
 
