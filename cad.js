@@ -985,7 +985,7 @@ function applyTransform(e, T) {
   return e;
 }
 function transformedClone(e, T) { return applyTransform(cloneEntity(e), T); }
-function selectedEntities() { return [...state.selection].map(id => state.entities.find(x => x.id === id)).filter(Boolean); }
+function selectedEntities() { const byId = new Map(state.entities.map(e => [e.id, e])); return [...state.selection].map(id => byId.get(id)).filter(Boolean); } // O(n²) 방지
 
 // ---------- 블록(INSERT) ----------
 // INSERT 인스턴스의 자식 도형을 월드좌표로 전개(축척·회전 적용). 렌더·히트·내보내기 공용.
@@ -1459,8 +1459,14 @@ cv.addEventListener('mousemove', (ev) => {
   }
   if (draft) updateDraft();
   if (cmdOp || state.tool === 'insert') updateCmdPreview();
-  draw();
+  scheduleDraw(); // 호버 재렌더는 rAF당 1회로 코얼레싱 — 대형 도면에서 이벤트 폭주 시 프레임 드랍 방지
 });
+let drawQueued = false;
+function scheduleDraw() {
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; draw(); });
+}
 
 cv.addEventListener('mousedown', (ev) => {
   lastInputWasTouch = false;
@@ -6937,7 +6943,8 @@ document.getElementById('btnDelLayer').addEventListener('click', () => {
 // 속성 패널
 function renderProps() {
   const body = document.getElementById('propsBody');
-  const sel = [...state.selection].map(id => state.entities.find(e => e.id === id)).filter(Boolean);
+  const byId = new Map(state.entities.map(e => [e.id, e])); // 대량 선택 시 find 반복은 O(n²) — 맵으로 1패스
+  const sel = [...state.selection].map(id => byId.get(id)).filter(Boolean);
   if (!sel.length) { body.innerHTML = '<div class="empty">선택된 도형이 없습니다.</div>'; return; }
   if (sel.length > 1) {
     body.innerHTML =
@@ -7748,6 +7755,18 @@ function dxfColorIndex(hex) {
   if (map[hex]) return map[hex];
   return 7; // 기본 흰/검
 }
+// 엔티티 지오메트리 시그니처 — DXF 저장/불러오기에서 BIM 속성·z값을 같은 도형에 재결합하기 위한 키
+function entSig(e) {
+  const R = v => Math.round((+v || 0) * 100) / 100;
+  switch (e.type) {
+    case 'LINE': return 'L' + R(e.x1) + ',' + R(e.y1) + ',' + R(e.x2) + ',' + R(e.y2);
+    case 'LWPOLYLINE': return 'P' + (e.closed ? 1 : 0) + ':' + (e.points || []).map(p => R(p[0]) + ',' + R(p[1])).join(';');
+    case 'CIRCLE': return 'C' + R(e.cx) + ',' + R(e.cy) + ',' + R(e.r);
+    case 'ARC': return 'A' + R(e.cx) + ',' + R(e.cy) + ',' + R(e.r) + ',' + R(e.startAngle) + ',' + R(e.endAngle);
+    case 'TEXT': return 'T' + R(e.x) + ',' + R(e.y) + ',' + String(e.text || '').slice(0, 24);
+  }
+  return null;
+}
 function buildDXFText() {
   const L = [];
   const g = (code, val) => { L.push(code); L.push(val); };
@@ -7800,6 +7819,24 @@ function buildDXFText() {
   g(0, 'SECTION'); g(2, 'ENTITIES');
   for (const e of exportEntities(true)) writeEntity(g, e, H); // INSERT 보존, HATCH는 선으로 분해
   g(0, 'ENDSEC');
+  // WebCAD 확장(999 주석): BIM 속성·z값·메시 구획은 DXF 표준에 없어 여기 보존 — 타 CAD는 주석으로 무시
+  {
+    const wcx = { v: 1, ext: [], mesh: [] };
+    for (const e of state.entities) {
+      if (e.type === 'MESH') { wcx.mesh.push((e.tris || []).length); continue; }
+      const sig = entSig(e); if (!sig) continue;
+      const x = {};
+      if (e.bim) x.bim = e.bim;
+      if (e.zo) x.zo = e.zo;
+      if (e.z1 != null) x.z1 = e.z1;
+      if (e.z2 != null) x.z2 = e.z2;
+      if (Object.keys(x).length) wcx.ext.push([sig, x]);
+    }
+    if (wcx.ext.length || wcx.mesh.length) {
+      const js = JSON.stringify(wcx);
+      for (let i = 0; i < js.length; i += 200) g(999, 'WCX' + js.slice(i, i + 200));
+    }
+  }
   g(0, 'EOF');
 
   // 코드/값 쌍을 줄로
@@ -8153,6 +8190,15 @@ function writeEntity(g, e, H) {
       g(41, e.sx != null ? e.sx : 1); g(42, e.sy != null ? e.sy : 1); g(43, 1);
       g(50, e.rot || 0);
       break;
+    case 'MESH': // R12 호환: 삼각형마다 3DFACE — 불러오기 시 999 WCX의 mesh 구획 정보로 원래 메시 단위로 복원
+      for (const t of (e.tris || [])) {
+        head('3DFACE', 'AcDbFace');
+        g(10, t[0][0]); g(20, t[0][1]); g(30, t[0][2] || 0);
+        g(11, t[1][0]); g(21, t[1][1]); g(31, t[1][2] || 0);
+        g(12, t[2][0]); g(22, t[2][1]); g(32, t[2][2] || 0);
+        g(13, t[2][0]); g(23, t[2][1]); g(33, t[2][2] || 0);
+      }
+      break;
   }
 }
 
@@ -8235,6 +8281,7 @@ function loadDXF(text) {
     const result = parseDXFEntities(pairs);
     pushUndo();
     state.entities = result.entities;
+    try { applyWcxExt(text); } catch (e2) { console.warn('WCX 확장 복원 실패(무시):', e2); } // 999 확장: 3DFACE→MESH, BIM·z 재결합
     state.layers = result.layers.length ? result.layers : [{ name: '0', color: '#ffffff', visible: true }];
     if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
     state.currentLayer = '0';
@@ -8248,6 +8295,47 @@ function loadDXF(text) {
     alert('DXF 파일을 읽는 중 오류가 발생했습니다:\n' + err.message);
     console.error(err);
     return false;
+  }
+}
+// WebCAD 확장(999 WCX) 복원: 3DFACE 연속 구간을 MESH로 병합하고, 시그니처로 BIM 속성·z값을 재결합
+function applyWcxExt(text) {
+  let js = '';
+  for (const m of text.matchAll(/^\s*999\s*\r?\n(WCX[^\r\n]*)/gm)) js += m[1].slice(3);
+  let data = null;
+  if (js) { try { data = JSON.parse(js); } catch (e) { data = null; } }
+  // 1) _F3(3DFACE) 연속 구간 → MESH (WCX mesh의 삼각형 개수 목록이 있으면 그 단위로 분할)
+  const counts = data && Array.isArray(data.mesh) ? data.mesh.slice() : null;
+  const toTris = f => { const ts = [f.p]; if (f.p4) ts.push([f.p[0], f.p[2], f.p4]); return ts; };
+  const out = []; let run = null;
+  const flushRun = () => {
+    if (!run) return;
+    let faces = run.faces;
+    while (faces.length) {
+      const n = (counts && counts.length) ? Math.max(1, Math.round(counts.shift()) || 1) : faces.length;
+      const part = faces.slice(0, n); faces = faces.slice(n);
+      out.push({ type: 'MESH', layer: run.layer, color: run.color, tris: part.flatMap(toTris) });
+    }
+    run = null;
+  };
+  for (const e of state.entities) {
+    if (e.type === '_F3') { if (!run) run = { layer: e.layer, color: e.color, faces: [] }; run.faces.push(e); }
+    else { flushRun(); out.push(e); }
+  }
+  flushRun();
+  state.entities = out;
+  // 2) 시그니처 매칭 → bim/zo/z1/z2 재적용 (같은 시그니처 여러 개면 순서대로 소비)
+  if (data && Array.isArray(data.ext)) {
+    const map = new Map();
+    for (const [sig, x] of data.ext) { if (!map.has(sig)) map.set(sig, []); map.get(sig).push(x); }
+    for (const e of state.entities) {
+      const sig = entSig(e); if (!sig) continue;
+      const q = map.get(sig); if (!q || !q.length) continue;
+      const x = q.shift();
+      if (x.bim) e.bim = JSON.parse(JSON.stringify(x.bim));
+      if (x.zo != null) e.zo = x.zo;
+      if (x.z1 != null) e.z1 = x.z1;
+      if (x.z2 != null) e.z2 = x.z2;
+    }
   }
 }
 function parseDXFPairs(text) {
@@ -8334,6 +8422,12 @@ function parseDXFEntities(pairs) {
         if (pts.length < 2) return null;
         const closed = (num(d, 70) & 1) === 1;
         return { ...base, type: 'LWPOLYLINE', closed, points: pts };
+      }
+      case '3DFACE': {
+        const P = [[num(d, 10), num(d, 20), num(d, 30)], [num(d, 11), num(d, 21), num(d, 31)], [num(d, 12), num(d, 22), num(d, 32)]];
+        const p4 = d[13] !== undefined ? [num(d, 13), num(d, 23), num(d, 33)] : null;
+        const quad = p4 && (p4[0] !== P[2][0] || p4[1] !== P[2][1] || p4[2] !== P[2][2]);
+        return { ...base, type: '_F3', p: P, p4: quad ? p4 : null }; // loadDXF 후처리에서 연속 구간을 MESH로 병합
       }
       case 'SOLID': {
         const pts = [[num(d, 10), num(d, 20)], [num(d, 11), num(d, 21)]];
