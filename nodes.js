@@ -671,6 +671,9 @@
     border-radius:10px 10px 0 0;border:none;background:rgba(120,170,255,0.14);color:#9fd0ff;
     font:590 12px/1 system-ui;cursor:pointer;white-space:nowrap;}
   #ghFab:hover{background:rgba(120,170,255,0.24);color:#cfe6ff}
+  /* 라이트 테마: 옅은 파랑 텍스트는 흰 배경에서 대비 부족 → 진한 파랑 + 또렷한 배경 틴트 */
+  html.light #ghFab{background:rgba(20,95,215,0.13);color:#1552c0}
+  html.light #ghFab:hover{background:rgba(20,95,215,0.22);color:#0c3f9e}
   #ghOv{position:fixed;inset:0;z-index:9500;display:none;background:#0c1322;flex-direction:column;font:13px system-ui;color:#dbe6ff;}
   #ghTop{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#101a30;border-bottom:1px solid #23314e;}
   #ghTop b{flex:1;font-size:14px}
