@@ -42,6 +42,7 @@ let mouseWorld = { x: 0, y: 0 };
 let mouseScreen = { x: 0, y: 0 };
 let isPanning = false, panStart = null;
 let dragSelect = null;  // 영역 선택 박스
+let toolPend = null;    // 도구 활성 중 좌클릭 보류 — 클릭(제자리)=도구 동작, 홀드-드래그=박스 선택 (선택은 어떤 상황에서도 가능)
 let moveOp = null;      // 이동 작업
 let cmdOp = null;       // 수정 명령(offset/copy/mirror/rotate/array) 상태 머신
 let previewEnts = null; // 명령 실행 전 미리보기 도형들
@@ -684,6 +685,7 @@ function entityCrossesBox(e, b) {
     return false;
   }
   if (e.type === 'CIRCLE' || e.type === 'ARC') {
+    if (e.type === 'CIRCLE' && inB(e.cx + e.r, e.cy)) return true; // 원이 박스에 통째로 들어온 경우 (원은 끝점이 없어 아래 검사로는 누락)
     for (const pt of entityEndpoints(e)) if (inB(pt.x, pt.y)) return true; // 호 끝점이 안에
     for (const ed of edges) {
       for (const h of segCircle([ed[0], ed[1]], [ed[2], ed[3]], e.cx, e.cy, e.r)) {
@@ -1441,6 +1443,15 @@ cv.addEventListener('mousemove', (ev) => {
     state.view.x = panStart.vx - dx;
     state.view.y = panStart.vy + dy;
   }
+  if (toolPend) {
+    if (!(ev.buttons & 1)) toolPend = null; // 버튼이 이미 놓임(창 밖 release 등) — 보류 취소
+    else if (Math.hypot(ev.clientX - toolPend.sx, ev.clientY - toolPend.sy) > 5) {
+      // 홀드-드래그 = 박스 선택 시작 (도구 동작은 실행하지 않음 — 선택은 어떤 상황에서도 가능)
+      if (!toolPend.shift) state.selection.clear();
+      dragSelect = { x1: toolPend.rawW.x, y1: toolPend.rawW.y, x2: raw.x, y2: raw.y };
+      toolPend = null; renderProps();
+    }
+  }
   if (dragSelect) { dragSelect.x2 = raw.x; dragSelect.y2 = raw.y; }
   if (moveOp) {
     moveOp.dx = mouseWorld.x - moveOp.base.x; moveOp.dy = mouseWorld.y - moveOp.base.y;
@@ -1460,11 +1471,17 @@ cv.addEventListener('mousedown', (ev) => {
   }
   if (ev.button === 2) return; // 우클릭은 contextmenu에서 처리
   if (ev.button !== 0) return;
+  if (state.tool !== 'select') {
+    // 도구 활성 중엔 동작을 보류: 제자리 클릭이면 mouseup에서 도구 동작, 드래그면 박스 선택으로 전환
+    toolPend = { w: mouseWorld, rawW: screenToWorld(mouseScreen.x, mouseScreen.y), shift: ev.shiftKey, sx: ev.clientX, sy: ev.clientY };
+    return;
+  }
   handleClick(mouseWorld, screenToWorld(mouseScreen.x, mouseScreen.y), ev);
 });
 
 window.addEventListener('mouseup', (ev) => {
   if (isPanning) { isPanning = false; return; }
+  if (toolPend) { const tp = toolPend; toolPend = null; handleClick(tp.w, tp.rawW, { shiftKey: tp.shift }); } // 보류된 도구 클릭 실행 (제자리 클릭)
   if (dragSelect) finishDragSelect(ev);
   if (moveOp && state.tool === 'select') finishGripMoveMaybe();
 });
@@ -3376,9 +3393,13 @@ function bind3D(ov, cv3) {
         }
       }
     }
-    // 벽 그리기 모드/평면 도구 활성: 좌클릭은 점 찍기 전용 (박스 선택 없음)
+    // 벽 그리기 모드/평면 도구 활성: 제자리 클릭=점 찍기, 홀드-드래그=박스 선택 (선택은 어떤 상황에서도 가능)
     if ((v3.wallMode || state.tool !== 'select') && e.button === 0 && !e.shiftKey) {
-      drag = { mode: 'wallpt', x: e.clientX, y: e.clientY, moved: 0 };
+      drag = { mode: 'wallpt', x: e.clientX, y: e.clientY, moved: 0, shift: false };
+      const rb0 = cv3.getBoundingClientRect();
+      drag.kx = rb0.width ? cv3.width / rb0.width : 1; drag.ky = rb0.height ? cv3.height / rb0.height : 1;
+      drag.bx0 = (e.clientX - rb0.left) * drag.kx; drag.by0 = (e.clientY - rb0.top) * drag.ky;
+      drag.bx1 = drag.bx0; drag.by1 = drag.by0;
       try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
       return;
     }
@@ -3487,7 +3508,10 @@ function bind3D(ov, cv3) {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     drag.moved += Math.abs(dx) + Math.abs(dy);
     drag.x = e.clientX; drag.y = e.clientY;
-    if (drag.mode === 'wallpt') return;
+    if (drag.mode === 'wallpt') {
+      if (drag.moved < 4) return;
+      drag.mode = 'box'; // 도구 작도 중에도 홀드-드래그 = 박스 선택으로 전환 (클릭=점 찍기는 pointerup에서 유지)
+    }
     if (drag.mode === 'box') { // 선택 박스 러버밴드 (렌더 안에서 그림)
       drag.bx1 += dx * drag.kx; drag.by1 += dy * drag.ky;
       v3.boxRect = { x0: drag.bx0, y0: drag.by0, x1: drag.bx1, y1: drag.by1 };
@@ -6389,8 +6413,10 @@ function runCommandInput(raw) {
   }
   const tool = settings.aliases[v] || CMD_ALIASES[v]; // 사용자 단축키 우선
   if (tool && INSTANT_CMDS[tool]) { // 즉시 실행 명령(분해·결합·줌·실행취소 등)
+    // 3D 명령(extrudecrv·box·union…) 포함 모두 스페이스 반복 대상 — 단 undo/redo류는 연쇄 실행 위험이라 제외.
+    // 실행 전에 기록: 명령이 대화상자 취소 등으로 중단돼도 스페이스 반복은 가능해야 함
+    if (!['undo', 'redo', 'help'].includes(tool)) lastCommand = tool;
     INSTANT_CMDS[tool]();
-    if (tool === 'explode' || tool === 'join') lastCommand = tool;
     return;
   }
   if (tool) { setTool(tool); if (tool !== 'select') lastCommand = tool; }
@@ -6701,7 +6727,7 @@ function closeArrayDialog() { document.getElementById('arrayDlg').style.display 
 function setTool(t) {
   state.tool = t;
   if (t !== 'select' && t !== 'pan' && window.WEBCAD_API && WEBCAD_API.onUsage) WEBCAD_API.onUsage('tool:' + t);
-  draft = null; pts = []; arcState = null; moveOp = null; dragSelect = null;
+  draft = null; pts = []; arcState = null; moveOp = null; dragSelect = null; toolPend = null;
   cmdOp = null; previewEnts = null; trackPt = null; otrackAlign = null;
   document.querySelectorAll('.tool').forEach(el => el.classList.toggle('active', el.dataset.tool === t));
   cv.style.cursor = (t === 'select') ? 'default' : (t === 'pan') ? 'grab' : 'crosshair';
