@@ -188,7 +188,11 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     border:none;color:var(--muted);cursor:pointer;box-shadow:var(--spec);font-size:10px;line-height:1;
     transition:background .15s ease,color .15s ease,opacity .2s ease;opacity:.55;}
   .uiToggle:hover{background:var(--glass-fill-hi);color:var(--text);opacity:1;}
-  #tgBottom{bottom:6px;left:50%;transform:translateX(-50%);width:46px;height:20px;border-radius:var(--radius-pill);}
+  /* 명령 기록 접기 버튼 — 입력행 오른쪽 끝 (F2) */
+  #tgBottom{flex:0 0 auto;background:var(--glass-fill);border:none;color:var(--muted);cursor:pointer;
+    padding:5px 11px;border-radius:var(--radius-pill);font-size:11px;line-height:1.2;white-space:nowrap;
+    box-shadow:var(--spec);transition:background .15s ease,color .15s ease;}
+  #tgBottom:hover{background:var(--glass-fill-hi);color:var(--text);}
   /* 크기조절 핸들 — 패널 안쪽 모서리, 드래그로 폭 조절(더블클릭=기본 폭) */
   .rz{flex:0 0 6px;cursor:ew-resize;touch-action:none;position:relative;z-index:14;
     background:transparent;transition:background .15s ease;}
@@ -518,8 +522,6 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <canvas id="cv"></canvas>
       <div id="hint">선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요.</div>
       <div id="coords">X: 0.00  Y: 0.00</div>
-      <!-- 하단 명령 '기록' 접기 토글 (입력창은 항상 유지) -->
-      <button class="uiToggle" id="tgBottom" title="명령 기록 접기/펼치기">▾</button>
 
       <!-- 명령어 목록 -->
       <div id="helpDlg" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:20;">
@@ -729,6 +731,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <div id="cmdSuggest"></div>
         <input type="text" id="cmdInput" placeholder="명령어 입력 후 Enter/스페이스  ·  빈 칸 스페이스=직전 명령 반복" autocomplete="off" spellcheck="false">
       </div>
+      <!-- 명령 '기록' 접기 토글 (F2) — 입력창은 항상 유지, 접으면 작업 영역 확장 -->
+      <button id="tgBottom" title="명령 기록 접기/펼치기 (F2)">▲ 기록</button>
     </div>
   </div>
 
@@ -748,7 +752,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712c"></script>
+<script src="cad.js?v=20260712d"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
@@ -784,9 +788,12 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   const tgB = document.getElementById('tgBottom');
   function applyBottom() {
     app.classList.toggle('hideBottom', !!st.bottom);
-    tgB.textContent = st.bottom ? '▴' : '▾';
+    tgB.textContent = st.bottom ? '▼ 기록' : '▲ 기록'; // 접힘=펼치기(▼), 펼침=접기(▲) — 로그는 입력행 위에 있음
   }
   tgB.addEventListener('click', () => { st.bottom = !st.bottom; save(); applyBottom(); });
+  window.addEventListener('keydown', (ev) => { // F2 = 명령 기록 토글 (AutoCAD 관례)
+    if (ev.key === 'F2') { ev.preventDefault(); tgB.click(); }
+  });
   applyBottom();
 
   // ── 좌우 패널 폭 드래그 조절 ──

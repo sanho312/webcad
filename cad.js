@@ -7696,8 +7696,8 @@ if (cmdInputEl) {
   cmdInputEl.addEventListener('input', () => renderSuggest(cmdInputEl.value));
   cmdInputEl.addEventListener('blur', () => setTimeout(hideSuggest, 150));
   cmdInputEl.addEventListener('keydown', (ev) => {
-    // F8(직교)/F3(객체스냅)은 전역 핸들러가 처리 — 여기서 가로채지 않고 통과
-    if (ev.key === 'F8' || ev.key === 'F3') return;
+    // F8(직교)/F3(객체스냅)/F2(명령 기록 토글)는 전역 핸들러가 처리 — 여기서 가로채지 않고 통과
+    if (ev.key === 'F8' || ev.key === 'F3' || ev.key === 'F2') return;
     // 입력창이 항상 포커스되므로, 앱 전역 단축키를 여기서도 처리
     if (ev.ctrlKey) {
       const k = (typeof ev.key === 'string' ? ev.key : '').toLowerCase(); // key 없는 합성 이벤트 방어
