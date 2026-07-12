@@ -201,6 +201,28 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     transition:background .15s ease,height .15s ease;}
   .rz:hover::after,.rz.on::after{background:var(--accent);height:72px;}
 
+  /* ── 인터페이스 편집: 도구/섹션 숨김 + 섹션 접기 ── */
+  .userHide{display:none !important;}
+  #side .section > h3{cursor:pointer;user-select:none;position:relative;}
+  #side .section > h3::after{content:'▾';position:absolute;right:10px;color:var(--muted);font-size:10px;transition:transform .15s ease;}
+  #side .section.secFold > h3::after{transform:rotate(-90deg);}
+  #side .section.secFold > .body{display:none;}
+  #side .section.secFold{flex:0 0 auto !important;}
+  #btnUiEdit{position:absolute;top:5px;right:8px;z-index:5;background:transparent;border:none;color:var(--muted);
+    cursor:pointer;font-size:13px;padding:2px 5px;border-radius:var(--radius-sm);opacity:.7;}
+  #btnUiEdit:hover{background:var(--glass-fill-hi);color:var(--text);opacity:1;}
+  #side{position:relative;}
+  #btnTbEdit{grid-column:1 / -1;margin:2px 3px 6px;background:var(--glass-fill);border:none;color:var(--muted);
+    cursor:pointer;font-size:10px;padding:5px 4px;border-radius:var(--radius);box-shadow:var(--spec);}
+  #btnTbEdit:hover{background:var(--glass-fill-hi);color:var(--text);}
+  .uiEdH{font-size:12px;color:var(--accent-text);margin:6px 0 6px;}
+  #uiEdTools{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;}
+  #uiEdTools label,#uiEdSecs label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);
+    padding:3px 5px;border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #uiEdTools label:hover,#uiEdSecs label:hover{background:var(--glass-fill-hi);}
+  #uiEdTools .uiEdGrp{grid-column:1 / -1;font-size:10.5px;font-weight:700;color:var(--muted);margin-top:6px;}
+  #uiEdSecs label{padding:5px;}
+
   /* Canvas */
   #canvasWrap{position:relative;flex:1 1 auto;min-width:0;background:var(--canvas-bg);}
   canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
@@ -514,6 +536,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <svg viewBox="0 0 24 24"><rect x="4" y="12" width="6" height="6"/><rect x="12" y="4" width="9" height="9"/></svg>3D크기</div>
       <div class="tool t3" data-tool="settop" title="상단 정렬 (settop) — 벽·기둥 상단 높이 맞춤">
         <svg viewBox="0 0 24 24"><path d="M3 5h18"/><rect x="6" y="8" width="4" height="11"/><rect x="14" y="8" width="4" height="7"/></svg>상단정렬</div>
+      <div class="tdiv"></div>
+      <button id="btnTbEdit" title="도구막대 편집 — 표시할 도구 선택">⚙ 편집</button>
     </div>
     <div class="rz" id="rzLeft" title="드래그: 도구막대 폭 조절 · 더블클릭: 기본 폭"></div>
 
@@ -522,6 +546,28 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <canvas id="cv"></canvas>
       <div id="hint">선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요.</div>
       <div id="coords">X: 0.00  Y: 0.00</div>
+
+      <!-- 인터페이스 편집: 도구막대 표시 도구 + 우측 패널 섹션 -->
+      <div id="uiEditDlg" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:21;">
+        <div class="dlgBox" style="width:560px;max-width:94vw;max-height:84%;display:flex;flex-direction:column;">
+          <h2 style="display:flex;align-items:center;gap:10px;">🎛 인터페이스 편집
+            <span style="flex:1"></span>
+            <button class="miniBtn" id="uiEditReset">기본값 복원</button>
+            <button class="miniBtn" id="uiEditClose">닫기</button></h2>
+          <div class="dlgHint">체크를 끄면 화면에서 숨겨집니다(기능은 명령어 입력으로 계속 사용 가능). 변경은 즉시 반영·저장됩니다.</div>
+          <div style="display:flex;gap:14px;overflow:auto;min-height:0;">
+            <div style="flex:1;min-width:0;">
+              <h4 class="uiEdH">왼쪽 도구막대</h4>
+              <div id="uiEdTools"></div>
+            </div>
+            <div style="flex:0 0 190px;">
+              <h4 class="uiEdH">오른쪽 패널</h4>
+              <div id="uiEdSecs"></div>
+              <div class="dlgHint" style="margin-top:8px;">팁: 패널의 섹션 제목을 클릭하면 접고 펼 수 있습니다.</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- 명령어 목록 -->
       <div id="helpDlg" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:20;">
@@ -668,7 +714,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <!-- Right side -->
     <div class="rz" id="rzRight" title="드래그: 측면 패널 폭 조절 · 더블클릭: 기본 폭"></div>
     <div id="side">
-      <div class="section">
+      <button id="btnUiEdit" title="인터페이스 편집 — 도구·패널 구성">⚙</button>
+      <div class="section" data-sec="layers">
         <h3>레이어</h3>
         <div class="body">
           <div id="layerList"></div>
@@ -680,7 +727,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         </div>
       </div>
 
-      <div class="section" id="blockSection" style="display:none">
+      <div class="section" id="blockSection" data-sec="blocks" style="display:none">
         <h3>블록</h3>
         <div class="body">
           <div id="blockList" style="display:flex;flex-direction:column;gap:3px;"></div>
@@ -692,7 +739,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         </div>
       </div>
 
-      <div class="section">
+      <div class="section" data-sec="draw">
         <h3>그리기 설정</h3>
         <div class="body">
           <div class="row"><label>층</label><select id="curLv" style="flex:1"></select>
@@ -709,7 +756,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         </div>
       </div>
 
-      <div class="section" style="flex:1;overflow:auto;">
+      <div class="section" data-sec="props" style="flex:1;overflow:auto;">
         <h3>속성 / 선택</h3>
         <div class="body" id="propsBody">
           <div class="empty">선택된 도형이 없습니다.</div>
@@ -752,7 +799,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712d"></script>
+<script src="cad.js?v=20260712e"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
@@ -795,6 +842,68 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     if (ev.key === 'F2') { ev.preventDefault(); tgB.click(); }
   });
   applyBottom();
+
+  // ── 인터페이스 편집: 도구막대 도구 표시/숨김 + 우측 패널 섹션 표시/숨김/접기 ──
+  const UIE_KEY = 'webcad_uiedit_v1';
+  let uie = { tools: [], secs: [], fold: [] }; // 숨긴 도구 / 숨긴 섹션 / 접은 섹션
+  try { uie = Object.assign(uie, JSON.parse(localStorage.getItem(UIE_KEY) || '{}')); } catch (e) {}
+  const uieSave = () => { try { localStorage.setItem(UIE_KEY, JSON.stringify(uie)); } catch (e) {} };
+  const allTools = () => [...document.querySelectorAll('#toolbar .tool')];
+  const allSecs = () => [...document.querySelectorAll('#side .section[data-sec]')];
+  function applyUie() {
+    allTools().forEach(el => el.classList.toggle('userHide', uie.tools.includes(el.dataset.tool)));
+    allSecs().forEach(el => {
+      el.classList.toggle('userHide', uie.secs.includes(el.dataset.sec));
+      el.classList.toggle('secFold', uie.fold.includes(el.dataset.sec));
+    });
+  }
+  // 섹션 제목 클릭 = 접기/펼치기
+  allSecs().forEach(el => el.querySelector('h3').addEventListener('click', () => {
+    const k = el.dataset.sec;
+    uie.fold = uie.fold.includes(k) ? uie.fold.filter(x => x !== k) : uie.fold.concat(k);
+    uieSave(); applyUie();
+  }));
+  // 편집 대화상자
+  const uiDlg = document.getElementById('uiEditDlg');
+  function openUiEdit() {
+    const toolBox = document.getElementById('uiEdTools');
+    toolBox.innerHTML = '';
+    let grpAdded = false;
+    for (const el of document.getElementById('toolbar').children) {
+      if (el.classList.contains('t3label')) { const h = document.createElement('div'); h.className = 'uiEdGrp'; h.textContent = el.textContent; toolBox.appendChild(h); continue; }
+      if (!el.classList.contains('tool')) continue;
+      if (!grpAdded) { const h = document.createElement('div'); h.className = 'uiEdGrp'; h.textContent = '2D 작도·편집'; toolBox.appendChild(h); grpAdded = true; }
+      const t = el.dataset.tool;
+      const lb = document.createElement('label');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !uie.tools.includes(t);
+      cb.addEventListener('change', () => {
+        uie.tools = cb.checked ? uie.tools.filter(x => x !== t) : uie.tools.concat(t);
+        uieSave(); applyUie();
+      });
+      lb.appendChild(cb); lb.appendChild(document.createTextNode(el.textContent.trim() + ' (' + t + ')'));
+      toolBox.appendChild(lb);
+    }
+    const secBox = document.getElementById('uiEdSecs');
+    secBox.innerHTML = '';
+    for (const el of allSecs()) {
+      const k = el.dataset.sec;
+      const lb = document.createElement('label');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !uie.secs.includes(k);
+      cb.addEventListener('change', () => {
+        uie.secs = cb.checked ? uie.secs.filter(x => x !== k) : uie.secs.concat(k);
+        uieSave(); applyUie();
+      });
+      lb.appendChild(cb); lb.appendChild(document.createTextNode(el.querySelector('h3').textContent.trim()));
+      secBox.appendChild(lb);
+    }
+    uiDlg.style.display = 'flex';
+  }
+  document.getElementById('btnTbEdit').addEventListener('click', openUiEdit);
+  document.getElementById('btnUiEdit').addEventListener('click', openUiEdit);
+  document.getElementById('uiEditClose').addEventListener('click', () => uiDlg.style.display = 'none');
+  document.getElementById('uiEditReset').addEventListener('click', () => { uie = { tools: [], secs: [], fold: [] }; uieSave(); applyUie(); openUiEdit(); });
+  uiDlg.addEventListener('pointerdown', (e) => { if (e.target === uiDlg) uiDlg.style.display = 'none'; });
+  applyUie();
 
   // ── 좌우 패널 폭 드래그 조절 ──
   const toolbar = document.getElementById('toolbar');
