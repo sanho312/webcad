@@ -415,10 +415,12 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <span id="fileName" title="현재 작업 파일">새 파일</span>
     <span class="spacer"></span>
     <button class="tbtn" id="btnGrid">그리드</button>
-    <button class="tbtn" id="btnZoomFit" title="전체보기 (F 또는 z 명령)">전체보기</button>
-    <button class="tbtn" id="btnOrtho" title="직교 모드 (F8) — 수평·수직 고정">직교</button>
-    <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처">객체스냅</button>
-    <button class="tbtn" id="btnCmdHelp" title="전체 명령어 목록 (help 또는 ? 입력)">❓ 명령어</button>
+    <!-- 전체보기·직교·객체스냅·명령어: 상단바에서 숨김(하단 상태바에 직교·객체스냅 토글 있음, 전체보기=z명령·더블클릭, 명령어=help/? 입력).
+         cad.js가 이 ID들을 직접 참조하고 상태바가 이들을 프록시하므로 DOM은 유지하고 display:none으로만 숨김 -->
+    <button class="tbtn" id="btnZoomFit" title="전체보기 (F 또는 z 명령)" style="display:none">전체보기</button>
+    <button class="tbtn" id="btnOrtho" title="직교 모드 (F8) — 수평·수직 고정" style="display:none">직교</button>
+    <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처" style="display:none">객체스냅</button>
+    <button class="tbtn" id="btnCmdHelp" title="전체 명령어 목록 (help 또는 ? 입력)" style="display:none">❓ 명령어</button>
     <button class="tbtn" id="btnTheme" title="다크/화이트 모드 전환">🌓</button>
     <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
     <input type="file" id="fileInput" accept=".dxf,.stl,.obj" style="display:none">
@@ -546,7 +548,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <div id="canvasWrap">
       <canvas id="cv"></canvas>
       <div id="hint">선택 도구입니다. 도형을 클릭하거나 빈 영역을 드래그하세요.</div>
-      <div id="coords">X: 0.00  Y: 0.00</div>
+      <!-- 캔버스 좌하단 좌표: 하단 상태바(#stCoords)와 중복 → 화면에서 숨김. 단 이 요소가 상태바 좌표의 원본(cad.js가 텍스트를 여기 씀)이라 DOM은 유지 -->
+      <div id="coords" style="display:none">X: 0.00  Y: 0.00</div>
 
       <!-- 인터페이스 편집: 도구막대 표시 도구 + 우측 패널 섹션 -->
       <div id="uiEditDlg" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:21;">
@@ -800,7 +803,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712g"></script>
+<script src="cad.js?v=20260712h"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
