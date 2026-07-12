@@ -190,7 +190,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     transition:background .15s ease,color .15s ease,opacity .2s ease;opacity:.55;}
   .uiToggle:hover{background:var(--glass-fill-hi);color:var(--text);opacity:1;}
   /* 명령 기록 접기 버튼 — 입력행 오른쪽 끝 (F2) */
-  #tgBottom{flex:0 0 auto;background:var(--glass-fill);border:none;color:var(--muted);cursor:pointer;
+  #tgBottom{flex:0 0 auto;margin-left:auto;background:var(--glass-fill);border:none;color:var(--muted);cursor:pointer;
     padding:5px 11px;border-radius:var(--radius-pill);font-size:11px;line-height:1.2;white-space:nowrap;
     box-shadow:var(--spec);transition:background .15s ease,color .15s ease;}
   #tgBottom:hover{background:var(--glass-fill-hi);color:var(--text);}
@@ -254,7 +254,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   #cmdPrompt{color:var(--muted);flex:0 1 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
   .promptBtn{margin-left:6px;padding:1px 9px;font-size:11px;line-height:1.5;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:4px;cursor:pointer;vertical-align:middle;}
   .promptBtn:hover{filter:brightness(1.12);}
-  .cmdInputWrap{flex:1 1 260px;min-width:0;position:relative;}
+  /* 명령 입력창 폭 제한 — #cmdPrompt 숨김 후 입력창이 전체 폭까지 늘어나 빈 회색 바처럼 보이던 것 방지 */
+  .cmdInputWrap{flex:1 1 260px;min-width:0;max-width:520px;position:relative;}
   #cmdInput{width:100%;background:var(--glass-fill);color:var(--text);border:none;
     -webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
     border-radius:var(--radius-pill);padding:7px 14px;font-size:13.5px;font-family:var(--mono);
@@ -805,7 +806,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712n"></script>
+<script src="cad.js?v=20260712o"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
