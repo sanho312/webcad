@@ -560,8 +560,9 @@
 
   // ---------- UI ----------
   const css = `
-  #aiFab{position:fixed;right:14px;bottom:14px;z-index:9000;width:46px;height:46px;border-radius:50%;border:1px solid #3a4a6a;
-    background:#16213c;color:#eaf2ff;font-size:22px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.45);}
+  /* AI 코워커 토글: 명령창(#cmdInputRow) 오른쪽 빈 공간에 인라인 버튼으로 배치 */
+  #aiFab{flex:0 0 auto;margin-left:8px;width:30px;height:30px;border-radius:8px;border:1px solid #3a4a6a;
+    background:#16213c;color:#eaf2ff;font-size:17px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
   #aiFab:hover{background:#1d2b4f}
   #aiPanel{position:fixed;right:14px;bottom:68px;z-index:9001;width:360px;max-width:calc(100vw - 28px);height:500px;max-height:calc(100vh - 90px);
     display:none;flex-direction:column;background:#111a30;border:1px solid #33406a;border-radius:12px;overflow:hidden;
@@ -642,7 +643,10 @@
     sendBtn.addEventListener('click', () => { if (busy) { if (aborter) aborter.abort(); return; } submit(); }); // 작업 중엔 중단 버튼
     row.appendChild(inEl); row.appendChild(sendBtn);
     panel.appendChild(row);
-    document.body.appendChild(fab);
+    // AI 토글을 명령창 오른쪽(기록 버튼 앞)에 삽입 — 화면 일치감 + 우하단 코너 안 가림. 채팅 패널(panel)은 그대로 유지
+    const cmdRow = document.getElementById('cmdInputRow'), tgB = document.getElementById('tgBottom');
+    if (cmdRow) { if (tgB) cmdRow.insertBefore(fab, tgB); else cmdRow.appendChild(fab); }
+    else document.body.appendChild(fab); // 폴백
     document.body.appendChild(panel);
     setupEl.style.display = cfg.key ? 'none' : 'flex';
     if (history.length) renderHistory(); else greet();

@@ -415,7 +415,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     </span>
     <span id="fileName" title="현재 작업 파일">새 파일</span>
     <span class="spacer"></span>
-    <button class="tbtn" id="btnGrid">그리드</button>
+    <!-- 그리드 토글: 하단 상태바에 이미 있어 상단에선 숨김(cad.js·상태바 프록시 참조 유지 위해 DOM만 남김) -->
+    <button class="tbtn" id="btnGrid" style="display:none">그리드</button>
     <!-- 전체보기·직교·객체스냅·명령어: 상단바에서 숨김(하단 상태바에 직교·객체스냅 토글 있음, 전체보기=z명령·더블클릭, 명령어=help/? 입력).
          cad.js가 이 ID들을 직접 참조하고 상태바가 이들을 프록시하므로 DOM은 유지하고 display:none으로만 숨김 -->
     <button class="tbtn" id="btnZoomFit" title="전체보기 (F 또는 z 명령)" style="display:none">전체보기</button>
@@ -806,9 +807,9 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712o"></script>
-<script src="ai.js?v=8"></script>
-<script src="nodes.js?v=8"></script>
+<script src="cad.js?v=20260712p"></script>
+<script src="ai.js?v=9"></script>
+<script src="nodes.js?v=9"></script>
 <script src="auth-config.js?v=2"></script>
 <script src="auth.js?v=8"></script>
 <script src="cloud.js?v=5"></script>

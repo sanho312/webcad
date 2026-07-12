@@ -666,9 +666,11 @@
 
   // ---------- 오버레이 만들기 ----------
   const css = `
-  #ghFab{position:fixed;left:14px;bottom:14px;z-index:9000;height:38px;padding:0 14px;border-radius:19px;border:1px solid #31456e;
-    background:#16213c;color:#dbe6ff;font:13px/1 system-ui;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);}
-  #ghFab:hover{background:#1d2b4f}
+  /* 노드 버튼: 문서 탭 클러스터(#docTabs)의 맨 왼쪽에 탭처럼 배치 — 파일 탭과 높이·모서리 통일 */
+  #ghFab{flex:0 0 auto;align-self:flex-end;display:flex;align-items:center;height:29px;padding:0 11px;
+    border-radius:10px 10px 0 0;border:none;background:rgba(120,170,255,0.14);color:#9fd0ff;
+    font:590 12px/1 system-ui;cursor:pointer;white-space:nowrap;}
+  #ghFab:hover{background:rgba(120,170,255,0.24);color:#cfe6ff}
   #ghOv{position:fixed;inset:0;z-index:9500;display:none;background:#0c1322;flex-direction:column;font:13px system-ui;color:#dbe6ff;}
   #ghTop{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#101a30;border-bottom:1px solid #23314e;}
   #ghTop b{flex:1;font-size:14px}
@@ -736,7 +738,12 @@
     cv = el('canvas', { id: 'ghCv' }); cw.appendChild(cv);
     statEl = el('div', { id: 'ghStat' }, ''); cw.appendChild(statEl);
     wrap.appendChild(cw); ov.appendChild(wrap);
-    document.body.appendChild(fab); document.body.appendChild(ov);
+    document.body.appendChild(ov);
+    // 노드 버튼을 문서 탭 클러스터 맨 왼쪽에 삽입 (renderDocTabs가 innerHTML을 재생성하므로 전역 참조로 매 렌더 후 재삽입)
+    window.__nodeTabBtn = fab;
+    const dt = document.getElementById('docTabs');
+    if (dt) dt.insertBefore(fab, dt.firstChild);
+    else document.body.appendChild(fab); // 폴백
     ctx = cv.getContext('2d');
     bindCanvas();
     buildCtrl();

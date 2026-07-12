@@ -8779,6 +8779,7 @@ function renderDocTabs() {
     ev.stopPropagation(); closeDocTab(+el.dataset.close);
   }));
   document.getElementById('dtabNew').addEventListener('click', newDocTab);
+  if (window.__nodeTabBtn) bar.insertBefore(window.__nodeTabBtn, bar.firstChild); // 노드 버튼을 탭 맨 왼쪽에 재삽입(innerHTML 재생성 후)
 }
 
 function newDrawing() {
