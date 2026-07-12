@@ -799,7 +799,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260712e"></script>
+<script src="cad.js?v=20260712f"></script>
 <script src="ai.js?v=8"></script>
 <script src="nodes.js?v=8"></script>
 <script src="auth-config.js?v=2"></script>
@@ -836,6 +836,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   function applyBottom() {
     app.classList.toggle('hideBottom', !!st.bottom);
     tgB.textContent = st.bottom ? '▼ 기록' : '▲ 기록'; // 접힘=펼치기(▼), 펼침=접기(▲) — 로그는 입력행 위에 있음
+    window.dispatchEvent(new Event('resize')); // 캔버스 세로 변화 → 2D/3D 버퍼 재조정
   }
   tgB.addEventListener('click', () => { st.bottom = !st.bottom; save(); applyBottom(); });
   window.addEventListener('keydown', (ev) => { // F2 = 명령 기록 토글 (AutoCAD 관례)
@@ -916,6 +917,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   function applyW() {
     toolbar.style.width = clampW(st.toolbarW || DEF.toolbarW, LIM.toolbar) + 'px';
     side.style.width = clampW(st.sideW || DEF.sideW, LIM.side) + 'px';
+    // 2D/3D 캔버스 버퍼 재조정 — RO는 렌더 프레임 대기라 드래그 중 즉시 반영을 위해 동기 통지
+    window.dispatchEvent(new Event('resize'));
   }
   applyW();
   function bindResize(handle, calc, key, lim) {

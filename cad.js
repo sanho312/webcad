@@ -3636,6 +3636,9 @@ function bind3D(ov, cv3) {
     zi.addEventListener('keydown', (e) => e.stopPropagation()); // 전역 단축키와 충돌 방지
   }
   window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
+  // 패널 폭 드래그·명령기록 접기 등 window resize 없이 영역만 변하는 경우 — 2D(wrap)와 동일하게 관찰
+  // (버퍼 크기를 다시 잡지 않으면 CSS만 늘어나 개체가 왜곡되어 보임)
+  new ResizeObserver(() => { if (ov.style.display !== 'none') { size3D(); render3D(); } }).observe(ov);
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
