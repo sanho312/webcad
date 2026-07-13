@@ -2480,18 +2480,8 @@ function open3D() {
     ov.id = 'bim3d';
     ov.style.cssText = 'position:absolute;inset:0;z-index:18;background:var(--bg);display:flex;flex-direction:column;';
     ov.innerHTML = `
-      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>
-      <div id="cplaneBar" style="position:absolute;left:8px;bottom:8px;z-index:3;display:flex;gap:5px;align-items:center;
-        background:var(--glass-chrome);-webkit-backdrop-filter:var(--glass);backdrop-filter:var(--glass);
-        padding:5px 9px;border-radius:11px;box-shadow:var(--spec);"
-        title="작업면(Construction Plane) 높이 — 3D에서 그리는 객체가 이 높이에 생성됩니다">
-        <span style="font-size:11px;color:var(--muted);white-space:nowrap;">작업면 Z</span>
-        <button class="miniBtn" id="cpMinus" style="min-width:22px;">−</button>
-        <input id="cpZ" type="number" step="100" value="0" style="width:64px;font-size:12px;">
-        <button class="miniBtn" id="cpPlus" style="min-width:22px;">＋</button>
-        <input id="cpSlide" type="range" min="-1000" max="9000" step="100" value="0" style="width:110px;">
-        <button class="miniBtn" id="cpReset" title="현재 층 레벨로">층</button>
-      </div>`;
+      <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>`;
+      // 작업면 Z 컨트롤은 하단 상태바(#cplaneStatus)로 이동 — 3D 모드에서만 표시(syncViewSeg)
     document.getElementById('canvasWrap').appendChild(ov);
     const cv3 = ov.querySelector('#b3cv');
     v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
@@ -2558,6 +2548,7 @@ function syncViewSeg(is3d) {
   p.style.background = is3d ? 'transparent' : 'var(--accent)'; p.style.color = is3d ? '' : '#fff';
   d.style.background = is3d ? 'var(--accent)' : 'transparent'; d.style.color = is3d ? '#fff' : '';
   document.getElementById('toolbar')?.classList.toggle('show3d', is3d); // 3D 전용 도구함 표시 전환
+  const cps = document.getElementById('cplaneStatus'); if (cps) cps.style.display = is3d ? 'inline-flex' : 'none'; // 작업면 Z는 3D에서만
 }
 // 3D 열린 동안 모델 변경(속성 수정·삭제·undo) 감지 → 재빌드
 let live3dTimer = null, live3dRev = -1, live3dSel = '';
@@ -3625,15 +3616,17 @@ function bind3D(ov, cv3) {
     render3D();
   };
   v3.setWallMode = setWallMode;
-  { // 작업면 컨트롤
-    const zi = ov.querySelector('#cpZ'), sl = ov.querySelector('#cpSlide');
-    zi.value = cplaneZ(); sl.value = cplaneZ();
-    zi.addEventListener('change', () => setCplane(parseFloat(zi.value)));
-    sl.addEventListener('input', () => setCplane(parseFloat(sl.value)));
-    ov.querySelector('#cpMinus').addEventListener('click', () => setCplane(cplaneZ() - 100));
-    ov.querySelector('#cpPlus').addEventListener('click', () => setCplane(cplaneZ() + 100));
-    ov.querySelector('#cpReset').addEventListener('click', () => { v3.cplane = null; setCplane(NaN); });
-    zi.addEventListener('keydown', (e) => e.stopPropagation()); // 전역 단축키와 충돌 방지
+  { // 작업면 컨트롤 (하단 상태바 #cplaneStatus로 이동됨 — getElementById로 배선)
+    const zi = document.getElementById('cpZ'), sl = document.getElementById('cpSlide');
+    if (zi && sl) {
+      zi.value = cplaneZ(); sl.value = cplaneZ();
+      zi.addEventListener('change', () => setCplane(parseFloat(zi.value)));
+      sl.addEventListener('input', () => setCplane(parseFloat(sl.value)));
+      document.getElementById('cpMinus').addEventListener('click', () => setCplane(cplaneZ() - 100));
+      document.getElementById('cpPlus').addEventListener('click', () => setCplane(cplaneZ() + 100));
+      document.getElementById('cpReset').addEventListener('click', () => { v3.cplane = null; setCplane(NaN); });
+      zi.addEventListener('keydown', (e) => e.stopPropagation()); // 전역 단축키와 충돌 방지
+    }
   }
   window.addEventListener('resize', () => { if (ov.style.display !== 'none') { size3D(); render3D(); } });
   // 패널 폭 드래그·명령기록 접기 등 window resize 없이 영역만 변하는 경우 — 2D(wrap)와 동일하게 관찰
