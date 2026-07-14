@@ -440,6 +440,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <svg viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="4"/></svg>선</div>
       <div class="tool" data-tool="pline" title="폴리라인 (P)">
         <svg viewBox="0 0 24 24"><polyline points="3,18 9,8 14,14 21,5"/></svg>폴리</div>
+      <div class="tool" data-tool="spline" title="자유곡선 (spline) — 제어점을 부드럽게 통과하는 곡선">
+        <svg viewBox="0 0 24 24"><path d="M3 17c4 0 4-10 8-10s4 10 8 10"/></svg>자유곡선</div>
       <div class="tool" data-tool="rect" title="사각형 (R)">
         <svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12"/></svg>사각</div>
       <div class="tool" data-tool="circle" title="원 (C)">
@@ -519,6 +521,12 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <svg viewBox="0 0 24 24"><path d="M4 20V9l4-3h8l4 3v11"/><path d="M4 20h16"/></svg>곡선돌출</div>
       <div class="tool t3" data-tool="extrudesrf" title="면 돌출 (extrudesrf) — 면 클릭 후 두께">
         <svg viewBox="0 0 24 24"><rect x="4" y="10" width="10" height="8"/><path d="M14 10l6-4M14 18l6-4M8 10V6h12v4"/></svg>면돌출</div>
+      <div class="tool t3" data-tool="loft" title="로프트 (loft) — 곡선 2개+ 선택 후 실행, 서로 다른 z에 두면 입체">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="2.5"/><ellipse cx="12" cy="18" rx="4" ry="2"/><path d="M5 6l3 12M19 6l-3 12"/></svg>로프트</div>
+      <div class="tool t3" data-tool="revolve" title="회전체 (revolve) — 프로필 곡선 선택 후 수직축 둘레로 회전">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M12 5c5 2 5 12 0 14"/><ellipse cx="12" cy="12" rx="6" ry="2.5"/></svg>회전체</div>
+      <div class="tool t3" data-tool="slice" title="절단 (slice) — 입체 선택 후 z 입력, 위/아래 두 조각으로">
+        <svg viewBox="0 0 24 24"><path d="M5 15h14"/><path d="M6 15V9l6-3 6 3v6"/><path d="M3 19h18"/></svg>절단</div>
       <div class="tdiv t3"></div>
       <div class="t3label t3">3D 불리언</div>
       <div class="tool t3" data-tool="union" title="합집합 (union) — 두 솔리드를 하나로">
@@ -816,7 +824,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260713a"></script>
+<script src="cad.js?v=20260713c"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>

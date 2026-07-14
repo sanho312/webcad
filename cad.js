@@ -1495,7 +1495,7 @@ window.addEventListener('mouseup', (ev) => {
 // 우클릭/두 손가락 탭: 작도 중이면 완료/취소, 아니면 선택 도구로
 function contextAction() {
   if (state.tool === 'trim' && cmdOp && cmdOp.name === 'trim') { trimSpaceAction(); return; } // 우클릭=Space
-  if (pts.length) { finishPolyline(); }
+  if (pts.length) { if (state.tool === 'spline') finishSpline(false); else finishPolyline(); }
   else if (draft) { cancelDraft(); }
   else { setTool('select'); }
 }
@@ -1680,6 +1680,7 @@ function handleClick(w, rawW, ev) {
       }
       break;
     case 'pline':
+    case 'spline': // 자유곡선: 제어점 연속 클릭 → Enter/우클릭으로 확정(부드럽게 통과)
       pts.push({ x: w.x, y: w.y });
       break;
     case 'rect':
@@ -4507,6 +4508,192 @@ function cmdMove3D(copy) {
   logLine(`  ✔ ${copy ? 'Copy3D' : 'Move3D'} (${dx}, ${dy}, ${dz}) — ${targets.length}개`, 'ok');
   boolRefresh();
 }
+// ============================================================
+//  작업 자유도 확장 — 자유곡선(spline) · 로프트 · 회전체 · 절단 · 조건선택 · 부피
+// ============================================================
+// 곡선 샘플링(끝점 포함). pointsAlongEntity는 열린 곡선의 끝점을 제외하므로 로프트/회전체엔 부적합
+function crvClosedQ(e) { return e.type === 'CIRCLE' || (e.type === 'LWPOLYLINE' && !!e.closed); }
+function crvPtAt(e, t) { // t 0..1 (둘레 기준) → [x,y]
+  if (e.type === 'LINE') return [e.x1 + (e.x2 - e.x1) * t, e.y1 + (e.y2 - e.y1) * t];
+  if (e.type === 'CIRCLE') { const a = t * 2 * Math.PI; return [e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]; }
+  if (e.type === 'ARC') { let s = e.startAngle, en = e.endAngle; if (en < s) en += 360; const a = (s + (en - s) * t) * Math.PI / 180; return [e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]; }
+  if (e.type === 'LWPOLYLINE') {
+    const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
+    if (!n) return null;
+    const lens = []; let total = 0;
+    for (let i = 0; i < segN; i++) { const L = Math.hypot(p[(i + 1) % n][0] - p[i][0], p[(i + 1) % n][1] - p[i][1]); lens.push(L); total += L; }
+    if (!total) return [p[0][0], p[0][1]];
+    let d = Math.max(0, Math.min(total, t * total));
+    for (let i = 0; i < segN; i++) {
+      if (d <= lens[i] || i === segN - 1) { const u = lens[i] ? Math.max(0, Math.min(1, d / lens[i])) : 0; return [p[i][0] + (p[(i + 1) % n][0] - p[i][0]) * u, p[i][1] + (p[(i + 1) % n][1] - p[i][1]) * u]; }
+      d -= lens[i];
+    }
+  }
+  return null;
+}
+function crvSampleN(e, n) { // 닫힘=n개 / 열림=n+1개(끝점 포함), z 반영(3D 선은 정점 z 보간)
+  const closed = crvClosedQ(e), cnt = closed ? n : n + 1, out = [];
+  for (let i = 0; i < cnt; i++) {
+    const t = i / n, p = crvPtAt(e, t); if (!p) continue;
+    const z = (e.type === 'LINE' && (e.z1 != null || e.z2 != null))
+      ? (e.z1 || 0) + ((e.z2 || 0) - (e.z1 || 0)) * t : (e.zo || 0);
+    out.push([p[0], p[1], z]);
+  }
+  return out;
+}
+const LOFTABLE = ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'];
+
+// ---------- 자유곡선(spline): 제어점을 부드럽게 통과하는 곡선 (Catmull-Rom → 폴리라인) ----------
+function catmullRom2D(P, closed, seg) {
+  const n = P.length; if (n < 3) return P.map(p => p.slice());
+  const out = [], at = i => P[closed ? (i + n) % n : Math.max(0, Math.min(n - 1, i))];
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    for (let s = 0; s < seg; s++) {
+      const t = s / seg, t2 = t * t, t3 = t2 * t;
+      out.push([
+        0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+        0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3),
+      ]);
+    }
+  }
+  if (closed) out.push(out[0].slice()); else out.push(P[n - 1].slice());
+  return out;
+}
+function finishSpline(closed) {
+  if (pts.length >= 2) {
+    pushUndo();
+    const P = pts.map(p => [p.x, p.y]);
+    const smooth = P.length >= 3 ? catmullRom2D(P, !!closed, 12) : P;
+    addEntity({ type: 'LWPOLYLINE', closed: !!closed, points: smooth });
+    logLine(`  ✔ 자유곡선 (제어점 ${P.length}개 → 정점 ${smooth.length}개${closed ? ' · 닫힘' : ''})`, 'ok');
+    updateStat();
+  }
+  pts = []; draw();
+}
+
+// ---------- 로프트: 선택한 곡선들을 순서대로 이어 면/입체 생성 ----------
+function cmdLoft() {
+  const sel = selectedEntities().filter(e => LOFTABLE.includes(e.type));
+  if (sel.length < 2) { logLine('  로프트: 이을 곡선을 2개 이상 선택하세요 (선·폴리라인·원·호). 서로 다른 높이(z 오프셋)에 두면 입체가 됩니다.', 'warn'); return; }
+  const sv = bimAskNum('단면 분할 수 (클수록 매끄러움):', 24); if (sv == null) return;
+  const n = Math.max(3, Math.min(200, Math.round(sv)));
+  pushUndo();
+  let made = 0;
+  for (let s = 0; s + 1 < sel.length; s++) {
+    const A = crvSampleN(sel[s], n), B = crvSampleN(sel[s + 1], n);
+    const N = Math.min(A.length, B.length); if (N < 2) continue;
+    const closed = crvClosedQ(sel[s]) && crvClosedQ(sel[s + 1]);
+    const M = closed ? N : N - 1, tris = [];
+    for (let k = 0; k < M; k++) { const k2 = (k + 1) % N; tris.push([A[k], B[k], B[k2]]); tris.push([A[k], B[k2], A[k2]]); }
+    if (tris.length) { addEntity({ type: 'MESH', tris }); made++; }
+  }
+  if (!made) { logLine('  로프트: 생성할 면이 없습니다.', 'warn'); undo(); return; }
+  logLine(`  ✔ 로프트 ${made}개 생성 (곡선 ${sel.length}개 연결 · 분할 ${n})`, 'ok');
+  updateStat(); renderProps(); boolRefresh();
+}
+
+// ---------- 회전체: 프로필(x=축까지 거리, y=높이)을 수직축 둘레로 회전 ----------
+function cmdRevolve() {
+  const sel = selectedEntities().filter(e => LOFTABLE.includes(e.type));
+  if (!sel.length) { logLine('  회전체: 프로필 곡선을 선택하세요 — 평면 좌표를 x=회전축까지 거리(반지름), y=높이로 해석합니다.', 'warn'); return; }
+  const c = ask3('회전축 중심 x,y:', '0,0'); if (!c) return;
+  const sv = bimAskNum('원주 분할 수:', 24); if (sv == null) return;
+  const av = bimAskNum('스윕 각도(도, 360=한 바퀴):', 360); if (av == null) return;
+  const seg = Math.max(4, Math.min(96, Math.round(sv))), sw = av * Math.PI / 180;
+  pushUndo();
+  let made = 0;
+  for (const e of sel) {
+    const c0 = crvSampleN(e, 32);
+    const prof = crvClosedQ(e) ? c0.concat([c0[0]]) : c0;
+    if (prof.length < 2) continue;
+    const ring = (p, a) => [c[0] + p[0] * Math.cos(a), c[1] + p[0] * Math.sin(a), p[1]];
+    const tris = [];
+    for (let i = 0; i + 1 < prof.length; i++) for (let j = 0; j < seg; j++) {
+      const a0 = sw * j / seg, a1 = sw * (j + 1) / seg;
+      const A = ring(prof[i], a0), B = ring(prof[i], a1), C = ring(prof[i + 1], a1), D = ring(prof[i + 1], a0);
+      tris.push([A, B, C]); tris.push([A, C, D]);
+    }
+    if (tris.length) { addEntity({ type: 'MESH', tris }); made++; }
+  }
+  if (!made) { logLine('  회전체: 생성 실패 — 프로필 점이 부족합니다.', 'warn'); undo(); return; }
+  logLine(`  ✔ 회전체 ${made}개 생성 (축 ${c[0]},${c[1]} · 분할 ${seg} · ${av}°)`, 'ok');
+  updateStat(); renderProps(); boolRefresh();
+}
+
+// ---------- 절단(slice): 입체를 수평면으로 잘라 위/아래 두 조각으로 ----------
+function sliceBoxTris(x0, y0, z0, x1, y1, z1) { // 축정렬 박스 → 삼각형 12개
+  const V = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+  const F = [[0, 3, 2], [0, 2, 1], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+  return F.map(f => f.map(i => V[i].slice()));
+}
+function cmdSlice() {
+  const sel = selectedEntities().filter(isBoolable);
+  if (!sel.length) { logLine('  절단: 자를 입체(솔리드·메시)를 선택하세요.', 'warn'); return; }
+  const zv = bimAskNum('절단 높이 Z (수평 절단면):', 1000); if (zv == null) return;
+  pushUndo();
+  let cut = 0;
+  for (const e of sel) {
+    const tris = entityToTris(e); if (!tris.length) continue;
+    let mnx = 1e18, mny = 1e18, mnz = 1e18, mxx = -1e18, mxy = -1e18, mxz = -1e18;
+    for (const t of tris) for (const p of t) {
+      mnx = Math.min(mnx, p[0]); mny = Math.min(mny, p[1]); mnz = Math.min(mnz, p[2]);
+      mxx = Math.max(mxx, p[0]); mxy = Math.max(mxy, p[1]); mxz = Math.max(mxz, p[2]);
+    }
+    if (zv <= mnz + 1e-6 || zv >= mxz - 1e-6) { logLine(`  절단: z=${zv}가 입체 높이 범위(${Math.round(mnz)}~${Math.round(mxz)}) 밖 — 건너뜀`, 'warn'); continue; }
+    const pad = 1000;
+    const lower = polysToTris(csgOp(trisToPolys(tris), trisToPolys(sliceBoxTris(mnx - pad, mny - pad, mnz - pad, mxx + pad, mxy + pad, zv)), 'intersect'));
+    const upper = polysToTris(csgOp(trisToPolys(tris), trisToPolys(sliceBoxTris(mnx - pad, mny - pad, zv, mxx + pad, mxy + pad, mxz + pad)), 'intersect'));
+    if (!lower.length || !upper.length) { logLine('  절단: 결과 조각이 비어 건너뜀', 'warn'); continue; }
+    const lay = e.layer, col = e.color;
+    state.entities = state.entities.filter(x => x.id !== e.id);
+    state.selection.delete(e.id);
+    addEntity({ type: 'MESH', layer: lay, color: col, tris: lower });
+    addEntity({ type: 'MESH', layer: lay, color: col, tris: upper });
+    cut++;
+  }
+  if (!cut) { undo(); return; }
+  logLine(`  ✔ 절단 ${cut}개 → 위/아래 조각으로 분리 (z=${zv})`, 'ok');
+  updateStat(); renderProps(); boolRefresh();
+}
+
+// ---------- 조건 선택(qselect): 종류·레이어·색으로 한 번에 ----------
+function cmdQSelect() {
+  const q = prompt('조건 선택 — 종류(line, pline, circle, arc, text, mesh, hatch, insert) / 레이어명 / 색:#rrggbb\n예)  circle   ·   벽체선   ·   색:#ff0000', 'line');
+  if (q == null) return;
+  const s = q.trim().toLowerCase(); if (!s) return;
+  const TYPE = { line: 'LINE', pline: 'LWPOLYLINE', polyline: 'LWPOLYLINE', circle: 'CIRCLE', arc: 'ARC', text: 'TEXT', mesh: 'MESH', hatch: 'HATCH', insert: 'INSERT' };
+  let match;
+  if (s.startsWith('색:') || s.startsWith('color:')) { const c = s.split(':').slice(1).join(':').trim(); match = e => (e.color || '').toLowerCase() === c; }
+  else if (TYPE[s]) match = e => e.type === TYPE[s];
+  else match = e => (e.layer || '').toLowerCase() === s;
+  state.selection.clear();
+  let n = 0;
+  for (const e of state.entities) {
+    const l = getLayer(e.layer); if (l && (!l.visible || l.locked)) continue;
+    if (!onLv(e)) continue;
+    if (match(e)) { state.selection.add(e.id); n++; }
+  }
+  logLine(n ? `  ✔ 조건 선택: ${n}개 ("${q.trim()}")` : `  조건 선택: 일치하는 도형이 없습니다 ("${q.trim()}")`, n ? 'ok' : 'warn');
+  renderProps(); draw(); boolRefresh();
+}
+
+// ---------- 부피·무게중심(volume): 선택 입체의 질량 특성 ----------
+function cmdVolume() {
+  const sel = selectedEntities().filter(isBoolable);
+  if (!sel.length) { logLine('  부피: 입체(솔리드·메시)를 선택하세요.', 'warn'); return; }
+  let V = 0, cx = 0, cy = 0, cz = 0;
+  for (const e of sel) for (const t of entityToTris(e)) {
+    const a = t[0], b = t[1], c = t[2];
+    const v = (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6; // 부호 있는 사면체
+    V += v; cx += v * (a[0] + b[0] + c[0]) / 4; cy += v * (a[1] + b[1] + c[1]) / 4; cz += v * (a[2] + b[2] + c[2]) / 4;
+  }
+  const av = Math.abs(V);
+  if (av < 1e-6) { logLine('  부피: 닫힌 입체가 아니거나 부피가 0입니다 (면만 있는 메시는 부피 없음).', 'warn'); return; }
+  logLine(`  ✔ 부피 ${(av / 1e9).toFixed(4)} m³ (${Math.round(av).toLocaleString()} mm³) · 무게중심 (${(cx / V).toFixed(1)}, ${(cy / V).toFixed(1)}, ${(cz / V).toFixed(1)}) · 입체 ${sel.length}개`, 'ok');
+}
+
 function cmdBox() {
   const a = ask3('상자 모서리1 x,y:', '0,0'); if (!a) return;
   const b = ask3('상자 모서리2 x,y:', '3000,3000'); if (!b) return;
@@ -6089,6 +6276,11 @@ const INSTANT_CMDS = {
   union: () => cmdBoolean('union'),
   difference: () => cmdBoolean('subtract'),
   intersect3d: () => cmdBoolean('intersect'),
+  loft: cmdLoft,
+  revolve: cmdRevolve,
+  slice: cmdSlice,
+  qselect: cmdQSelect,
+  volume: cmdVolume,
   exportstl: () => cmdExportSTL(),
   exportobj: () => cmdExportOBJ(),
   selectedexport: () => { // 선택한 객체만 STL/OBJ로
@@ -6275,7 +6467,7 @@ function logLine(text, cls) {
   while (cmdLogEl.children.length > 400) cmdLogEl.removeChild(cmdLogEl.firstChild);
 }
 const TOOL_KO = {
-  select: '선택(SELECT)', pan: '화면 이동(PAN)', line: '선(LINE)', pline: '폴리라인(PLINE)', rect: '사각형(RECT)',
+  select: '선택(SELECT)', pan: '화면 이동(PAN)', line: '선(LINE)', pline: '폴리라인(PLINE)', spline: '자유곡선(SPLINE)', rect: '사각형(RECT)',
   circle: '원(CIRCLE)', arc: '호(ARC)', text: '문자(TEXT)', move: '이동(MOVE)', erase: '지우기(ERASE)',
   offset: '오프셋(OFFSET)', copy: '복사(COPY)', mirror: '대칭(MIRROR)', rotate: '회전(ROTATE)',
   array: '배열(ARRAY)', trim: '자르기(TRIM)', extend: '연장(EXTEND)', fillet: '모깎기(FILLET)',
@@ -6292,6 +6484,7 @@ const TOOL_KO = {
 
 const CMD_ALIASES = {
   line: 'line', l: 'line', pline: 'pline', pl: 'pline', polyline: 'pline',
+  spline: 'spline', spl: 'spline', 자유곡선: 'spline', 스플라인: 'spline',
   rect: 'rect', rectangle: 'rect', rec: 'rect', circle: 'circle', c: 'circle',
   arc: 'arc', a: 'arc', text: 'text', t: 'text', dtext: 'text', mtext: 'text',
   move: 'move', m: 'move', erase: 'erase', e: 'erase', del: 'erase', delete: 'erase',
@@ -6345,6 +6538,11 @@ const CMD_ALIASES = {
   mirror3d: 'mirror3d', mir3: 'mirror3d', 대칭3d: 'mirror3d',
   array3d: 'array3d', ar3: 'array3d', 배열3d: 'array3d',
   scale3d: 'scale3d', sc3: 'scale3d', 크기3d: 'scale3d',
+  loft: 'loft', 로프트: 'loft',
+  revolve: 'revolve', rev: 'revolve', 회전체: 'revolve',
+  slice: 'slice', 절단: 'slice',
+  qselect: 'qselect', qsel: 'qselect', 조건선택: 'qselect',
+  volume: 'volume', vol: 'volume', 부피: 'volume', massprop: 'volume',
   union: 'union', boolunion: 'union', 합집합: 'union',
   difference: 'difference', boolsub: 'difference', subtract: 'difference', 차집합: 'difference',
   intersect3d: 'intersect3d', boolint: 'intersect3d', 교집합: 'intersect3d',
@@ -6458,6 +6656,10 @@ function emptyEnterAction() {
     if (pts.length >= 2) { finishPolyline(); return; }
     pts = []; draw(); return;
   }
+  if (state.tool === 'spline') { // 자유곡선 확정 (제어점 2개 이상)
+    if (pts.length >= 2) { finishSpline(false); return; }
+    pts = []; draw(); return;
+  }
   if (state.tool === 'area' && pts.length) { finishArea(); return; } // 면적 계산 확정
   if (state.tool === 'trim') { trimSpaceAction(); return; }           // 자르기 모드 전환/확정
   if (draft) { cancelDraft(); return; }
@@ -6485,7 +6687,7 @@ function feedDrawInput(v) {
     case 'line': return feedLine(p);
     case 'circle': return feedCircle(p);
     case 'rect': return feedRect(p);
-    case 'pline': return feedPline(p);
+    case 'pline': case 'spline': return feedPline(p); // 자유곡선도 같은 pts 배열(제어점) 사용
     case 'arc': return feedArc(p);
     case 'move': return feedMove(p);
     case 'copy': return feedCopy(p);
@@ -6741,6 +6943,7 @@ function setTool(t) {
     pan: '화면 이동(손 도구): 빈 화면을 드래그하면 화면이 이동합니다. 선택하려면 "선택" 도구로 바꾸세요.',
     line: '선: 점을 연속 클릭하면 이어서 그려집니다. 우클릭·Enter·Esc로 종료. (x,y / @dx,dy / 길이 입력 가능)',
     pline: '폴리라인: 점 연속 클릭(또는 x,y 입력), 빈 Enter로 완료.',
+    spline: '자유곡선: 제어점을 연속 클릭하면 그 점들을 부드럽게 통과하는 곡선. 빈 Enter/우클릭으로 완료.',
     rect: '사각형: 첫 모서리 클릭/입력 후 크기 w,h(또는 한 변 길이) 입력 가능.',
     circle: '원: 중심 클릭/입력(x,y) 후 반지름 숫자를 명령행에 입력하세요.',
     arc: '호: 중심→시작→끝 클릭(또는 각 점을 x,y로 입력).',
@@ -7438,6 +7641,7 @@ const CMD_HELP = [
   { c: '그리기', items: [
     ['line', '선', '점을 연속 클릭해 이어 그림. 좌표(x,y / @dx,dy / @거리<각도) 입력 가능'],
     ['pline', '폴리라인', '여러 점을 하나의 연결선으로. 빈 Enter로 완료'],
+    ['spline', '자유곡선', '제어점을 부드럽게 통과하는 곡선 — 유기적 형태 작도. 빈 Enter로 완료'],
     ['rect', '사각형', '두 코너 클릭(또는 크기 w,h 입력) — 닫힌 폴리라인'],
     ['circle', '원', '중심 클릭 → 반지름 입력(또는 클릭)'],
     ['arc', '호', '시작 → 끝 → 통과점 3점'],
@@ -7519,6 +7723,11 @@ const CMD_HELP = [
     ['cylinder', '원기둥', '중심·반지름·높이 — 작업면 위에 원기둥'],
     ['sphere', '구', '중심·반지름 — 구 메시 생성 (불리언·STL 가능)'],
     ['cone', '원뿔', '바닥 중심·반지름·높이 — 원뿔 메시 생성'],
+    ['loft', '로프트', '곡선 2개+ 선택 → 이어서 면/입체 생성 (서로 다른 z에 두면 입체)'],
+    ['revolve', '회전체', '프로필 곡선 선택 → 수직축 둘레로 회전 (x=축까지 거리, y=높이)'],
+    ['slice', '절단', '입체 선택 후 z 입력 → 수평면으로 위/아래 두 조각 분리'],
+    ['volume', '부피', '선택 입체의 부피(m³)·무게중심 계산'],
+    ['qselect', '조건 선택', '종류/레이어/색으로 한 번에 선택 (예: circle, 벽체선, 색:#ff0000)'],
     ['rotate3d', '3D 회전', '선택 후 중심·각도 — 수직(Z)축 기준 회전'],
     ['mirror3d', '3D 대칭', '선택 후 축 2점 — 대칭 복사/이동'],
     ['array3d', '3D 배열', '선택 후 개수·간격(dx,dy,dz) — 직선 배열'],
@@ -8898,6 +9107,10 @@ window.__CADTEST__ = {
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
+  // 작업 자유도 확장 (자유곡선·로프트·회전체·절단·조건선택·부피)
+  catmullRom2D, finishSpline, crvSampleN, crvPtAt, crvClosedQ, sliceBoxTris,
+  cmdLoft, cmdRevolve, cmdSlice, cmdQSelect, cmdVolume,
+  get pts(){ return pts; }, set pts(v){ pts = v; },
   // 색상 (WYSIWYG 잉크 + 팝오버)
   themedInk, entityColor, readRecentColors, pushRecentColor, openColorPop, closeColorPop, PRESET_COLORS,
 };
