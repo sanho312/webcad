@@ -8181,53 +8181,12 @@ function buildDXFText() {
   let handle = 0x100;                                  // 엔티티/테이블 핸들
   const H = () => (handle++).toString(16).toUpperCase();
 
-  // HEADER — AC1021(R2007)부터 DXF는 UTF-8 → 한글 레이어명 깨짐 방지
-  g(0, 'SECTION'); g(2, 'HEADER');
-  g(9, '$ACADVER'); g(1, 'AC1021');
-  g(9, '$INSUNITS'); g(70, ({ mm: 4, cm: 5, m: 6, in: 1 })[settings.units] || 4); // 단위 설정 반영
-  g(9, '$HANDSEED'); g(5, 'FFFF');
-  g(0, 'ENDSEC');
+  // 소유자(330) 참조에 필요한 핸들은 먼저 확보 — R13+ DXF는 모든 엔티티가 소유 블록레코드를 가리켜야 함
+  const hBlkRecTab = H(), hMSpace = H(), hPSpace = H(), hDictRoot = H(), hDictGroup = H();
+  const blkNames = Object.keys(state.blocks || {});
+  const hBlkRec = {}; for (const nm of blkNames) hBlkRec[nm] = H();
 
-  // TABLES
-  g(0, 'SECTION'); g(2, 'TABLES');
-  // LTYPE 테이블(사용 선종류 정의)
-  const LTDEF = { dashed: [6, -3], hidden: [4, -3], center: [12, -3, 3, -3], phantom: [16, -3, 3, -3, 3, -3], dot: [0, -3] };
-  const usedLts = new Set(['continuous']);
-  for (const l of state.layers) if (l.linetype && LTDEF[l.linetype]) usedLts.add(l.linetype);
-  for (const e of state.entities) if (e.linetype && LTDEF[e.linetype]) usedLts.add(e.linetype);
-  g(0, 'TABLE'); g(2, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, usedLts.size);
-  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, 0);
-  for (const lt of usedLts) { if (lt === 'continuous') continue; const pat = LTDEF[lt]; const total = pat.reduce((s, v) => s + Math.abs(v), 0);
-    g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, lt.toUpperCase()); g(70, 0); g(3, lt); g(72, 65); g(73, pat.length); g(40, total);
-    for (const v of pat) g(49, v); }
-  g(0, 'ENDTAB');
-  // LAYER 테이블
-  g(0, 'TABLE'); g(2, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, state.layers.length);
-  for (const l of state.layers) {
-    g(0, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLayerTableRecord');
-    g(2, l.name); g(70, l.visible ? 0 : 1);
-    g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color));
-    g(6, (l.linetype && LTDEF[l.linetype]) ? l.linetype.toUpperCase() : 'CONTINUOUS');
-    if (l.lineweight != null && l.lineweight >= 0) g(370, l.lineweight);
-  }
-  g(0, 'ENDTAB');
-  g(0, 'ENDSEC');
-
-  // BLOCKS (정의된 블록 + INSERT가 참조하는 것)
-  g(0, 'SECTION'); g(2, 'BLOCKS');
-  for (const [nm, def] of Object.entries(state.blocks || {})) {
-    g(0, 'BLOCK'); g(5, H()); g(100, 'AcDbEntity'); g(8, '0'); g(100, 'AcDbBlockBegin');
-    g(2, nm); g(70, 0); g(10, 0); g(20, 0); g(30, 0); g(3, nm); g(1, '');
-    for (const ce of exportHatchExpand(def.entities)) writeEntity(g, ce, H);
-    g(0, 'ENDBLK'); g(5, H()); g(100, 'AcDbEntity'); g(8, '0'); g(100, 'AcDbBlockEnd');
-  }
-  g(0, 'ENDSEC');
-
-  // ENTITIES
-  g(0, 'SECTION'); g(2, 'ENTITIES');
-  for (const e of exportEntities(true)) writeEntity(g, e, H); // INSERT 보존, HATCH는 선으로 분해
-  g(0, 'ENDSEC');
-  // WebCAD 확장(999 주석): BIM 속성·z값·메시 구획은 DXF 표준에 없어 여기 보존 — 타 CAD는 주석으로 무시
+  // WebCAD 확장(999 주석)은 파일 선두에 — 주석의 표준 위치(다른 CAD는 건너뜀)
   {
     const wcx = { v: 1, ext: [], mesh: [] };
     for (const e of state.entities) {
@@ -8246,6 +8205,102 @@ function buildDXFText() {
       for (let i = 0; i < js.length; i += 200) g(999, 'WCX' + js.slice(i, i + 200));
     }
   }
+
+  // HEADER — AC1021(R2007): UTF-8이라 한글 레이어명 안전
+  g(0, 'SECTION'); g(2, 'HEADER');
+  g(9, '$ACADVER'); g(1, 'AC1021');
+  // $DWGCODEPAGE: R2007 내용은 UTF-8이지만, 이 변수가 없으면 파서가 인코딩 판별에 실패해
+  // 한글 레이어·문자에서 디코딩 오류를 냄(실측 확인). 실제 R2007 파일도 이 값을 그대로 씀.
+  g(9, '$DWGCODEPAGE'); g(3, 'ANSI_1252');
+  g(9, '$INSUNITS'); g(70, ({ mm: 4, cm: 5, m: 6, in: 1 })[settings.units] || 4); // 단위 설정 반영
+  g(9, '$HANDSEED'); g(5, 'FFFFF');
+  g(0, 'ENDSEC');
+
+  // CLASSES — R13+ 필수 섹션 (내용 없어도 존재해야 함)
+  g(0, 'SECTION'); g(2, 'CLASSES'); g(0, 'ENDSEC');
+
+  // TABLES
+  g(0, 'SECTION'); g(2, 'TABLES');
+  // VPORT — 필수
+  g(0, 'TABLE'); g(2, 'VPORT'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1);
+  g(0, 'VPORT'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbViewportTableRecord');
+  g(2, '*Active'); g(70, 0);
+  g(10, 0); g(20, 0); g(11, 1); g(21, 1); g(12, 0); g(22, 0); g(13, 0); g(23, 0);
+  g(14, 10); g(24, 10); g(15, 10); g(25, 10); g(16, 0); g(26, 0); g(36, 1);
+  g(17, 0); g(27, 0); g(37, 0); g(40, 1000); g(41, 1.5); g(42, 50); g(43, 0); g(44, 0);
+  g(50, 0); g(51, 0); g(71, 0); g(72, 100); g(73, 1); g(74, 3); g(75, 0); g(76, 0); g(77, 0); g(78, 0);
+  g(0, 'ENDTAB');
+  // LTYPE — ByBlock/ByLayer 레코드가 반드시 있어야 함
+  const LTDEF = { dashed: [6, -3], hidden: [4, -3], center: [12, -3, 3, -3], phantom: [16, -3, 3, -3, 3, -3], dot: [0, -3] };
+  const usedLts = new Set(['continuous']);
+  for (const l of state.layers) if (l.linetype && LTDEF[l.linetype]) usedLts.add(l.linetype);
+  for (const e of state.entities) if (e.linetype && LTDEF[e.linetype]) usedLts.add(e.linetype);
+  g(0, 'TABLE'); g(2, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, usedLts.size + 2);
+  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'ByBlock'); g(70, 0); g(3, ''); g(72, 65); g(73, 0); g(40, 0);
+  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'ByLayer'); g(70, 0); g(3, ''); g(72, 65); g(73, 0); g(40, 0);
+  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, 0);
+  for (const lt of usedLts) { if (lt === 'continuous') continue; const pat = LTDEF[lt]; const total = pat.reduce((s, v) => s + Math.abs(v), 0);
+    g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, lt.toUpperCase()); g(70, 0); g(3, lt); g(72, 65); g(73, pat.length); g(40, total);
+    for (const v of pat) g(49, v); }
+  g(0, 'ENDTAB');
+  // LAYER
+  g(0, 'TABLE'); g(2, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, state.layers.length);
+  for (const l of state.layers) {
+    g(0, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLayerTableRecord');
+    g(2, l.name); g(70, l.visible ? 0 : 1);
+    g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color));
+    g(6, (l.linetype && LTDEF[l.linetype]) ? l.linetype.toUpperCase() : 'CONTINUOUS');
+    if (l.lineweight != null && l.lineweight >= 0) g(370, l.lineweight);
+    g(390, 'F'); // 플롯스타일 핸들(관례값)
+  }
+  g(0, 'ENDTAB');
+  // STYLE — TEXT가 참조하는 문자 스타일
+  g(0, 'TABLE'); g(2, 'STYLE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1);
+  g(0, 'STYLE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbTextStyleTableRecord');
+  g(2, 'Standard'); g(70, 0); g(40, 0); g(41, 1); g(50, 0); g(71, 0); g(42, 2.5); g(3, 'txt'); g(4, '');
+  g(0, 'ENDTAB');
+  // VIEW / UCS — 비어 있어도 테이블 자체는 존재해야 함
+  g(0, 'TABLE'); g(2, 'VIEW'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 0); g(0, 'ENDTAB');
+  g(0, 'TABLE'); g(2, 'UCS'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 0); g(0, 'ENDTAB');
+  // APPID
+  g(0, 'TABLE'); g(2, 'APPID'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1);
+  g(0, 'APPID'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0);
+  g(0, 'ENDTAB');
+  // DIMSTYLE
+  g(0, 'TABLE'); g(2, 'DIMSTYLE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1); g(100, 'AcDbDimStyleTable'); g(71, 0);
+  g(0, 'DIMSTYLE'); g(105, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbDimStyleTableRecord'); g(2, 'Standard'); g(70, 0);
+  g(0, 'ENDTAB');
+  // BLOCK_RECORD — R13+ 필수. 모든 블록(모델/페이퍼 공간 포함)의 소유 레코드
+  g(0, 'TABLE'); g(2, 'BLOCK_RECORD'); g(5, hBlkRecTab); g(100, 'AcDbSymbolTable'); g(70, 2 + blkNames.length);
+  g(0, 'BLOCK_RECORD'); g(5, hMSpace); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, '*Model_Space'); g(70, 0);
+  g(0, 'BLOCK_RECORD'); g(5, hPSpace); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, '*Paper_Space'); g(70, 0);
+  for (const nm of blkNames) { g(0, 'BLOCK_RECORD'); g(5, hBlkRec[nm]); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, nm); g(70, 0); }
+  g(0, 'ENDTAB');
+  g(0, 'ENDSEC');
+
+  // BLOCKS — *Model_Space/*Paper_Space 는 필수, 그 뒤 사용자 블록
+  g(0, 'SECTION'); g(2, 'BLOCKS');
+  const emitBlock = (nm, owner, ents) => {
+    g(0, 'BLOCK'); g(5, H()); g(330, owner); g(100, 'AcDbEntity'); g(8, '0'); g(100, 'AcDbBlockBegin');
+    g(2, nm); g(70, 0); g(10, 0); g(20, 0); g(30, 0); g(3, nm); g(1, '');
+    for (const ce of (ents || [])) writeEntity(g, ce, H, owner);
+    g(0, 'ENDBLK'); g(5, H()); g(330, owner); g(100, 'AcDbEntity'); g(8, '0'); g(100, 'AcDbBlockEnd');
+  };
+  emitBlock('*Model_Space', hMSpace, []);
+  emitBlock('*Paper_Space', hPSpace, []);
+  for (const nm of blkNames) emitBlock(nm, hBlkRec[nm], exportHatchExpand(state.blocks[nm].entities));
+  g(0, 'ENDSEC');
+
+  // ENTITIES — 모두 모델 공간 소유
+  g(0, 'SECTION'); g(2, 'ENTITIES');
+  for (const e of exportEntities(true)) writeEntity(g, e, H, hMSpace); // INSERT 보존, HATCH는 선으로 분해
+  g(0, 'ENDSEC');
+
+  // OBJECTS — R13+ 필수. 루트 딕셔너리
+  g(0, 'SECTION'); g(2, 'OBJECTS');
+  g(0, 'DICTIONARY'); g(5, hDictRoot); g(330, '0'); g(100, 'AcDbDictionary'); g(281, 1); g(3, 'ACAD_GROUP'); g(350, hDictGroup); // 330/0 = 루트(소유자 없음)
+  g(0, 'DICTIONARY'); g(5, hDictGroup); g(330, hDictRoot); g(100, 'AcDbDictionary'); g(281, 1);
+  g(0, 'ENDSEC'); // (WebCAD 999 확장은 파일 선두로 이동 — ENDSEC~EOF 사이 주석은 엄격한 파서가 거부)
   g(0, 'EOF');
 
   // 코드/값 쌍을 줄로
@@ -8563,9 +8618,9 @@ function buildPDF(opt) {
   pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return pdf;
 }
-function writeEntity(g, e, H) {
-  // AC1021(R2007) 구조: 핸들(5) + AcDbEntity + 서브클래스 마커
-  const head = (type, sub) => { g(0, type); g(5, H()); g(100, 'AcDbEntity'); g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color));
+function writeEntity(g, e, H, owner) {
+  // AC1021(R2007) 구조: 핸들(5) + 소유자(330, R13+ 필수) + AcDbEntity + 서브클래스 마커
+  const head = (type, sub) => { g(0, type); g(5, H()); if (owner) g(330, owner); g(100, 'AcDbEntity'); g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color));
     if (e.linetype && e.linetype !== 'continuous') g(6, e.linetype.toUpperCase());
     if (e.lineweight != null && e.lineweight >= 0) g(370, e.lineweight); g(100, sub); };
   switch (e.type) {
