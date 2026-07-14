@@ -1652,6 +1652,7 @@ function handleClick(w, rawW, ev) {
         const grip = nearGrip(hit, rawW, tol) || nearGrip(hit, w, tol);
         if (!ev.shiftKey && !wasSelected) { state.selection.clear(); }
         state.selection.add(hit.id);
+        if (hit.grp) for (const g of state.entities) if (g.grp === hit.grp) state.selection.add(g.id); // 그룹: 구성원 하나 = 전체 선택
         if (grip) { pushUndo(); moveOp = { gripEntity: hit, gripIndex: grip.index, base: w, dx: 0, dy: 0, grip: true }; }
         else if (wasSelected && hit.type === 'LWPOLYLINE') {
           // 선택된 폴리라인의 세그먼트 중점 그립 → 정점 삽입 후 드래그
@@ -1733,6 +1734,7 @@ function handleClick(w, rawW, ev) {
     case 'ellipse': clickEllipse(w); break;
     case 'chamfer': clickChamfer(w, rawW); break;
     case 'dim': clickDim(w); break;
+    case 'dimbase': clickDimBase(w); break;
     case 'dist': clickDist(w); break;
     case 'area': clickArea(w, rawW); break;
     case 'break': clickBreak(w, rawW); break;
@@ -2125,6 +2127,33 @@ function clickDim(w) {
   cmdOp = { name: 'dim', step: 'cont', p1: cmdOp.p2, h };
   previewEnts = null;
   updateStat(); setPrompt('치수(연속): 다음 점을 클릭하면 이어서 기입됩니다. (Esc 종료)');
+}
+// 기준선 치수: 같은 기준점(p1)에서 여러 점까지, 한 단씩 띄워 기입 (연속 치수는 dim에 내장)
+function clickDimBase(w) {
+  if (!cmdOp || cmdOp.name !== 'dimbase') cmdOp = { name: 'dimbase', step: 'p1' };
+  if (cmdOp.step === 'p1') { cmdOp.p1 = w; cmdOp.step = 'p2'; setPrompt('기준선 치수: 두 번째 점을 클릭하세요.'); return; }
+  if (cmdOp.step === 'p2') { cmdOp.p2 = w; cmdOp.step = 'pos'; setPrompt('기준선 치수: 치수선 위치를 클릭하세요.'); return; }
+  if (cmdOp.step === 'base') { // 기준점 고정 · 클릭할 때마다 한 단씩 바깥으로
+    const p1 = cmdOp.p1, p2 = w;
+    const dx = p2.x - p1.x, dy = p2.y - p1.y, L = Math.hypot(dx, dy);
+    if (L < 1e-9) return;
+    cmdOp.k = (cmdOp.k || 1) + 1;
+    const h = cmdOp.h + Math.sign(cmdOp.h || 1) * dimTH() * 2.2 * (cmdOp.k - 1);
+    const nx = -dy / L, ny = dx / L;
+    const pos = { x: (p1.x + p2.x) / 2 + nx * h, y: (p1.y + p2.y) / 2 + ny * h };
+    pushUndo();
+    for (const e of computeDimension(p1, p2, pos)) addEntity(e);
+    logLine(`  ✔ 치수 ${fmtNum(L)} (기준선 ${cmdOp.k}단)`, 'ok');
+    previewEnts = null; updateStat(); return;
+  }
+  pushUndo(); // pos 확정 → 기준선 모드 진입
+  for (const e of computeDimension(cmdOp.p1, cmdOp.p2, w)) addEntity(e);
+  const ddx = cmdOp.p2.x - cmdOp.p1.x, ddy = cmdOp.p2.y - cmdOp.p1.y, DL = Math.hypot(ddx, ddy) || 1;
+  const h = (w.x - cmdOp.p1.x) * (-ddy / DL) + (w.y - cmdOp.p1.y) * (ddx / DL);
+  logLine(`  ✔ 치수 ${fmtNum(DL)} (기준선 시작)`, 'ok');
+  cmdOp = { name: 'dimbase', step: 'base', p1: cmdOp.p1, h, k: 1 };
+  previewEnts = null; updateStat();
+  setPrompt('기준선 치수: 다음 점을 클릭하면 같은 기준점에서 한 단씩 띄워 기입됩니다. (Esc 종료)');
 }
 // 치수 그래픽(치수 레이어의 선·화살표·문자) 생성 — 미리보기/확정 공용
 function computeDimension(p1, p2, pos) {
@@ -4694,6 +4723,160 @@ function cmdVolume() {
   logLine(`  ✔ 부피 ${(av / 1e9).toFixed(4)} m³ (${Math.round(av).toLocaleString()} mm³) · 무게중심 (${(cx / V).toFixed(1)}, ${(cy / V).toFixed(1)}, ${(cz / V).toFixed(1)}) · 입체 ${sel.length}개`, 'ok');
 }
 
+// ---------- 쓸기(sweep): 단면을 경로 따라 훑어 입체 생성 ----------
+function crvLen(e) {
+  if (e.type === 'LINE') return Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+  if (e.type === 'CIRCLE') return 2 * Math.PI * e.r;
+  if (e.type === 'ARC') { let s = e.startAngle, en = e.endAngle; if (en < s) en += 360; return (en - s) * Math.PI / 180 * e.r; }
+  if (e.type === 'LWPOLYLINE') { const p = e.points, n = p.length, segN = e.closed ? n : n - 1; let L = 0; for (let i = 0; i < segN; i++) L += Math.hypot(p[(i + 1) % n][0] - p[i][0], p[(i + 1) % n][1] - p[i][1]); return L; }
+  return 0;
+}
+function cmdSweep() {
+  const sel = selectedEntities().filter(e => LOFTABLE.includes(e.type));
+  if (sel.length !== 2) { logLine('  쓸기: 단면 곡선 1개 + 경로 곡선 1개(총 2개)를 선택하세요 — 짧은 쪽을 단면으로 사용합니다.', 'warn'); return; }
+  const pair = crvLen(sel[0]) <= crvLen(sel[1]) ? [sel[0], sel[1]] : [sel[1], sel[0]];
+  const prof = pair[0], path = pair[1];
+  const sv = bimAskNum('경로 분할 수 (클수록 매끄러움):', 32); if (sv == null) return;
+  const n = Math.max(2, Math.min(400, Math.round(sv)));
+  const P = crvSampleN(path, n), C = crvSampleN(prof, 24); // 단면: x=경로 좌우 오프셋, y=높이 (회전체와 같은 규약)
+  if (P.length < 2 || C.length < 2) { logLine('  쓸기: 샘플 점이 부족합니다.', 'warn'); return; }
+  const profClosed = crvClosedQ(prof), M = C.length;
+  const ring = (i) => { // 경로 접선에 수직인 단면 프레임
+    const a = P[Math.max(0, i - 1)], b = P[Math.min(P.length - 1, i + 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const L = Math.hypot(tx, ty) || 1; tx /= L; ty /= L;
+    const sx = -ty, sy = tx;
+    return C.map(c => [P[i][0] + sx * c[0], P[i][1] + sy * c[0], P[i][2] + c[1]]);
+  };
+  pushUndo();
+  const tris = [];
+  for (let i = 0; i + 1 < P.length; i++) {
+    const R0 = ring(i), R1 = ring(i + 1), segs = profClosed ? M : M - 1;
+    for (let k = 0; k < segs; k++) { const k2 = (k + 1) % M; tris.push([R0[k], R1[k], R1[k2]]); tris.push([R0[k], R1[k2], R0[k2]]); }
+  }
+  if (!tris.length) { logLine('  쓸기: 생성 실패.', 'warn'); undo(); return; }
+  addEntity({ type: 'MESH', tris });
+  logLine(`  ✔ 쓸기 생성 (단면=${prof.type} · 경로=${path.type} · 분할 ${n} · ${tris.length}면)`, 'ok');
+  updateStat(); renderProps(); boolRefresh();
+}
+
+// ---------- 속 비우기(shell): 닫힌 폴리라인 입체를 두께만 남기고 비움 ----------
+function polyArea2(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - b[0] * a[1]; } return s / 2; }
+function polyOffsetIn(pts, d) { // 닫힌 폴리곤 안쪽 마이터 오프셋 (d>0 = 안쪽)
+  const n = pts.length; if (n < 3) return null;
+  const sgn = polyArea2(pts) > 0 ? 1 : -1; // CCW면 좌법선이 안쪽
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n];
+    const e1x = p1[0] - p0[0], e1y = p1[1] - p0[1], l1 = Math.hypot(e1x, e1y) || 1;
+    const e2x = p2[0] - p1[0], e2y = p2[1] - p1[1], l2 = Math.hypot(e2x, e2y) || 1;
+    const n1x = sgn * (-e1y / l1), n1y = sgn * (e1x / l1);
+    const n2x = sgn * (-e2y / l2), n2y = sgn * (e2x / l2);
+    const A1 = [p0[0] + n1x * d, p0[1] + n1y * d], B1 = [p1[0] + n1x * d, p1[1] + n1y * d];
+    const A2 = [p1[0] + n2x * d, p1[1] + n2y * d], B2 = [p2[0] + n2x * d, p2[1] + n2y * d];
+    const ip = lineInfIntersect(A1, B1, A2, B2);
+    out.push(ip || B1);
+  }
+  return out;
+}
+function prismTris(pts, z0, z1) { // 닫힌 폴리곤 → 옆면+상하면 (CCW 정규화 + 팬: solidsToTris와 동일 규약)
+  let p = pts.slice();
+  if (polyArea2(p) < 0) p = p.reverse();
+  const n = p.length, tris = [];
+  const bot = p.map(q => [q[0], q[1], z0]), top = p.map(q => [q[0], q[1], z1]);
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; tris.push([bot[i], bot[j], top[j]], [bot[i], top[j], top[i]]); }
+  for (let i = 1; i < n - 1; i++) { tris.push([top[0], top[i], top[i + 1]]); tris.push([bot[0], bot[i + 1], bot[i]]); }
+  return tris;
+}
+function cmdShell() {
+  const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed && e.bim && ['column', 'slab'].includes(e.bim.kind));
+  if (!sel.length) { logLine('  속 비우기: 닫힌 폴리라인으로 만든 입체(기둥·상자·슬래브)를 선택하세요.', 'warn'); return; }
+  const tv = bimAskNum('벽 두께 (mm):', 200); if (tv == null) return;
+  const t = Math.abs(tv); if (t < 1) return;
+  const openTop = window.confirm('윗면을 열까요?\n확인 = 위가 열린 통 · 취소 = 완전히 닫힌 중공');
+  pushUndo();
+  let made = 0;
+  for (const e of sel) {
+    const outer = entityToTris(e); if (!outer.length) continue;
+    const inPts = polyOffsetIn(e.points, t);
+    if (!inPts) continue;
+    if (Math.sign(polyArea2(inPts)) !== Math.sign(polyArea2(e.points)) || Math.abs(polyArea2(inPts)) < 1) {
+      logLine(`  속 비우기: 두께 ${t}가 너무 커서 안쪽이 없어짐 — 건너뜀`, 'warn'); continue;
+    }
+    const base = e.bim.base || 0, h = e.bim.h || 0;
+    const inner = prismTris(inPts, base + t, openTop ? base + h + 10 : base + h - t); // 바닥은 t만큼 남김
+    const res = polysToTris(csgOp(trisToPolys(outer), trisToPolys(inner), 'subtract'));
+    if (!res.length) { logLine('  속 비우기: 결과가 비어 건너뜀', 'warn'); continue; }
+    const lay = e.layer, col = e.color;
+    state.entities = state.entities.filter(x => x.id !== e.id);
+    state.selection.delete(e.id);
+    addEntity({ type: 'MESH', layer: lay, color: col, tris: res });
+    made++;
+  }
+  if (!made) { undo(); return; }
+  logLine(`  ✔ 속 비우기 ${made}개 (두께 ${t}${openTop ? ' · 윗면 열림' : ' · 밀폐'})`, 'ok');
+  updateStat(); renderProps(); boolRefresh();
+}
+
+// ---------- 3D 모깎기(fillet3d): 입체의 수직 모서리를 둥글게 (바닥 폴리곤 코너 라운딩) ----------
+function polyRoundCorners(pts, r, seg) {
+  const n = pts.length; if (n < 3) return pts.map(p => p.slice());
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n];
+    const v1x = p0[0] - p1[0], v1y = p0[1] - p1[1], l1 = Math.hypot(v1x, v1y);
+    const v2x = p2[0] - p1[0], v2y = p2[1] - p1[1], l2 = Math.hypot(v2x, v2y);
+    if (l1 < 1e-9 || l2 < 1e-9) { out.push(p1.slice()); continue; }
+    const u1x = v1x / l1, u1y = v1y / l1, u2x = v2x / l2, u2y = v2y / l2;
+    const ang = Math.acos(Math.max(-1, Math.min(1, u1x * u2x + u1y * u2y))); // 코너 내각
+    if (ang < 0.05 || Math.abs(ang - Math.PI) < 0.05) { out.push(p1.slice()); continue; } // 거의 직선
+    let d = r / Math.tan(ang / 2);
+    d = Math.min(d, l1 / 2, l2 / 2);
+    const rr = d * Math.tan(ang / 2);
+    const t1 = [p1[0] + u1x * d, p1[1] + u1y * d], t2 = [p1[0] + u2x * d, p1[1] + u2y * d];
+    const bx = u1x + u2x, by = u1y + u2y, bl = Math.hypot(bx, by) || 1;
+    const c = [p1[0] + bx / bl * (rr / Math.sin(ang / 2)), p1[1] + by / bl * (rr / Math.sin(ang / 2))];
+    let a1 = Math.atan2(t1[1] - c[1], t1[0] - c[0]), a2 = Math.atan2(t2[1] - c[1], t2[0] - c[0]);
+    let da = a2 - a1; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    for (let k = 0; k <= seg; k++) { const a = a1 + da * k / seg; out.push([c[0] + rr * Math.cos(a), c[1] + rr * Math.sin(a)]); }
+  }
+  return out;
+}
+function cmdFillet3D() {
+  const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed && e.bim && ['column', 'slab', 'roof'].includes(e.bim.kind));
+  if (!sel.length) { logLine('  3D 모깎기: 닫힌 폴리라인 입체(기둥·상자·슬래브)를 선택하세요 — 수직 모서리를 둥글게 만듭니다.', 'warn'); return; }
+  const rv = bimAskNum('모깎기 반지름 (mm):', 200); if (rv == null) return;
+  const r = Math.abs(rv); if (r < 1) return;
+  pushUndo();
+  let n = 0;
+  for (const e of sel) {
+    const rounded = polyRoundCorners(e.points, r, 6);
+    if (rounded && rounded.length >= 3) { e.points = rounded; n++; }
+  }
+  if (!n) { undo(); return; }
+  logLine(`  ✔ 3D 모깎기 ${n}개 — 수직 모서리 반지름 ${r}`, 'ok');
+  updateStat(); renderProps(); boolRefresh(); draw();
+}
+
+// ---------- 그룹: 하나를 클릭하면 함께 선택 ----------
+function cmdGroup() {
+  const sel = selectedEntities();
+  if (sel.length < 2) { logLine('  그룹: 2개 이상 선택한 뒤 실행하세요.', 'warn'); return; }
+  pushUndo();
+  const g = 'G' + (state.nextId++);
+  sel.forEach(e => { e.grp = g; });
+  logLine(`  ✔ 그룹 생성: ${sel.length}개 — 구성원 하나를 클릭하면 전체가 선택됩니다 (ungroup=해제)`, 'ok');
+  renderProps(); draw();
+}
+function cmdUngroup() {
+  const gs = new Set(selectedEntities().map(e => e.grp).filter(Boolean));
+  if (!gs.size) { logLine('  그룹 해제: 그룹에 속한 도형을 선택하세요.', 'warn'); return; }
+  pushUndo();
+  let n = 0;
+  for (const e of state.entities) if (e.grp && gs.has(e.grp)) { delete e.grp; n++; }
+  logLine(`  ✔ 그룹 해제: ${n}개 (그룹 ${gs.size}개)`, 'ok');
+  renderProps(); draw();
+}
+
 function cmdBox() {
   const a = ask3('상자 모서리1 x,y:', '0,0'); if (!a) return;
   const b = ask3('상자 모서리2 x,y:', '3000,3000'); if (!b) return;
@@ -6277,6 +6460,11 @@ const INSTANT_CMDS = {
   difference: () => cmdBoolean('subtract'),
   intersect3d: () => cmdBoolean('intersect'),
   loft: cmdLoft,
+  sweep: cmdSweep,
+  shell: cmdShell,
+  fillet3d: cmdFillet3D,
+  group: cmdGroup,
+  ungroup: cmdUngroup,
   revolve: cmdRevolve,
   slice: cmdSlice,
   qselect: cmdQSelect,
@@ -6467,7 +6655,7 @@ function logLine(text, cls) {
   while (cmdLogEl.children.length > 400) cmdLogEl.removeChild(cmdLogEl.firstChild);
 }
 const TOOL_KO = {
-  select: '선택(SELECT)', pan: '화면 이동(PAN)', line: '선(LINE)', pline: '폴리라인(PLINE)', spline: '자유곡선(SPLINE)', rect: '사각형(RECT)',
+  select: '선택(SELECT)', pan: '화면 이동(PAN)', line: '선(LINE)', pline: '폴리라인(PLINE)', spline: '자유곡선(SPLINE)', dimbase: '기준선 치수(DIMBASE)', rect: '사각형(RECT)',
   circle: '원(CIRCLE)', arc: '호(ARC)', text: '문자(TEXT)', move: '이동(MOVE)', erase: '지우기(ERASE)',
   offset: '오프셋(OFFSET)', copy: '복사(COPY)', mirror: '대칭(MIRROR)', rotate: '회전(ROTATE)',
   array: '배열(ARRAY)', trim: '자르기(TRIM)', extend: '연장(EXTEND)', fillet: '모깎기(FILLET)',
@@ -6500,6 +6688,7 @@ const CMD_ALIASES = {
   explode: 'explode', x: 'explode', join: 'join', j: 'join',
   dist: 'dist', di: 'dist', area: 'area', aa: 'area',
   dim: 'dim', dli: 'dim', dal: 'dim', dimlinear: 'dim', dimaligned: 'dim',
+  dimbase: 'dimbase', dimbaseline: 'dimbase', 기준선치수: 'dimbase',
   zoom: 'zoom', z: 'zoom', zp: 'zp', u: 'undo', undo: 'undo', redo: 'redo',
   pan: 'pan',
   break: 'break', br: 'break', lengthen: 'lengthen', len: 'lengthen',
@@ -6539,6 +6728,11 @@ const CMD_ALIASES = {
   array3d: 'array3d', ar3: 'array3d', 배열3d: 'array3d',
   scale3d: 'scale3d', sc3: 'scale3d', 크기3d: 'scale3d',
   loft: 'loft', 로프트: 'loft',
+  sweep: 'sweep', 쓸기: 'sweep',
+  shell: 'shell', 속비우기: 'shell',
+  fillet3d: 'fillet3d', 모깎기3d: 'fillet3d',
+  group: 'group', g: 'group', 그룹: 'group',
+  ungroup: 'ungroup', ung: 'ungroup', 그룹해제: 'ungroup',
   revolve: 'revolve', rev: 'revolve', 회전체: 'revolve',
   slice: 'slice', 절단: 'slice',
   qselect: 'qselect', qsel: 'qselect', 조건선택: 'qselect',
@@ -6694,6 +6888,7 @@ function feedDrawInput(v) {
     case 'polygon': return feedPolygon(p);
     case 'ellipse': return feedEllipse(p);
     case 'dim': return feedPointCmd(p, clickDim);
+    case 'dimbase': return feedPointCmd(p, clickDimBase);
     case 'leader': return feedPointCmd(p, clickLeader);
     case 'revcloud': return feedPointCmd(p, clickRevcloud);
     case 'frame': return feedPointCmd(p, clickFrame);
@@ -6963,7 +7158,8 @@ function setTool(t) {
     polygon: `다각형: 변 개수(숫자, 현재 ${polygonSides}) 입력 → 중심 → 반지름/꼭짓점.`,
     ellipse: '타원: 중심 클릭 후 코너 클릭 또는 rx,ry 입력.',
     chamfer: `모따기: 거리 ${chamferDist}. 첫 선 → 둘째 선 클릭. (숫자로 거리 변경)`,
-    dim: '치수: 첫 점 → 둘째 점 → 치수선 위치 클릭. (치수 레이어에 생성, 연속 기입)',
+    dim: '치수: 첫 점 → 둘째 점 → 치수선 위치 클릭. (치수 레이어에 생성, 이후 클릭마다 연속 기입)',
+    dimbase: '기준선 치수: 첫 점(기준) → 둘째 점 → 치수선 위치. 이후 클릭마다 같은 기준점에서 한 단씩 띄워 기입.',
     dist: '거리 측정: 두 점을 클릭하세요. (결과는 명령 기록에 표시)',
     area: '면적: 원/닫힌 폴리라인을 클릭하거나, 점들을 찍고 Enter로 계산.',
     insert: '블록 삽입: 삽입 위치를 클릭하세요. (레이어 패널 아래 목록에서 블록 선택)',
@@ -7724,6 +7920,12 @@ const CMD_HELP = [
     ['sphere', '구', '중심·반지름 — 구 메시 생성 (불리언·STL 가능)'],
     ['cone', '원뿔', '바닥 중심·반지름·높이 — 원뿔 메시 생성'],
     ['loft', '로프트', '곡선 2개+ 선택 → 이어서 면/입체 생성 (서로 다른 z에 두면 입체)'],
+    ['sweep', '쓸기', '단면+경로 곡선 선택 → 단면을 경로 따라 훑어 입체 (짧은 쪽=단면)'],
+    ['shell', '속 비우기', '닫힌 폴리라인 입체 선택 → 두께 입력, 속을 비워 통/중공으로'],
+    ['fillet3d', '3D 모깎기', '입체 선택 → 반지름, 수직 모서리를 둥글게'],
+    ['group', '그룹', '2개+ 선택 → 묶기. 하나를 클릭하면 전체 선택'],
+    ['ungroup', '그룹 해제', '그룹 구성원 선택 → 묶음 해제'],
+    ['dimbase', '기준선 치수', '같은 기준점에서 여러 점까지 한 단씩 띄워 치수 기입'],
     ['revolve', '회전체', '프로필 곡선 선택 → 수직축 둘레로 회전 (x=축까지 거리, y=높이)'],
     ['slice', '절단', '입체 선택 후 z 입력 → 수평면으로 위/아래 두 조각 분리'],
     ['volume', '부피', '선택 입체의 부피(m³)·무게중심 계산'],
@@ -8033,6 +8235,7 @@ function buildDXFText() {
       const sig = entSig(e); if (!sig) continue;
       const x = {};
       if (e.bim) x.bim = e.bim;
+      if (e.grp) x.grp = e.grp;
       if (e.zo) x.zo = e.zo;
       if (e.z1 != null) x.z1 = e.z1;
       if (e.z2 != null) x.z2 = e.z2;
@@ -8538,6 +8741,7 @@ function applyWcxExt(text) {
       const q = map.get(sig); if (!q || !q.length) continue;
       const x = q.shift();
       if (x.bim) e.bim = JSON.parse(JSON.stringify(x.bim));
+      if (x.grp) e.grp = x.grp;
       if (x.zo != null) e.zo = x.zo;
       if (x.z1 != null) e.z1 = x.z1;
       if (x.z2 != null) e.z2 = x.z2;
@@ -9110,6 +9314,8 @@ window.__CADTEST__ = {
   // 작업 자유도 확장 (자유곡선·로프트·회전체·절단·조건선택·부피)
   catmullRom2D, finishSpline, crvSampleN, crvPtAt, crvClosedQ, sliceBoxTris,
   cmdLoft, cmdRevolve, cmdSlice, cmdQSelect, cmdVolume,
+  cmdSweep, cmdShell, cmdFillet3D, cmdGroup, cmdUngroup, clickDimBase,
+  crvLen, polyOffsetIn, polyRoundCorners, prismTris, polyArea2,
   get pts(){ return pts; }, set pts(v){ pts = v; },
   // 색상 (WYSIWYG 잉크 + 팝오버)
   themedInk, entityColor, readRecentColors, pushRecentColor, openColorPop, closeColorPop, PRESET_COLORS,
