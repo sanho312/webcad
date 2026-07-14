@@ -536,17 +536,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <div class="tool t3" data-tool="intersect3d" title="교집합 (intersect3d) — 겹친 부분만">
         <svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="5"/><circle cx="15" cy="12" r="5"/></svg>교집합</div>
       <div class="tdiv t3"></div>
-      <div class="t3label t3">3D 변형</div>
-      <div class="tool t3" data-tool="move3d" title="3D 이동 (move3d) — dx,dy,dz">
-        <svg viewBox="0 0 24 24"><path d="M12 4v16M4 12h16M12 4l-3 3M12 4l3 3M6 12l3-3M6 12l3 3"/></svg>3D이동</div>
-      <div class="tool t3" data-tool="rotate3d" title="3D 회전 (rotate3d) — Z축 기준">
-        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>3D회전</div>
-      <div class="tool t3" data-tool="mirror3d" title="3D 대칭 (mirror3d)">
-        <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5z"/></svg>3D대칭</div>
-      <div class="tool t3" data-tool="array3d" title="3D 배열 (array3d)">
-        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="5" height="5"/><rect x="15" y="4" width="5" height="5"/><rect x="4" y="15" width="5" height="5"/><rect x="15" y="15" width="5" height="5"/></svg>3D배열</div>
-      <div class="tool t3" data-tool="scale3d" title="3D 크기 (scale3d)">
-        <svg viewBox="0 0 24 24"><rect x="4" y="12" width="6" height="6"/><rect x="12" y="4" width="9" height="9"/></svg>3D크기</div>
+      <!-- 이동·복사·회전·대칭·배열·배율은 위의 기본 도구가 평면·3D 공용으로 담당(라이노 방식) — 3D 전용 중복 버튼 제거 -->
+      <div class="t3label t3">3D 전용</div>
       <div class="tool t3" data-tool="settop" title="상단 정렬 (settop) — 벽·기둥 상단 높이 맞춤">
         <svg viewBox="0 0 24 24"><path d="M3 5h18"/><rect x="6" y="8" width="4" height="11"/><rect x="14" y="8" width="4" height="7"/></svg>상단정렬</div>
       <div class="tdiv"></div>
@@ -824,7 +815,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260715b"></script>
+<script src="cad.js?v=20260715e"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>
