@@ -493,6 +493,48 @@ function tests(){
     reset();
   }
 
+  // ---------- 표면 스냅 + 표면 위 곡선(정점별 z) ----------
+  group('표면 스냅 — 솔리드/메시 면 위에 커서 얹기 + 표면 위 곡선');
+  {
+    // catmullRom2D 일반화: 2D 입력은 예전과 동일, 3D 입력은 z까지 보간
+    const P2 = [[0,0],[10,10],[20,0],[30,10]];
+    const s2 = C.catmullRom2D(P2, false, 4);
+    ok(s2.every(p => p.length === 2), 'catmullRom 2D 입력 → 2D 출력 (기존 동작 유지)');
+    const P3 = [[0,0,0],[10,10,100],[20,0,200],[30,10,300]];
+    const s3 = C.catmullRom2D(P3, false, 4);
+    ok(s3.every(p => p.length === 3), 'catmullRom 3D 입력 → z까지 보간');
+    ok(s3.some(p => p[2] > 0 && p[2] < 300), '  z가 중간값으로 부드럽게 보간됨');
+    // 2D 결과가 3D 입력의 x·y와 같아야 (z 추가가 x·y를 바꾸면 안 됨)
+    ok(s2.every((p,i) => Math.abs(p[0]-s3[i][0]) < 1e-9 && Math.abs(p[1]-s3[i][1]) < 1e-9), '  z를 추가해도 x·y 궤적 불변');
+
+    // polyZ / polyHasZ — 정점 수가 어긋나면 조용히 평면 z로 폴백
+    const e1 = { type:'LWPOLYLINE', points:[[0,0],[1,1],[2,2]], zs:[10,20,30] };
+    ok(C.polyHasZ(e1), 'zs 길이가 맞으면 정점별 높이 사용');
+    eqi(C.polyZ(e1, 1, 5), 20, '  polyZ = 해당 정점의 z');
+    const e2 = { type:'LWPOLYLINE', points:[[0,0],[1,1],[2,2]], zs:[10,20] }; // 오프셋 등으로 어긋난 경우
+    ok(!C.polyHasZ(e2), 'zs 길이가 어긋나면 무시 (깨지지 않고 평면으로 폴백)');
+    eqi(C.polyZ(e2, 1, 5), 5, '  폴백 = 평면 z');
+    const e3 = { type:'LWPOLYLINE', points:[[0,0],[1,1]] };
+    eqi(C.polyZ(e3, 0, 7), 7, 'zs 없는 기존 폴리라인 = 평면 z (하위호환)');
+
+    // attachPtsZ — 높이가 다를 때만 zs를 심는다
+    const flat = { type:'LWPOLYLINE', points:[[0,0],[1,1]] };
+    C.attachPtsZ(flat, [{x:0,y:0,z:C.lvElev()},{x:1,y:1,z:C.lvElev()}]);
+    ok(flat.zs === undefined, '높이가 모두 같으면 zs를 만들지 않음 (기존 평면 도형 그대로)');
+    const slope = { type:'LWPOLYLINE', points:[[0,0],[1,1]] };
+    C.attachPtsZ(slope, [{x:0,y:0,z:100},{x:1,y:1,z:500}]);
+    ok(!!slope.zs && slope.zs.length === 2, '높이가 다르면 zs 저장 (표면 위 곡선)');
+    ok(slope.zo === undefined, '  zs와 zo는 함께 쓰지 않음 (이중 적용 방지)');
+
+    // DXF 왕복에서 zs 보존
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[100,0],[200,0]], zs:[0,500,200], layer:'0' }]);
+    const dxf = C.buildDXFText();
+    C.loadDXF(dxf, 'rt.dxf');
+    const back = S0.entities.find(e => e.type === 'LWPOLYLINE');
+    ok(!!back && JSON.stringify(back.zs) === JSON.stringify([0,500,200]), 'DXF 왕복 — 표면 위 곡선의 정점별 높이 보존');
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {

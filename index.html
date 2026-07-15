@@ -700,6 +700,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
             <label class="optChk"><input type="checkbox" id="os_tangent"> 접선 ⊙</label>
             <label class="optChk"><input type="checkbox" id="os_intersection"> 교차 ✕</label>
             <label class="optChk"><input type="checkbox" id="os_nearest"> 근처 ⧗</label>
+            <label class="optChk" title="3D 뷰에서 솔리드·메시의 면 위에 커서를 얹습니다 — 곡면 위에 직접 곡선을 그릴 때"><input type="checkbox" id="os_surface"> 표면 ◻ (3D)</label>
             <div class="optHint" style="margin-top:8px;">극좌표 추적(폴라): 작도 중 커서 각도를 아래 단위로 스냅 (직교 F8과 별개)</div>
             <select id="optPolar" style="width:100%">
               <option value="0">끄기</option><option value="15">15°</option>
@@ -799,6 +800,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <label><input type="checkbox" data-osm="perp" checked>수직</label>
     <label><input type="checkbox" data-osm="intersection" checked>교차</label>
     <label><input type="checkbox" data-osm="nearest" checked>근접</label>
+    <label title="솔리드·메시의 면 위에 커서를 얹어 표면에 곡선을 그림"><input type="checkbox" data-osm="surface" checked>표면</label>
     <span style="flex:1"></span>
     <!-- 작업면 Z 컨트롤(구 #cplaneBar) — 3D 모드에서만 표시(syncViewSeg). 상태바 크기에 맞춰 컴팩트 -->
     <span id="cplaneStatus" style="display:none;align-items:center;gap:5px;white-space:nowrap;" title="작업면(Construction Plane) 높이 — 3D에서 그리는 객체가 이 높이에 생성됩니다">작업면 Z
@@ -815,7 +817,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260715j"></script>
+<script src="cad.js?v=20260715k"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>

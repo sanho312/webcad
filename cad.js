@@ -56,7 +56,7 @@ let hatchSpacing = 5;   // 해치 간격
 const SETTINGS_KEY = 'webcad_settings_v1';
 let settings = {
   units: 'mm',
-  osnapModes: { endpoint: true, midpoint: true, center: true, quad: true, perp: true, nearest: true, intersection: true, tangent: true },
+  osnapModes: { endpoint: true, midpoint: true, center: true, quad: true, perp: true, nearest: true, intersection: true, tangent: true, surface: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
   bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180 }, // BIM 기본값(mm)
@@ -912,7 +912,7 @@ function intersectEntities(A, B) {
   }
   return out;
 }
-const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', quad: '사분점', perp: '수직', nearest: '근처', intersect: '교차', tangent: '접선' };
+const SNAP_KO = { endpoint: '끝점', midpoint: '중점', center: '중심', quad: '사분점', perp: '수직', nearest: '근처', intersect: '교차', tangent: '접선', surface: '표면' };
 
 // ============================================================
 //  이동
@@ -1734,7 +1734,7 @@ function handleClick(w, rawW, ev) {
       break;
     case 'pline':
     case 'spline': // 자유곡선: 제어점 연속 클릭 → Enter/우클릭으로 확정(부드럽게 통과)
-      pts.push({ x: w.x, y: w.y });
+      pts.push({ x: w.x, y: w.y, z: w.z }); // z = 표면 스냅 높이 (없으면 undefined → 작업면 z)
       break;
     case 'rect':
       if (!draft) { pushUndo(); draft = { type: 'LWPOLYLINE', closed: true, points: [], _base: { x: w.x, y: w.y } }; }
@@ -2927,7 +2927,7 @@ function renderScene(isActive) {
     if (e.type === 'LINE') { // 3D 선: 정점별 z
       path = [proj3D(e.x1, e.y1, e.z1 != null ? e.z1 : z), proj3D(e.x2, e.y2, e.z2 != null ? e.z2 : z)];
     } else if (e.type === 'LWPOLYLINE' && e.points && e.points.length) {
-      path = e.points.map(p => proj3D(p[0], p[1], z)); closed = !!e.closed;
+      path = e.points.map((p, i) => proj3D(p[0], p[1], polyZ(e, i, z))); closed = !!e.closed; // zs = 표면 위 곡선의 정점별 높이
     } else if (e.type === 'CIRCLE') {
       path = []; for (let i = 0; i <= 32; i++) { const t = i / 32 * Math.PI * 2; path.push(proj3D(e.cx + e.r * Math.cos(t), e.cy + e.r * Math.sin(t), z)); }
     } else if (e.type === 'ARC') {
@@ -3782,6 +3782,60 @@ function onCurve2D(e, x, y, tol) {
   }
   return false;
 }
+// ============================================================
+//  표면 스냅 (라이노 오스냅의 Surface에 해당)
+//  솔리드·메시의 '면' 위에 커서를 얹는다 → 곡면 위에 직접 곡선을 그릴 수 있음.
+//  꼭짓점·모서리보다 우선순위가 낮아, 면 위 빈 곳을 가리킬 때만 잡힌다.
+//  투영이 직교(perspective divide 없음)라서 화면 삼각형의 무게중심 좌표로 z를 정확히 보간할 수 있다.
+// ============================================================
+function surfaceSnap3D(px, py, exclude) {
+  if (typeof v3 === 'undefined' || !v3) return null;
+  let best = null, bestDepth = Infinity;
+  // 삼각형 하나 검사 — 커서가 화면상 삼각형 안이면 그 지점의 z를 보간해서 후보로
+  const tri = (A, B, C) => {
+    const a = proj3D(A[0], A[1], A[2]), b = proj3D(B[0], B[1], B[2]), c = proj3D(C[0], C[1], C[2]);
+    const v0x = c[0] - a[0], v0y = c[1] - a[1], v1x = b[0] - a[0], v1y = b[1] - a[1], v2x = px - a[0], v2y = py - a[1];
+    const d00 = v0x * v0x + v0y * v0y, d01 = v0x * v1x + v0y * v1y, d02 = v0x * v2x + v0y * v2y;
+    const d11 = v1x * v1x + v1y * v1y, d12 = v1x * v2x + v1y * v2y;
+    const den = d00 * d11 - d01 * d01;
+    if (Math.abs(den) < 1e-9) return;
+    const u = (d11 * d02 - d01 * d12) / den, t = (d00 * d12 - d01 * d02) / den;
+    if (u < -0.001 || t < -0.001 || u + t > 1.001) return;
+    const depth = (a[2] + b[2] + c[2]) / 3; // proj3D의 3번째 성분 = 깊이 (앞면 우선)
+    if (depth >= bestDepth) return;
+    const z = A[2] + (C[2] - A[2]) * u + (B[2] - A[2]) * t;
+    const q = unproj3D(px, py, z);
+    if (!q) return;
+    bestDepth = depth;
+    best = { x: Math.round(q[0]), y: Math.round(q[1]), z: Math.round(z), kind: 'surface' };
+  };
+  // 메시(불리언 결과·구·원뿔·STL·로프트 등)
+  for (const e of state.entities) {
+    if (e.type !== 'MESH' || !e.tris) continue;
+    if (exclude && exclude.has(e.id)) continue;
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    if (e.tris.length > 4000) continue; // 과대 메시는 성능상 생략 (기존 표면 스냅과 동일 기준)
+    for (const t of e.tris) tri(t[0], t[1], t[2]);
+  }
+  // BIM 솔리드(벽·기둥·슬래브·지붕) — 윗면/바닥면 + 옆면
+  for (const s of (v3.solids || [])) {
+    if (exclude && exclude.has(s.eid)) continue;
+    const P = s.poly; if (!P || P.length < 3) continue;
+    const zt = s.zt || P.map(() => s.z1);
+    for (let i = 1; i < P.length - 1; i++) { // 팬 삼각화: 바닥·윗면
+      tri([P[0][0], P[0][1], s.z0], [P[i][0], P[i][1], s.z0], [P[i + 1][0], P[i + 1][1], s.z0]);
+      tri([P[0][0], P[0][1], zt[0]], [P[i][0], P[i][1], zt[i]], [P[i + 1][0], P[i + 1][1], zt[i + 1]]);
+    }
+    for (let i = 0; i < P.length; i++) { // 옆면(수직 사각형 → 삼각형 2개)
+      const j = (i + 1) % P.length;
+      const a = [P[i][0], P[i][1], s.z0], b = [P[j][0], P[j][1], s.z0];
+      const c = [P[j][0], P[j][1], zt[j]], d = [P[i][0], P[i][1], zt[i]];
+      tri(a, b, c); tri(a, c, d);
+    }
+  }
+  return best;
+}
+
 function snap3D(px, py, w, exclude) {
   if (!osnapEnabled) return w;
   let best = null, bestD = 14 * (devicePixelRatio || 1);
@@ -3809,6 +3863,14 @@ function snap3D(px, py, w, exclude) {
         { x: e.x2, y: e.y2, z: zc, kind: 'endpoint' },
         { x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2, z: (za + zc) / 2, kind: 'midpoint' },
       ];
+    } else if (e.type === 'LWPOLYLINE' && polyHasZ(e)) { // 표면 위 곡선: 정점별 실제 높이로 스냅
+      cands = e.points.map((p, i) => ({ x: p[0], y: p[1], z: e.zs[i], kind: 'endpoint' }));
+      const segN = e.closed ? e.points.length : e.points.length - 1;
+      for (let i = 0; i < segN; i++) {
+        const j = (i + 1) % e.points.length;
+        cands.push({ x: (e.points[i][0] + e.points[j][0]) / 2, y: (e.points[i][1] + e.points[j][1]) / 2,
+                     z: (e.zs[i] + e.zs[j]) / 2, kind: 'midpoint' });
+      }
     } else {
       let eps = [], mps = [];
       try { eps = entityEndpoints(e); mps = entityMidpoints(e); } catch (_) { continue; }
@@ -3990,6 +4052,12 @@ function snap3D(px, py, w, exclude) {
       }
     }
   }
+  // 표면 — 가장 낮은 우선순위. 꼭짓점·모서리·교차 등이 하나도 안 잡힐 때만,
+  // 즉 면 위 빈 곳을 가리킬 때만 커서를 그 면에 얹는다 (라이노 Surface 오스냅과 동일).
+  if (!best && (!settings.osnapModes || settings.osnapModes.surface !== false)) {
+    const sf = surfaceSnap3D(px, py, exclude);
+    if (sf) best = sf;
+  }
   return best || w;
 }
 // 3D 선: 클릭한 점의 실제 높이(스냅 z 또는 작업면 z)를 정점에 저장 — 서로 다른 높이의 꼭짓점 연결 가능
@@ -4022,8 +4090,10 @@ function tool3DClick(e) {
   const u = unproj3D(px, py, cplaneZ()); // 레이캐스팅: 뷰 광선 ∩ 작업면
   if (!u) return;
   const w = snap3D(px, py, { x: Math.round(u[0]), y: Math.round(u[1]) });
-  // 스냅된 점이 다른 높이면 작업면을 그 높이로 이동 — 생성되는 도형이 스냅점 높이에 정확히 실림
-  if (w.z != null && Math.abs(w.z - cplaneZ()) > 0.5) {
+  // 스냅된 점이 다른 높이면 작업면을 그 높이로 이동 — 생성되는 도형이 스냅점 높이에 정확히 실림.
+  // 단 '표면' 스냅은 예외: 곡면 위를 찍을 때마다 작업면이 따라 튀면 미리보기가 요동치고,
+  // 곡선은 어차피 정점별 z(zs)로 저장되므로 작업면을 옮길 이유가 없다.
+  if (w.z != null && w.kind !== 'surface' && Math.abs(w.z - cplaneZ()) > 0.5) {
     setCplane(w.z);
     logLine(`  ▷ 작업면을 스냅점 높이 ${Math.round(w.z)}(으)로 이동 — 이 높이에 작도됩니다`, 'info');
   }
@@ -4603,30 +4673,49 @@ function crvSampleN(e, n) { // 닫힘=n개 / 열림=n+1개(끝점 포함), z 반
 const LOFTABLE = ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'];
 
 // ---------- 자유곡선(spline): 제어점을 부드럽게 통과하는 곡선 (Catmull-Rom → 폴리라인) ----------
+// 성분 수는 입력에서 결정 — [x,y]면 평면, [x,y,z]면 표면 위 곡선(z도 같이 보간).
+// 2D 입력은 예전과 완전히 동일한 결과를 낸다.
 function catmullRom2D(P, closed, seg) {
   const n = P.length; if (n < 3) return P.map(p => p.slice());
+  const dim = P[0].length;
   const out = [], at = i => P[closed ? (i + n) % n : Math.max(0, Math.min(n - 1, i))];
   const last = closed ? n : n - 1;
   for (let i = 0; i < last; i++) {
     const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
     for (let s = 0; s < seg; s++) {
       const t = s / seg, t2 = t * t, t3 = t2 * t;
-      out.push([
-        0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
-        0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3),
-      ]);
+      const q = [];
+      for (let d = 0; d < dim; d++)
+        q.push(0.5 * (2 * p1[d] + (-p0[d] + p2[d]) * t + (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * t2 + (-p0[d] + 3 * p1[d] - 3 * p2[d] + p3[d]) * t3));
+      out.push(q);
     }
   }
   if (closed) out.push(out[0].slice()); else out.push(P[n - 1].slice());
   return out;
 }
+// ---------- 폴리라인 정점별 높이(zs) ----------
+// 표면 위에 그린 곡선은 정점마다 z가 다르다. points는 [x,y] 그대로 두고 z만 별도 배열로 —
+// 기존 2D 코드(points.map 등)를 건드리지 않기 위함.
+// 길이가 어긋나면(오프셋·분해 등으로 정점 수가 바뀐 경우) 조용히 평면 z로 되돌아간다.
+function polyZ(e, i, zBase) {
+  return (e.zs && e.points && e.zs.length === e.points.length && e.zs[i] != null) ? e.zs[i] : zBase;
+}
+function polyHasZ(e) { return !!(e.zs && e.points && e.zs.length === e.points.length); }
 function finishSpline(closed) {
   if (pts.length >= 2) {
     pushUndo();
-    const P = pts.map(p => [p.x, p.y]);
+    const base = lvElev() + (typeof cplaneZ === 'function' ? (cplaneZ() - lvElev()) : 0);
+    // 제어점 높이가 서로 다르면(=표면 위에 찍은 경우) z까지 같이 보간해 곡선이 면을 타고 흐르게 한다
+    const zOf = p => (p.z != null ? p.z : base);
+    const has3 = pts.some(p => Math.abs(zOf(p) - zOf(pts[0])) > 0.5);
+    const P = has3 ? pts.map(p => [p.x, p.y, zOf(p)]) : pts.map(p => [p.x, p.y]);
     const smooth = P.length >= 3 ? catmullRom2D(P, !!closed, 12) : P;
-    addEntity({ type: 'LWPOLYLINE', closed: !!closed, points: smooth });
-    logLine(`  ✔ 자유곡선 (제어점 ${P.length}개 → 정점 ${smooth.length}개${closed ? ' · 닫힘' : ''})`, 'ok');
+    const e = addEntity({ type: 'LWPOLYLINE', closed: !!closed, points: smooth.map(p => [p[0], p[1]]) });
+    if (has3 && e) {
+      e.zs = smooth.map(p => Math.round(p[2]));
+      delete e.zo;
+    }
+    logLine(`  ✔ 자유곡선 (제어점 ${P.length}개 → 정점 ${smooth.length}개${closed ? ' · 닫힘' : ''}${has3 ? ` · 표면 위 z ${Math.min(...e.zs)}~${Math.max(...e.zs)}` : ''})`, 'ok');
     updateStat();
   }
   pts = []; draw();
@@ -6630,10 +6719,23 @@ function cancelDraft() { draft = null; pts = []; draw(); }
 function finishPolyline() {
   if (pts.length >= 2) {
     pushUndo();
-    addEntity({ type: 'LWPOLYLINE', closed: false, points: pts.map(p => [p.x, p.y]) });
+    const e = addEntity({ type: 'LWPOLYLINE', closed: false, points: pts.map(p => [p.x, p.y]) });
+    attachPtsZ(e, pts);
     updateStat();
   }
   pts = []; draw();
+}
+// 클릭한 점들의 높이가 서로 다르면(=표면 위에 그린 곡선) 정점별 z를 심는다.
+// 전부 같은 높이면 아무것도 하지 않는다 — 기존 평면 도형(zo) 동작 그대로.
+function attachPtsZ(e, ps) {
+  if (!e || !ps || !ps.length) return;
+  const base = lvElev() + (e.zo || 0);
+  const zs = ps.map(p => (p.z != null ? p.z : base));
+  if (zs.some(z => Math.abs(z - zs[0]) > 0.5)) {
+    e.zs = zs.map(z => Math.round(z));
+    delete e.zo; // zs는 절대 높이 — zo와 이중 적용되면 안 됨
+    logLine(`  ▷ 표면 위 곡선: 정점별 높이 저장 (z ${Math.min(...e.zs)}~${Math.max(...e.zs)})`, 'info');
+  }
 }
 
 // 호: 3클릭(중심 → 시작 → 끝)
@@ -7772,7 +7874,7 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     document.getElementById('optDimTxt').value = settings.dim.txt || 0;
     document.getElementById('optDimDec').value = String(settings.dim.dec != null ? settings.dim.dec : 2);
     document.getElementById('optDimSuffix').checked = !!settings.dim.suffix;
-    for (const k of ['endpoint', 'midpoint', 'center', 'quad', 'perp', 'tangent', 'nearest', 'intersection'])
+    for (const k of ['endpoint', 'midpoint', 'center', 'quad', 'perp', 'tangent', 'nearest', 'intersection', 'surface'])
       document.getElementById('os_' + k).checked = !!settings.osnapModes[k];
     // 단축키 목록 (도구명 → 현재 사용자 별칭 역조회)
     const rev = {}; for (const [a, t] of Object.entries(settings.aliases)) if (!rev[t]) rev[t] = a;
@@ -7796,7 +7898,7 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
     settings.dim.txt = Math.max(0, parseFloat(document.getElementById('optDimTxt').value) || 0);
     settings.dim.dec = parseInt(document.getElementById('optDimDec').value, 10);
     settings.dim.suffix = document.getElementById('optDimSuffix').checked;
-    for (const k of ['endpoint', 'midpoint', 'center', 'quad', 'perp', 'tangent', 'nearest', 'intersection'])
+    for (const k of ['endpoint', 'midpoint', 'center', 'quad', 'perp', 'tangent', 'nearest', 'intersection', 'surface'])
       settings.osnapModes[k] = document.getElementById('os_' + k).checked;
     const aliases = {};
     document.querySelectorAll('#aliasList input').forEach(inp => {
@@ -8374,6 +8476,7 @@ function buildDXFText() {
       if (e.zo) x.zo = e.zo;
       if (e.z1 != null) x.z1 = e.z1;
       if (e.z2 != null) x.z2 = e.z2;
+      if (polyHasZ(e)) x.zs = e.zs; // 표면 위 곡선의 정점별 높이
       if (Object.keys(x).length) wcx.ext.push([sig, x]);
     }
     if (wcx.ext.length || wcx.mesh.length || wcx.img.length) {
@@ -8995,6 +9098,7 @@ function applyWcxExt(text) {
       if (x.zo != null) e.zo = x.zo;
       if (x.z1 != null) e.z1 = x.z1;
       if (x.z2 != null) e.z2 = x.z2;
+      if (Array.isArray(x.zs) && e.points && x.zs.length === e.points.length) e.zs = x.zs.slice(); // 표면 위 곡선
     }
   }
   // 3) 이미지 복원 — DXF 엔티티가 아니라 WCX에만 있으므로 정의로부터 새로 만든다.
@@ -9585,6 +9689,7 @@ window.__CADTEST__ = {
   draw, worldToScreen, screenToWorld, entityHit, entityGrips, renderProps, pick, applyDoc,
   dxfColorIndex, dxfTrueColor, aci2hex, tc2hex,
   CMD_ALIASES, INSTANT_CMDS, TOOL_KO, // 명령어 체계 회귀 검사용 (라이노 이름 대조 / 2D·3D 분리 재발 방지)
+  surfaceSnap3D, snap3D, polyZ, polyHasZ, catmullRom2D, finishSpline, finishPolyline, attachPtsZ, lvElev,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
