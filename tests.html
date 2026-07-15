@@ -493,6 +493,43 @@ function tests(){
     reset();
   }
 
+  // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
+  group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
+  {
+    const A = C.CMD_ALIASES;
+    const canon = [...new Set(Object.values(A))];
+
+    // 1) "move / 3dmove"처럼 차원별로 쪼갠 명령이 다시 생기면 실패 — 사용자가 명시적으로 금지한 패턴.
+    //    view3d는 편집 명령이 아니라 뷰 전환 토글이므로 예외.
+    const VIEW_OK = ['view3d'];
+    const split = canon.filter(n => !VIEW_OK.includes(n) && /(^|[^a-z])[23]d|[23]d$/.test(n));
+    ok(split.length === 0, '차원별로 쪼갠 명령 없음 (있으면: ' + (split.join(', ') || '없음') + ')');
+
+    // 2) 과거에 존재했던 분리 명령들이 완전히 사라졌는지
+    for (const dead of ['move3d','3dmove','copy3d','3dcopy','mirror3d','array3d','scale3d','rotate3d','fillet3d','intersect3d'])
+      ok(!A[dead], `분리 명령 '${dead}' 제거됨`);
+
+    // 3) 공용 명령은 하나로 — 평면/3D 구분 없이 같은 이름
+    for (const [k, want] of [['move','move'],['m','move'],['copy','copy'],['co','copy'],
+                             ['rotate','rotate'],['mirror','mirror'],['scale','scale'],['array','array']])
+      eqi(A[k], want, `'${k}' → ${want} (평면·3D 공용)`);
+
+    // 4) 라이노 정식 이름/단축키가 동작해야 (노드 개발 시 호환성 기준)
+    for (const [k, want] of [
+      ['booleanunion','booleanunion'], ['bu','booleanunion'], ['union','booleanunion'],
+      ['booleandifference','booleandifference'], ['bd','booleandifference'], ['difference','booleandifference'],
+      ['booleanintersection','booleanintersection'], ['bi','booleanintersection'], ['boolint','booleanintersection'],
+      ['filletedge','filletedge'], ['fe','filletedge'],
+      ['distance','dist'], ['matchproperties','matchprop'], ['curve','spline'], ['interpcrv','spline'],
+      ['polyline','pline'], ['rectangle','rect'], ['delete','erase'], ['extrude','extrudecrv'],
+    ]) eqi(A[k], want, `라이노 이름 '${k}' → ${want}`);
+
+    // 5) 별칭이 가리키는 정식 이름은 전부 실행 가능해야 — 즉시실행(INSTANT_CMDS) 아니면 도구(TOOL_KO).
+    //    둘 다 아니면 입력해도 아무 일도 안 일어나는 죽은 명령이다.
+    const dead = canon.filter(n => !C.INSTANT_CMDS[n] && !C.TOOL_KO[n]);
+    ok(dead.length === 0, '죽은 별칭 없음 — 모든 정식 이름이 실행 가능 (' + (dead.join(', ') || '없음') + ')');
+  }
+
   // ---------- 이미지 DXF 보존 ----------
   group('이미지 — DXF 저장/불러오기 보존 (999 WCX)');
   {

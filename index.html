@@ -529,11 +529,11 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <svg viewBox="0 0 24 24"><path d="M5 15h14"/><path d="M6 15V9l6-3 6 3v6"/><path d="M3 19h18"/></svg>절단</div>
       <div class="tdiv t3"></div>
       <div class="t3label t3">3D 불리언</div>
-      <div class="tool t3" data-tool="union" title="합집합 (union) — 두 솔리드를 하나로">
+      <div class="tool t3" data-tool="booleanunion" title="합집합 (booleanunion · bu) — 두 솔리드를 하나로">
         <svg viewBox="0 0 24 24"><path d="M10 6h8v8h-4v4H6v-8h4z"/></svg>합집합</div>
-      <div class="tool t3" data-tool="difference" title="차집합 (difference) — 첫 솔리드에서 뺌">
+      <div class="tool t3" data-tool="booleandifference" title="차집합 (booleandifference · bd) — 첫 솔리드에서 뺌">
         <svg viewBox="0 0 24 24"><path d="M6 8h8v8H6z"/><path d="M12 4h8v8h-6" stroke-dasharray="2 2"/></svg>차집합</div>
-      <div class="tool t3" data-tool="intersect3d" title="교집합 (intersect3d) — 겹친 부분만">
+      <div class="tool t3" data-tool="booleanintersection" title="교집합 (booleanintersection · bi) — 겹친 부분만">
         <svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="5"/><circle cx="15" cy="12" r="5"/></svg>교집합</div>
       <div class="tdiv t3"></div>
       <!-- 이동·복사·회전·대칭·배열·배율은 위의 기본 도구가 평면·3D 공용으로 담당(라이노 방식) — 3D 전용 중복 버튼 제거 -->
@@ -815,7 +815,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260715i"></script>
+<script src="cad.js?v=20260715j"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>
