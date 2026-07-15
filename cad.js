@@ -2609,6 +2609,11 @@ function bimSolids() {
       band(cur, L, base, base + h, wallCol);
     }
   }
+  // 광원으로 지정한 개체는 빛이 '형상 안'에 있다 — 모든 면의 법선이 광원을 등지므로
+  // 단면 조명으로는 새까맣게 나온다. 양면으로 표시해 안에서 밝혀지게 한다(색은 그대로).
+  const litIds = new Set();
+  for (const e of state.entities) if (e.light) litIds.add(e.id);
+  if (litIds.size) for (const s of solids) if (litIds.has(s.eid)) s.lit = 1;
   return solids;
 }
 // 벽 경로의 정점별 바닥 높이 — 표면 위 곡선(zs) / 3D 선(z1,z2)이면 배열, 평면 도형이면 null(예전 동작)
@@ -3020,9 +3025,7 @@ function renderScene(isActive) {
   c.save();
   c.lineWidth = 1;
   for (const e of state.entities) {
-    // BIM 요소는 아래에서 솔리드로 그려짐. 단 광원(light)은 형상을 만들지 않으므로
-    // 여기서 빼면 3D에서 아예 안 보인다 — 라인워크로 남겨 위치를 알 수 있게 한다.
-    if (e.bim && e.bim.kind !== 'light') continue;
+    if (e.bim) continue; // BIM 요소는 아래에서 솔리드로 그려짐 (광원 지정은 bim을 바꾸지 않으므로 여기 영향 없음)
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const z = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0); // zo = 검볼 Z로 띄운 3D 표시 높이
     let path = null, closed = false;
@@ -3079,19 +3082,19 @@ function renderScene(isActive) {
       const lightA = Math.abs(onx * 0.8 + ony * 0.35);
       let sSh, sSh3 = null;
       if (s.glow) sSh = 1;
-      else if (v3.lighting) { sSh = litFace(mx, my, midz, onx, ony, 0, false); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
+      else if (v3.lighting) { sSh = litFace(mx, my, midz, onx, ony, 0, !!s.lit); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
       else sSh = 0.55 + 0.45 * lightA;
       faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1)) {  // 상면 (위 향함)
       const mTop = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' };
-      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop, s.eid + '|t|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z1)); // 넓은 면에도 빛 웅덩이가 보이게 (조작 중엔 생략)
+      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop, s.eid + '|t|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z1), !!s.lit); // 넓은 면에도 빛 웅덩이가 보이게 (조작 중엔 생략)
       else faces.push({ ...mTop, pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 1.0 });
     }
     if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1)) { // 하면 (아래 향함)
       const mBot = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' };
-      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot, s.eid + '|b|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z0));
+      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot, s.eid + '|b|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z0), !!s.lit);
       else faces.push({ ...mBot, pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 0.5 });
     }
   }
@@ -3100,21 +3103,17 @@ function renderScene(isActive) {
     if (e.type !== 'MESH') continue;
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const featSet = meshFeat(e); // 이 메시의 특징(코너·경계) 모서리 집합
-    const isLamp = !!(e.bim && e.bim.kind === 'light'); // 광원으로 지정한 형상 = 발광체
-    const mcol = isLamp ? (e.color || '#ffe9a8') : bimSolidColor(e, '#b9b2a6'); // 색: 명시색 > 레이어색 > 기본
+    const mcol = bimSolidColor(e, '#b9b2a6'); // 색: 명시색 > 레이어색 > 기본
     for (const t of e.tris) {
       const P = t.map(p => proj3D(p[0], p[1], p[2]));
       const ux = t[1][0] - t[0][0], uy = t[1][1] - t[0][1], uz = t[1][2] - t[0][2];
       const vx = t[2][0] - t[0][0], vy = t[2][1] - t[0][1], vz = t[2][2] - t[0][2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-      const shade = isLamp ? 1 // 발광체는 음영 없이 밝게 — litFace를 부르지 않는다
-        : v3.lighting
-          ? litFace((t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3, (t[0][2] + t[1][2] + t[2][2]) / 3, nx, ny, nz, true)
-          : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
-      // LIT_RGB는 방금 litFace가 채운 공용 버퍼다. 발광체는 litFace를 건너뛰므로
-      // 여기서 읽으면 직전 면의 색이 묻어온다 — isLamp면 반드시 제외.
-      const msh3 = (!isLamp && v3.lighting && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
+      const shade = v3.lighting
+        ? litFace((t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3, (t[0][2] + t[1][2] + t[2][2]) / 3, nx, ny, nz, true)
+        : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
+      const msh3 = (v3.lighting && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
       const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
       faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
     }
@@ -5922,10 +5921,25 @@ function lightPath(e, zb) {
   if (total < 1e-6) return null;
   return { V, n, nE, closed, zAt: i => ZS[i], segLen, total };
 }
-// 빛이 실제로 나오는 지점들. 원=점광원(중심), 선·폴리라인=선형 광원(간격마다), 메시=형상 한가운데.
+// 입체로 그려지는 개체(box·extrude 결과 등)의 z 범위. box는 MESH가 아니라
+// 'LWPOLYLINE + bim{kind:column}'이라 bim에서 높이를 읽어야 한다.
+function bimZSpan(b) {
+  if (!b) return null;
+  const base = b.base || 0;
+  switch (b.kind) {
+    case 'wall': case 'column': case 'stair': case 'railing': return [base, base + (b.h || 0)];
+    case 'slab': { const top = b.top || 0; return [top - (b.t || 0), top]; }
+    case 'roof': { const ev = b.eave || 0; return [ev, ev + (b.rise || 0)]; }
+  }
+  return null;
+}
+// 빛이 실제로 나오는 지점들.
+//  · 입체(정육면체 등) = 그 입체 한가운데 → "정육면체 광원체"
+//  · 메시 = 형상 한가운데
+//  · 순수 곡선 = 원이면 중심, 선·폴리라인이면 간격마다(선형 광원)
 function lightEmitters(e) {
   const out = [];
-  if (e.type === 'MESH') {                       // 직접 만든 램프 형상
+  if (e.type === 'MESH') {
     if (!e.tris || !e.tris.length) return out;
     const bb = meshBBox(e);
     let zm = 1e18, zM = -1e18;
@@ -5933,10 +5947,17 @@ function lightEmitters(e) {
     out.push({ x: (bb.xmin + bb.xmax) / 2, y: (bb.ymin + bb.ymax) / 2, z: (zm + zM) / 2 });
     return out;
   }
+  const zs = bimZSpan(e.bim);
+  if (zs) { // 입체로 그려지는 개체 — 형상 한가운데서 빛난다
+    const bb = entityBBox(e);
+    if (!bb) return out;
+    out.push({ x: (bb.xmin + bb.xmax) / 2, y: (bb.ymin + bb.ymax) / 2, z: (zs[0] + zs[1]) / 2 });
+    return out;
+  }
   const zb = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
   if (e.type === 'CIRCLE') { out.push({ x: e.cx, y: e.cy, z: zb }); return out; }
   const P = lightPath(e, zb); if (!P) return out;
-  for (const st of pathStations(P, Math.max(100, (e.bim && e.bim.spacing) || 3000))) out.push({ x: st.x, y: st.y, z: st.z });
+  for (const st of pathStations(P, Math.max(100, (e.light && e.light.spacing) || 3000))) out.push({ x: st.x, y: st.y, z: st.z });
   return out;
 }
 // ---------- 실제 광원 (지정한 개체 → 3D 셰이딩) ----------
@@ -5962,9 +5983,9 @@ function toneMap(v) {
 function lightSources() {
   const out = [];
   for (const e of state.entities) {
-    if (!e.bim || e.bim.kind !== 'light') continue;
+    if (!e.light) continue; // 광원 지정은 bim과 무관한 별도 속성 — 개체의 원래 정체(기둥·벽·면)를 건드리지 않는다
     const l = getLayer(e.layer); if (l && !l.visible) continue;
-    const b = e.bim;
+    const b = e.light;
     for (const p of lightEmitters(e)) {
       const rng = Math.max(100, b.range || LIGHT_RANGE_DEF);
       out.push({
@@ -5988,8 +6009,13 @@ function shadowOccluders() {
   const tris = [];
   let col = [180, 180, 180]; // 현재 수집 중인 형상의 표면 색 (0~255) — 색번짐에 쓰인다
   const push = (a, b, c) => { if (tris.length < SHADOW_TRI_CAP) tris.push({ v: [a, b, c], col }); };
+  // 광원으로 지정한 개체는 가림에서 뺀다 — 안 그러면 자기 형상이 자기 빛을 통째로 막아 캄캄해진다.
+  // (box는 MESH가 아니라 LWPOLYLINE+bim이라 솔리드로 그려지므로 여기서도 걸러야 한다)
+  const litIds = new Set();
+  for (const e of state.entities) if (e.light) litIds.add(e.id);
   for (const s of (v3.solids || [])) {
-    if (s.glass || s.glow) continue; // 유리·램프 헤드는 빛을 막지 않는다
+    if (s.glass || s.glow) continue; // 유리는 빛을 막지 않는다
+    if (litIds.has(s.eid)) continue; // 광원 지정 개체
     const P = s.poly, n = P.length; if (!P || n < 3) continue;
     col = rgbTriplet(s.color || '#b9b2a6');
     const zt = s.zt || P.map(() => s.z1), zb = s.zb || P.map(() => s.z0);
@@ -6006,7 +6032,7 @@ function shadowOccluders() {
   }
   for (const e of state.entities) {
     if (e.type !== 'MESH' || !e.tris) continue;
-    if (e.bim && e.bim.kind === 'light') continue; // 광원으로 지정한 형상은 자기 빛을 스스로 막지 않는다
+    if (e.light) continue; // 광원으로 지정한 형상은 자기 빛을 스스로 막지 않는다
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     col = rgbTriplet(bimSolidColor(e, '#b9b2a6'));
     for (const t of e.tris) push(t[0], t[1], t[2]);
@@ -6226,7 +6252,7 @@ function litCacheSig() {
   }
   return h + '#' + state.entities.length;
 }
-function pushLitPoly(faces, poly, zs, nz, meta, cacheKey) {
+function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
   const cache = v3._litCache || (v3._litCache = new Map());
   const hit = cacheKey != null ? cache.get(cacheKey) : null;
   if (hit) { // 캐시 적중: 투영만 다시 (밝기·그림자 계산 생략)
@@ -6290,7 +6316,7 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey) {
       else { const x = mid(c, a); emit(a, b, x, depth + 1); emit(x, b, c, depth + 1); }
       return;
     }
-    const sh = litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, false);
+    const sh = litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, !!twoSided);
     const t3 = LIT_RGB[3] ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null; // 색조가 있을 때만
     frags.push({ a, b, c, s: sh, t3 });
     const P = [proj3D(a[0], a[1], a[2]), proj3D(b[0], b[1], b[2]), proj3D(c[0], c[1], c[2])];
@@ -6310,25 +6336,23 @@ function cmdLighting() {
   else logLine(v3.lighting ? `  ▷ 조명 보기 ON — 야간 화면, 광원 ${n}개가 주변을 밝힙니다 (다시 입력하면 OFF)` : '  ▷ 조명 보기 OFF — 기본 셰이딩으로 복귀', 'info');
   render3D();
 }
-// 선택한 개체를 발광원으로 지정한다. 형상은 만들지 않는다 —
-// 조명 기구는 사용자가 원하는 대로 직접 모델링하고, 빛이 나올 자리를 이 명령으로 고른다.
-// 높이는 묻지 않는다: 개체가 놓인 z에서 그대로 빛난다.
+// 선택한 개체에 '광원' 특성만 얹는다. 개체 자체는 아무것도 바뀌지 않는다 —
+// 형태·색·BIM 정체(기둥·벽·면) 모두 그대로. 정육면체를 지정하면 정육면체 광원체가 된다.
+// 그래서 e.bim이 아니라 별도 속성 e.light를 쓴다 (bim을 덮어쓰면 형상이 통째로 사라진다).
+// 높이는 묻지 않는다: 개체가 놓인 자리에서 그대로 빛난다.
 function cmdLightTag() {
   const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE' || e.type === 'MESH');
-  if (!sel.length) { logLine('  광원: 빛을 낼 개체(선·폴리라인·원 또는 솔리드/메시)를 선택한 뒤 실행하세요.', 'warn'); return; }
+  if (!sel.length) { logLine('  광원: 빛을 낼 개체(솔리드·면·메시 또는 선·폴리라인·원)를 선택한 뒤 실행하세요.', 'warn'); return; }
   pushUndo();
-  const changed = []; // 다른 BIM 요소를 광원으로 덮어쓴 경우 — 실수로 벽을 지우는 일이 없게 알린다
-  for (const e of sel) {
-    const o = e.bim || {};
-    if (o.kind && o.kind !== 'light') changed.push(TOOL_KO['bim_' + o.kind] || o.kind);
-    const b = { kind: 'light' };             // 이전 조명 설정(밝기 등)은 유지, 기구 관련 값은 버린다
-    if (o.kind === 'light') for (const k of ['range', 'power', 'soft', 'bounce', 'spacing']) if (o[k] != null) b[k] = o[k];
-    e.bim = b;
+  if (sel.every(e => e.light)) { // 모두 이미 광원 → 해제 (형상은 그대로 남는다)
+    for (const e of sel) delete e.light;
+    logLine(`  ✔ 광원 해제 ${sel.length}개 — 개체는 그대로 남습니다`, 'ok');
+  } else {
+    for (const e of sel) if (!e.light) e.light = {};
+    const n = sel.reduce((a, e) => a + lightEmitters(e).length, 0);
+    logLine(`  ✔ 광원 지정 ${sel.length}개 — 발광 지점 ${n}개 · 개체의 형태·색은 그대로입니다`
+      + ' — 3d 후 lighting 을 켜면 빛납니다 (다시 light = 해제)', 'ok');
   }
-  const n = sel.reduce((a, e) => a + lightEmitters(e).length, 0);
-  logLine(`  ✔ 광원 지정 ${sel.length}개 — 발광 지점 ${n}개`
-    + (changed.length ? ` · ${changed.join('·')} ${changed.length}개가 광원으로 바뀜(Ctrl+Z로 되돌리기)` : '')
-    + ' — 3d 후 lighting 을 켜면 이 개체가 놓인 자리에서 빛납니다', 'ok');
   renderProps(); draw(); boolRefresh();
 }
 function cmdRailingTag() {
@@ -8349,11 +8373,21 @@ function renderProps() {
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
     stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
     railing: [['h', '난간 높이'], ['spacing', '기둥 간격'], ['t', '손스침 두께'], ['postT', '기둥 두께'], ['base', '하단(base)']],
-    light: [['range', '빛 도달거리'], ['power', '밝기(1=기본)'], ['soft', '그림자 부드러움(광원 크기, 0=선명)'], ['bounce', '간접광 세기(0=끔)'], ['spacing', '발광 지점 간격(선·폴리라인)']],
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
+  // 광원 특성 — BIM 정체와 무관하게 덧붙는다 (기둥이면서 광원일 수 있다)
+  const LIGHT_FIELDS = [['range', '빛 도달거리'], ['power', '밝기(1=기본)'],
+    ['soft', '그림자 부드러움(광원 크기, 0=선명)'], ['bounce', '간접광 세기(0=끔)'],
+    ['spacing', '발광 지점 간격(선·폴리라인)']];
+  const LIGHT_DEF = { range: LIGHT_RANGE_DEF, power: 1, soft: 400, bounce: 0.5, spacing: 3000 };
+  if (e.light) {
+    rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">광원</label><span style="font-weight:590;">발광체</span></div>`;
+    for (const [k, lab] of LIGHT_FIELDS)
+      rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-lk="${k}" value="${e.light[k] != null ? e.light[k] : LIGHT_DEF[k]}"></div>`;
+    rows += `<button class="miniBtn" id="pLightClr" style="margin-top:2px;">광원 해제</button>`;
+  }
   if (e.bim) {
-    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', light: '조명', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
+    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
     rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">BIM</label><span style="font-weight:590;">${kindKo}</span></div>`;
     for (const [k, lab] of (BIM_FIELDS[e.bim.kind] || []))
       rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-bk="${k}" value="${e.bim[k] != null ? e.bim[k] : 0}"></div>`;
@@ -8375,6 +8409,17 @@ function renderProps() {
     if (!isFinite(v)) return;
     pushUndo(); e.bim[inp.dataset.bk] = v; propRefresh();
   }));
+  body.querySelectorAll('input[data-lk]').forEach(inp => inp.addEventListener('change', () => {
+    const v = parseFloat(inp.value);
+    if (!isFinite(v)) return;
+    pushUndo(); (e.light = e.light || {})[inp.dataset.lk] = v; propRefresh();
+  }));
+  document.getElementById('pLightClr')?.addEventListener('click', () => {
+    pushUndo();
+    for (const s of selectedEntities()) delete s.light;
+    logLine('  ✔ 광원 해제 — 개체는 그대로 남습니다', 'ok');
+    renderProps(); draw(); boolRefresh();
+  });
   document.getElementById('pBimClr1')?.addEventListener('click', cmdBimClear);
   document.getElementById('pBimWall1')?.addEventListener('click', cmdWallTag);
   document.getElementById('pBimSlab1')?.addEventListener('click', cmdSlabTag);
@@ -8912,7 +8957,7 @@ const CMD_HELP = [
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
     ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘(부드러운 그림자 + 간접광 포함) — 다시 입력하면 OFF. 밝기·도달거리·그림자 부드러움·간접광 세기는 특성창에서 조절'],
-    ['light', '광원 지정', '선택한 개체를 발광원으로 지정(형상은 만들지 않음 — 조명 기구는 직접 모델링). 개체가 놓인 z에서 그대로 빛남: 원=중심 점광원, 선·폴리라인=선형 광원(간격마다), 솔리드·메시=형상 한가운데. 3d 후 lighting 으로 켬. 밝기·도달거리·그림자 부드러움·간접광은 특성창에서 조절(부드러운 그림자·간접광 기본 ON)'],
+    ['light', '광원 지정', '선택한 개체에 광원 특성만 얹는다 — 형태·색·BIM 정체(기둥·벽·면)는 하나도 바뀌지 않는다. 정육면체를 지정하면 정육면체 광원체가 됨. 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다(선형 광원). 다시 light = 해제. 3d 후 lighting 으로 켬. 밝기·도달거리·그림자 부드러움·간접광은 특성창에서 조절(부드러운 그림자·간접광 기본 ON)'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
@@ -9196,6 +9241,7 @@ function buildDXFText() {
       const sig = entSig(e); if (!sig) continue;
       const x = {};
       if (e.bim) x.bim = e.bim;
+      if (e.light) x.light = e.light; // 광원 지정 — 넣지 않으면 저장했다 열 때 광원이 사라진다
       if (e.grp) x.grp = e.grp;
       if (e.zo) x.zo = e.zo;
       if (e.z1 != null) x.z1 = e.z1;
@@ -9818,6 +9864,7 @@ function applyWcxExt(text) {
       const q = map.get(sig); if (!q || !q.length) continue;
       const x = q.shift();
       if (x.bim) e.bim = JSON.parse(JSON.stringify(x.bim));
+      if (x.light) e.light = JSON.parse(JSON.stringify(x.light));
       if (x.grp) e.grp = x.grp;
       if (x.zo != null) e.zo = x.zo;
       if (x.z1 != null) e.z1 = x.z1;
