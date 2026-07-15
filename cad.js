@@ -6467,7 +6467,8 @@ const RT_CDN = {
 const RT_TRI_WARN = 3e6;      // 이 이상이면 진입 전 경고 (§6)
 const rt = {
   on: false, mod: null, tracer: null, renderer: null, scene: null, cam: null,
-  cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', err: null,
+  // denoise: 미완성이라 기본 OFF에 UI도 없다 — 아래 rtSetupDenoise 주석 참고
+  cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: false, err: null,
 };
 // WebGL2 지원 여부. 결과를 캐시하고 시험용 컨텍스트는 반드시 반납한다 —
 // 브라우저는 동시 WebGL 컨텍스트 수를 제한해서, 매번 새로 만들면 몇 번 켰다 끄는 사이
@@ -6637,7 +6638,9 @@ function rtLoop() {
   try { rt.tracer.renderSample(); } catch (e) { rt.err = String(e); rt.on = false; rtHud('오류: ' + e); return; }
   const s = rt.tracer.samples || 0;
   rtHud(rt.tracer.isCompiling ? '셰이더 준비 중…'
-    : `${s < 1 ? 0 : Math.floor(s)} spp · ${s < 24 ? '수렴 중…' : '완료'}${rt.env === 'day' ? ' · 주광' : ''}`);
+    : `${s < 1 ? 0 : Math.floor(s)} spp · ${s < 24 ? '수렴 중…' : '완료'}`
+      + (rt.env === 'day' ? ' · 주광' : '')
+      );
 }
 function rtResize() {
   if (!rt.on || !rt.renderer) return;
@@ -6699,18 +6702,93 @@ function rtLightsChanged() {
   rt.tracer.updateMaterials();
   rt.tracer.updateLights();
 }
-function rtSetEnv(mode) { // 'black' | 'day'
-  rt.env = mode;
-  if (!rt.on || !rt.scene) return;
-  const T = rt.mod.T;
-  if (mode === 'day') { // 균일 스카이 — 인공조명 효과와 대비해 보기 위한 옵션
-    const tex = new T.GradientEquirectTexture ? null : null;
-    rt.scene.background = new T.Color(0x8fb4e8);
+// 디노이저 (§2.3) — 미완성. 아직 켜지 않는다.
+//
+// 아래 구현은 효과가 없다는 것이 실측으로 확인됐다. 검증한 내용:
+//   · 콜백은 정상 호출된다 (3초에 240번)
+//   · 콜백을 통한 렌더는 캔버스에 도달한다 (MeshBasicMaterial 로 빨강을 그려 확인)
+//   · 그런데 sigma 2→30, threshold 0.03→1.0 을 줘도 바닥 영역 표준편차가
+//     29.4 → 29.0 으로 사실상 불변이고 화면도 픽셀 단위로 동일하다.
+//     공간 블러라면 나올 수 없는 결과 — DenoiseMaterial 의 출력이 입력과 같다.
+// 원인 미규명. 그래서 rt.denoise 기본 OFF, rtEnter 에서 설치하지 않고,
+// 명령어·HUD 표시도 두지 않는다. 아무 일도 안 하는 토글을 노출하면 앱이 거짓말하는 셈이다.
+const RT_DENOISE_UNTIL = 24;
+function rtSetupDenoise() {
+  const { T, P } = rt.mod;
+  if (!rt._dnQuad) {
+    rt._dnMat = new P.DenoiseMaterial({ sigma: 5, threshold: 0.03, kSigma: 1 });
+    rt._dnQuad = new T.Mesh(new T.PlaneGeometry(2, 2), rt._dnMat);
+    rt._dnScene = new T.Scene(); rt._dnScene.add(rt._dnQuad);
+    rt._dnCam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  }
+  rt.tracer.renderToCanvasCallback = (target, renderer, quad) => {
+    const s = rt.tracer.samples || 0;
+    // 노이즈가 많은 초반에만 디노이즈. 강도도 spp가 오를수록 낮춘다(급격한 전환을 피함).
+    if (rt.denoise && s > 0 && s < RT_DENOISE_UNTIL) {
+      const k = 1 - s / RT_DENOISE_UNTIL;
+      rt._dnMat.uniforms.map.value = target.texture;
+      rt._dnMat.uniforms.sigma.value = 1 + 4 * k;
+      rt._dnMat.uniforms.kSigma.value = k;
+      rt._dnMat.uniforms.opacity.value = 1;
+      const ac = renderer.autoClear; renderer.autoClear = false;
+      renderer.render(rt._dnScene, rt._dnCam);
+      renderer.autoClear = ac;
+      return;
+    }
+    const ac = renderer.autoClear; renderer.autoClear = false;
+    quad.render(renderer);
+    renderer.autoClear = ac;
+  };
+}
+// 환경: 'black'(기본, 실내 조명 검토) | 'day'(균일 스카이)
+// §2.2 — 검은 환경이 기본이어야 인공조명의 효과를 판별할 수 있다. 주광은 옵션.
+// HDRI 파일을 받지 않고 GradientEquirectTexture 로 균일 스카이를 만든다(§2.2가 허용).
+// 세기는 실측으로 정했다. 바닥/하늘 영역의 평균 휘도(검은 환경 기준 바닥 42.6 / 하늘 0):
+//   0.12 → 바닥 0,    하늘 1     (사실상 검은 화면. 처음 넣었던 값 — 완전히 빗나갔다)
+//   1    → 바닥 45.8, 하늘 22.1
+//   3    → 바닥 70,   하늘 61.7
+//   6    → 바닥 85,   하늘 103.5  ← 채택. 하늘이 바닥보다 밝아 하늘답고, 실내도 두 배로 밝아진다
+const RT_SKY_INTENSITY = 6;
+function rtSetEnv(mode) {
+  rt.env = (mode === 'day') ? 'day' : 'black';
+  if (!rt.on || !rt.scene || !rt.mod) return;
+  const { T, P } = rt.mod;
+  if (rt.env === 'day') {
+    if (!rt._sky) {
+      const tex = new P.GradientEquirectTexture(512);
+      tex.topColor.set(0x9ec9ff);     // 천정 하늘
+      tex.bottomColor.set(0x6b6f78);  // 지면 반사광
+      tex.exponent = 1.4;
+      tex.update();
+      rt._sky = tex;
+    }
+    rt.scene.environment = rt._sky;
+    rt.scene.background = rt._sky;
+    rt.scene.environmentIntensity = RT_SKY_INTENSITY;
+    rt.scene.backgroundIntensity = RT_SKY_INTENSITY;
+  } else {
     rt.scene.environment = null;
+    rt.scene.background = new T.Color(0x000000);
     rt.scene.environmentIntensity = 1;
-  } else { rt.scene.background = new T.Color(0x000000); rt.scene.environment = null; }
+  }
   if (rt.tracer) { rt.tracer.updateEnvironment(); rtReset(); }
 }
+function cmdRtEnv() {
+  if (!rt.on) { logLine('  환경 전환은 Raytraced 모드에서 사용합니다 — 먼저 raytrace 를 켜세요.', 'warn'); return; }
+  rtSetEnv(rt.env === 'day' ? 'black' : 'day');
+  logLine(rt.env === 'day'
+    ? '  ▷ 주광 환경 ON — 균일 스카이. 인공조명만 보려면 다시 입력해 검은 환경으로.'
+    : '  ▷ 검은 환경 (기본) — 광원이 없으면 검은 화면. 인공조명의 효과를 판별할 수 있는 상태.', 'info');
+}
+// 디노이저가 실제로 동작하게 되면 다시 명령어로 등록한다. 그 전까지는 노출하지 않는다.
+function cmdRtDenoise() {
+  if (!rt.on) { logLine('  디노이저는 Raytraced 모드에서 사용합니다 — 먼저 raytrace 를 켜세요.', 'warn'); return; }
+  rt.denoise = !rt.denoise;
+  rtSetupDenoise();
+  rtReset();
+  logLine(rt.denoise ? '  ▷ 디노이저 ON (시험 중 — 효과 미확인)' : '  ▷ 디노이저 OFF', 'info');
+}
+
 async function rtEnter() {
   if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
     logLine('  Raytraced: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 명령으로 여세요.', 'warn'); return;
@@ -6745,6 +6823,7 @@ async function rtEnter() {
     }
     rtResize();
     await rtRebuild();
+    rtSetEnv(rt.env);   // 마지막에 고른 환경 유지 (기본 검은 환경)
     if (rt.triCount > RT_TRI_WARN && !confirm(`삼각형이 ${rt.triCount.toLocaleString()}개입니다. 레이트레이싱이 매우 느릴 수 있습니다. 계속할까요?`)) { rtExit(); return; }
     logLine(`  ▷ Raytraced ON — 삼각형 ${rt.triCount.toLocaleString()}개 · 광원 ${lightSources().length}개 · 환경 ${rt.env === 'day' ? '주광' : '검은 환경'} (다시 입력하면 OFF)`, 'info');
     if (!state.lights.length) logLine('    광원이 없어 화면이 검게 나옵니다 — setaslight 로 광원을 지정하세요.', 'warn');
@@ -7871,6 +7950,7 @@ const INSTANT_CMDS = {
   railing: cmdRailingTag,
   setaslight: cmdSetAsLight,
   raytrace: cmdRaytrace,
+  rtenv: cmdRtEnv,
   falsecolor: cmdFalseColor,
   fcmax: cmdFcMax,
   addsensorplane: cmdAddSensorPlane,
@@ -8241,6 +8321,7 @@ const TOOL_KO = {
   railing: '난간(RAILING)',
   setaslight: '광원으로 지정(SETASLIGHT)',
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
+  rtenv: '렌더 환경 전환(RTENV)',
   falsecolor: '조도 색표시(FALSECOLOR)',
   fcmax: '조도 스케일(FCMAX)',
   addsensorplane: '측정면 추가(ADDSENSORPLANE)',
@@ -8303,6 +8384,7 @@ const CMD_ALIASES = {
   setaslight: 'setaslight', light: 'setaslight', lamp: 'setaslight', 조명: 'setaslight', 광원지정: 'setaslight', 광원: 'setaslight',
   unsetlight: 'unsetlight', 광원해제: 'unsetlight',
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
+  rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   falsecolor: 'falsecolor', fc: 'falsecolor', 조도: 'falsecolor', 조도표시: 'falsecolor',
   fcmax: 'fcmax', 조도스케일: 'fcmax',
   addsensorplane: 'addsensorplane', sensor: 'addsensorplane', 측정면: 'addsensorplane',
@@ -9784,6 +9866,7 @@ const CMD_HELP = [
     ['setaslight', '광원으로 지정', '선택한 개체를 광원으로 지정 — 형태·색·BIM 정체는 하나도 바뀌지 않고 광원 속성만 붙는다(정육면체 → 정육면체 광원체). 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다. 기본 800lm / 3000K. 세기(lm)·색온도(K)는 특성창에서, on/off·솔로는 사이드바 [광원] 패널에서. 3d 후 lighting 으로 확인'],
     ['unsetlight', '광원 해제', '광원 지정을 푼다 — 개체는 그대로 남는다'],
     ['raytrace', '레이트레이싱 렌더', '3D 뷰를 경로추적(path tracing)으로 렌더 — 지정한 광원의 직접광·그림자·간접광이 물리적으로 계산되어 프레임이 쌓이며 수렴한다. 환경은 기본이 완전한 어둠이라 광원이 없으면 검은 화면. 카메라를 움직이면 저해상도로 즉시 따라오고 놓으면 다시 수렴. WebGL2가 없으면 lighting(근사 모드)로 안내. 다시 입력하면 OFF'],
+    ['rtenv', '렌더 환경', 'Raytraced 환경을 검은 환경 ↔ 주광(균일 스카이)으로 전환. 기본은 검은 환경 — 그래야 인공조명의 효과만 판별할 수 있다'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
@@ -9858,7 +9941,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'rtenv', ko: '렌더 환경(주광)', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -11340,7 +11423,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
