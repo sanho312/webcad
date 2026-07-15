@@ -4649,12 +4649,17 @@ function crvPtAt(e, t) { // t 0..1 (둘레 기준) → [x,y]
   if (e.type === 'LWPOLYLINE') {
     const p = e.points, n = p.length, segN = e.closed ? n : n - 1;
     if (!n) return null;
+    const hz = polyHasZ(e); // 표면 위 곡선이면 정점별 높이도 같이 보간해서 [x,y,z]로 반환
     const lens = []; let total = 0;
     for (let i = 0; i < segN; i++) { const L = Math.hypot(p[(i + 1) % n][0] - p[i][0], p[(i + 1) % n][1] - p[i][1]); lens.push(L); total += L; }
-    if (!total) return [p[0][0], p[0][1]];
+    if (!total) return hz ? [p[0][0], p[0][1], e.zs[0]] : [p[0][0], p[0][1]];
     let d = Math.max(0, Math.min(total, t * total));
     for (let i = 0; i < segN; i++) {
-      if (d <= lens[i] || i === segN - 1) { const u = lens[i] ? Math.max(0, Math.min(1, d / lens[i])) : 0; return [p[i][0] + (p[(i + 1) % n][0] - p[i][0]) * u, p[i][1] + (p[(i + 1) % n][1] - p[i][1]) * u]; }
+      if (d <= lens[i] || i === segN - 1) {
+        const j = (i + 1) % n, u = lens[i] ? Math.max(0, Math.min(1, d / lens[i])) : 0;
+        const x = p[i][0] + (p[j][0] - p[i][0]) * u, y = p[i][1] + (p[j][1] - p[i][1]) * u;
+        return hz ? [x, y, e.zs[i] + (e.zs[j] - e.zs[i]) * u] : [x, y];
+      }
       d -= lens[i];
     }
   }
@@ -4664,8 +4669,9 @@ function crvSampleN(e, n) { // 닫힘=n개 / 열림=n+1개(끝점 포함), z 반
   const closed = crvClosedQ(e), cnt = closed ? n : n + 1, out = [];
   for (let i = 0; i < cnt; i++) {
     const t = i / n, p = crvPtAt(e, t); if (!p) continue;
-    const z = (e.type === 'LINE' && (e.z1 != null || e.z2 != null))
-      ? (e.z1 || 0) + ((e.z2 || 0) - (e.z1 || 0)) * t : (e.zo || 0);
+    const z = p[2] != null ? p[2] // 표면 위 곡선(zs): 정점별 높이가 보간되어 이미 들어 있음
+      : (e.type === 'LINE' && (e.z1 != null || e.z2 != null))
+        ? (e.z1 || 0) + ((e.z2 || 0) - (e.z1 || 0)) * t : (e.zo || 0);
     out.push([p[0], p[1], z]);
   }
   return out;
@@ -4860,11 +4866,26 @@ function cmdSweep() {
   const P = crvSampleN(path, n), C = crvSampleN(prof, 24); // 단면: x=경로 좌우 오프셋, y=높이 (회전체와 같은 규약)
   if (P.length < 2 || C.length < 2) { logLine('  쓸기: 샘플 점이 부족합니다.', 'warn'); return; }
   const profClosed = crvClosedQ(prof), M = C.length;
-  const ring = (i) => { // 경로 접선에 수직인 단면 프레임
+  // 경로의 '3D' 접선에 수직인 단면 프레임 (라이노 Sweep1의 Roadlike Top에 해당)
+  //   side = 진행방향과 수직인 수평 벡터, up = 진행방향·side 양쪽에 수직 (경사면에서 세워짐)
+  // 평평한 경로면 side=(-ty,tx,0), up=(0,0,1)이 되어 예전 결과와 완전히 동일하다.
+  // 표면 위 곡선처럼 오르내리는 경로에서는 단면이 진행방향에 제대로 직교해 찌그러지지 않는다.
+  const ring = (i) => {
     const a = P[Math.max(0, i - 1)], b = P[Math.min(P.length - 1, i + 1)];
-    let tx = b[0] - a[0], ty = b[1] - a[1]; const L = Math.hypot(tx, ty) || 1; tx /= L; ty /= L;
-    const sx = -ty, sy = tx;
-    return C.map(c => [P[i][0] + sx * c[0], P[i][1] + sy * c[0], P[i][2] + c[1]]);
+    let tx = b[0] - a[0], ty = b[1] - a[1], tz = b[2] - a[2];
+    const TL = Math.hypot(tx, ty, tz) || 1; tx /= TL; ty /= TL; tz /= TL;
+    let sx = -ty, sy = tx, sz = 0; // T × worldUp — 진행방향과 수직인 수평 벡터
+    const SL = Math.hypot(sx, sy);
+    if (SL < 1e-6) { sx = 1; sy = 0; sz = 0; } // 수직 경로: 수평 성분이 없어 퇴화 → X축을 기준으로
+    else { sx /= SL; sy /= SL; }
+    // up = T × side (순서 중요 — side × T로 하면 평평한 경로에서 (0,0,-1)이 나와 단면이 뒤집힌다)
+    let ux = ty * sz - tz * sy, uy = tz * sx - tx * sz, uz = tx * sy - ty * sx;
+    const UL = Math.hypot(ux, uy, uz) || 1; ux /= UL; uy /= UL; uz /= UL;
+    return C.map(c => [
+      P[i][0] + sx * c[0] + ux * c[1],
+      P[i][1] + sy * c[0] + uy * c[1],
+      P[i][2] + sz * c[0] + uz * c[1],
+    ]);
   };
   pushUndo();
   const tris = [];
@@ -8171,7 +8192,7 @@ const CMD_HELP = [
     ['sphere', '구', '중심·반지름 — 구 메시 생성 (불리언·STL 가능)'],
     ['cone', '원뿔', '바닥 중심·반지름·높이 — 원뿔 메시 생성'],
     ['loft', '로프트', '곡선 2개+ 선택 → 이어서 면/입체 생성 (서로 다른 z에 두면 입체)'],
-    ['sweep', '쓸기', '단면+경로 곡선 선택 → 단면을 경로 따라 훑어 입체 (짧은 쪽=단면)'],
+    ['sweep', '쓸기(라이노 Sweep1)', '단면+경로 곡선 선택 → 단면을 경로 따라 훑어 입체 (짧은 쪽=단면). 경로가 표면 위 곡선이면 그 높이를 그대로 따라감'],
     ['shell', '속 비우기', '닫힌 폴리라인 입체 선택 → 두께 입력, 속을 비워 통/중공으로'],
     ['filletedge', '모서리 모깎기(라이노 FilletEdge)', '입체 선택 → 반지름, 수직 모서리를 둥글게 (곡선 fillet과 다른 명령)'],
     ['group', '그룹', '2개+ 선택 → 묶기. 하나를 클릭하면 전체 선택'],
@@ -9689,7 +9710,7 @@ window.__CADTEST__ = {
   draw, worldToScreen, screenToWorld, entityHit, entityGrips, renderProps, pick, applyDoc,
   dxfColorIndex, dxfTrueColor, aci2hex, tc2hex,
   CMD_ALIASES, INSTANT_CMDS, TOOL_KO, // 명령어 체계 회귀 검사용 (라이노 이름 대조 / 2D·3D 분리 재발 방지)
-  surfaceSnap3D, snap3D, polyZ, polyHasZ, catmullRom2D, finishSpline, finishPolyline, attachPtsZ, lvElev,
+  surfaceSnap3D, snap3D, polyZ, polyHasZ, finishPolyline, attachPtsZ, lvElev,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)

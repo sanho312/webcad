@@ -535,6 +535,40 @@ function tests(){
     reset();
   }
 
+  // ---------- 표면 위 곡선을 따라 쓸기(sweep) ----------
+  group('sweep — 표면 위 곡선(zs)을 경로로 사용');
+  {
+    // 1) crvSampleN이 표면 곡선의 실제 높이를 내놓아야 (예전엔 zo만 봐서 z=0으로 깔림)
+    const rail = { type:'LWPOLYLINE', closed:false, points:[[0,0],[100,0],[200,0]], zs:[1000,1500,1000], layer:'0' };
+    const smp = C.crvSampleN(rail, 4);
+    ok(smp.every(p => p[2] >= 1000), '표면 곡선 샘플의 z가 실제 높이 (바닥 z=0으로 깔리지 않음)');
+    ok(smp.some(p => p[2] > 1200), '  중간 지점의 z가 보간됨');
+    const flatRail = { type:'LWPOLYLINE', closed:false, points:[[0,0],[100,0],[200,0]], layer:'0' };
+    ok(C.crvSampleN(flatRail, 4).every(p => p[2] === 0), 'zs 없는 평면 곡선은 예전대로 z=0 (하위호환)');
+    const zoRail = { type:'LWPOLYLINE', closed:false, points:[[0,0],[100,0]], zo: 300, layer:'0' };
+    ok(C.crvSampleN(zoRail, 2).every(p => p[2] === 300), 'zo(검볼로 띄운 높이)도 예전대로 동작');
+
+    // 2) 실제 sweep — 경로 높이를 따라가는가
+    const W = document.getElementById('app').contentWindow; // 분할 수 프롬프트 대체
+    const oldPrompt = W.prompt; W.prompt = () => '16';
+    setEnts([
+      { type:'LWPOLYLINE', closed:false, points:[[0,0],[500,0],[1000,0]], zs:[1000,1600,1000], layer:'0' }, // 레일(표면 위)
+      { type:'LWPOLYLINE', closed:true, points:[[0,0],[40,0],[40,40],[0,40]], layer:'0' },                   // 단면
+    ]);
+    S0.selection.clear(); S0.selection.add(1); S0.selection.add(2);
+    C.cmdSweep();
+    const m = S0.entities.find(e => e.type === 'MESH');
+    ok(!!m, 'sweep 메시 생성');
+    if (m) {
+      let zmin = 1e18, zmax = -1e18;
+      for (const t of m.tris) for (const p of t) { zmin = Math.min(zmin, p[2]); zmax = Math.max(zmax, p[2]); }
+      ok(zmin >= 900, `쓸기 결과가 바닥에 깔리지 않음 (zmin=${Math.round(zmin)})`);
+      ok(zmax > 1500, `쓸기 결과가 경로 높이를 따라감 (zmax=${Math.round(zmax)})`);
+    }
+    W.prompt = oldPrompt;
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {
