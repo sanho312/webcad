@@ -792,6 +792,47 @@ function tests(){
     reset();
   }
 
+  // ---------- 실제 광원 (조명 보기) ----------
+  group('lighting — 조명 기구가 3D를 실제로 밝힘 (야간 보기)');
+  {
+    // litFace는 v3(3D 뷰 상태)를 참조하므로 먼저 3D 뷰를 연다
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V3 = C.v3;
+    ok(!!V3, '3D 뷰 열림 (조명 계산의 전제)');
+    const wasOn = V3 && V3.lighting;
+    if (V3) V3.lighting = false;
+
+    // litFace: 거리 제곱 감쇠 + 법선 반영
+    if (V3) { V3.lighting = true; V3._lights = [{ x:0, y:0, z:2850, range:5000, power:1 }]; }
+    const at = x => C.litFace(x, 0, 0, 0, 0, 1, false);
+    ok(at(0) > at(2000) && at(2000) > at(4000) && at(4000) > at(8000), '가까울수록 밝다 (거리 제곱 감쇠)');
+    ok(at(0) < 1.5, '  광원 바로 아래도 상한에 붙지 않음 (계조 유지)');
+    ok(Math.abs(at(50000) - 0.16) < 0.05, '  아주 먼 곳은 야간 환경광(0.16)으로 수렴');
+    ok(C.litFace(0, 0, 0, 0, 0, -1, false) < 0.2, '광원을 등진 면은 어둡다');
+    // power / range 특성
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:5000, power:2 }];
+    const p2 = C.litFace(4000, 0, 0, 0, 0, 1, false);
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:5000, power:1 }];
+    const p1 = C.litFace(4000, 0, 0, 0, 0, 1, false);
+    ok(p2 > p1, 'power를 올리면 밝아짐');
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:1500, power:1 }];
+    ok(C.litFace(4000, 0, 0, 0, 0, 1, false) < p1, 'range를 줄이면 먼 곳이 더 어두워짐');
+    if (V3) { V3.lighting = false; V3._lights = null; }
+
+    // lightSources: 조명 기구 → 광원 (램프 헤드 중심)
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:6000, y2:0, layer:'0',
+               bim:{kind:'light', h:3000, spacing:6000, postT:120, headD:400, base:0} }]);
+    const src = C.lightSources();
+    eqi(src.length, 2, 'lightSources: 조명 기구마다 광원 1개');
+    eq(src[0].z, 2800, '  광원 높이 = 램프 헤드 중심 (h - headD/2)');
+    // 조명 기구가 없으면 광원 0
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:1000, y2:0, layer:'0' }]);
+    eqi(C.lightSources().length, 0, '조명 기구가 없으면 광원 없음');
+
+    if (V3) V3.lighting = !!wasOn;
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {

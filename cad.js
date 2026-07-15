@@ -2796,6 +2796,7 @@ function render3D() {
   const c = v3.ctx, W = v3.cv.width, H = v3.cv.height;
   saveVp(); // 현재 조작 파라미터를 활성 뷰에 보존
   c.clearRect(0, 0, W, H);
+  if (v3.lighting) { c.fillStyle = '#0a0c14'; c.fillRect(0, 0, W, H); } // 조명 보기 = 야간 배경
   const dpr = devicePixelRatio || 1;
   v3.grip = null; v3.gum = null;
   const order = v3.quad ? [0, 1, 2, 3] : [v3.act];
@@ -2982,6 +2983,7 @@ function zRasterFaces(c, faces, vp, light) {
 function renderScene(isActive) {
   const c = v3.ctx;
   const faces = [];
+  v3._lights = v3.lighting ? lightSources() : null; // 프레임당 1회 광원 수집 (조명 보기 OFF면 null → 예전 셰이딩)
   // 바닥 그리드 (z=0, 모델 주변)
   const g = Math.pow(10, Math.round(Math.log10(v3.fit / 8)));
   const gx0 = Math.floor((v3.cx - v3.fit) / g) * g, gx1 = v3.cx + v3.fit, gy0 = Math.floor((v3.cy - v3.fit) / g) * g, gy1 = v3.cy + v3.fit;
@@ -3051,13 +3053,19 @@ function renderScene(isActive) {
       if ((mx - ccx) * onx + (my - ccy) * ony < 0) { onx = -onx; ony = -ony; } // 중심 반대쪽 = 바깥
       if (cull && !facesCam(mx, my, midz, onx, ony, 0)) continue; // 안쪽 면(카메라 반대) 제외
       const lightA = Math.abs(onx * 0.8 + ony * 0.35);
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: s.glow ? 1 : 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: s.glow ? 1 : (v3.lighting ? litFace(mx, my, midz, onx, ony, 0, false) : 0.55 + 0.45 * lightA), glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
-    if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1))   // 상면 (위 향함)
-      faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' });
-    if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1))  // 하면 (아래 향함)
-      faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: s.glow ? 1 : 0.5, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' });
+    if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1)) {  // 상면 (위 향함)
+      const mTop = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' };
+      if (v3.lighting && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop); // 넓은 면에도 빛 웅덩이가 보이게
+      else faces.push({ ...mTop, pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 1.0 });
+    }
+    if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1)) { // 하면 (아래 향함)
+      const mBot = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' };
+      if (v3.lighting && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot);
+      else faces.push({ ...mBot, pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 0.5 });
+    }
   }
   // 가져온/불리언 3D 메시 — 삼각형별 법선 셰이딩. 내부 삼각분할선은 감추고 '진짜 모서리'만 표시
   for (const e of state.entities) {
@@ -3071,7 +3079,9 @@ function renderScene(isActive) {
       const vx = t[2][0] - t[0][0], vy = t[2][1] - t[0][1], vz = t[2][2] - t[0][2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-      const shade = 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
+      const shade = v3.lighting
+        ? litFace((t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3, (t[0][2] + t[1][2] + t[2][2]) / 3, nx, ny, nz, true)
+        : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
       const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
       faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mcol, shade, eid: e.id, isMesh: true, fe });
     }
@@ -5872,6 +5882,77 @@ function lightSolids(e) {
   }
   return out;
 }
+// ---------- 실제 광원 (조명 기구 → 3D 셰이딩) ----------
+// v3.lighting이 켜졌을 때만 동작한다. 꺼져 있으면(기본) 셰이딩 식이 예전 그대로라 기존 화면 불변.
+// 조명 기구의 램프 헤드 중심을 점광원으로 삼아 면마다 밝기를 계산한다.
+const NIGHT_AMBIENT = 0.16; // 야간 환경광 — 광원이 닿지 않는 곳의 최소 밝기
+function lightSources() {
+  const out = [];
+  for (const e of state.entities) {
+    if (!e.bim || e.bim.kind !== 'light') continue;
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    const P = railingPath(e); if (!P) continue;
+    const b = e.bim, h = b.h || 1000, hd = b.headD || 200;
+    for (const st of pathStations(P, Math.max(200, b.spacing || 3000))) {
+      out.push({
+        x: st.x, y: st.y, z: st.z + h - hd / 2, // 램프 헤드 중심
+        range: Math.max(100, b.range || 8000),  // 밝기가 절반이 되는 거리
+        power: b.power != null ? b.power : 1,
+      });
+      if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
+    }
+  }
+  return out;
+}
+// 면 하나의 밝기 — 월드 위치·법선 기준, 거리 제곱 감쇠.
+// twoSided: 메시는 삼각형 winding을 신뢰할 수 없어 양면 모두 빛을 받게 한다(기존 메시 셰이딩도 abs를 씀).
+function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
+  const L = v3 && v3._lights;
+  if (!L || !L.length) return NIGHT_AMBIENT;
+  let s = NIGHT_AMBIENT;
+  for (const g of L) {
+    const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
+    const d = Math.hypot(dx, dy, dz) || 1;
+    let dot = (dx * nx + dy * ny + dz * nz) / d;
+    if (twoSided) dot = Math.abs(dot);
+    if (dot <= 0) continue; // 광원을 등진 면
+    const k = d / g.range;
+    s += dot * g.power * 1.35 / (1 + k * k); // 바로 아래에서도 상한(1.5)에 붙지 않게 — 빛 웅덩이의 계조를 살림
+  }
+  return Math.max(0.05, Math.min(1.5, s));
+}
+// 조명 보기 전용: 넓은 상/하면을 잘게 나눠 빛의 계조가 '면 위에' 나타나게 한다.
+// 이 렌더러는 평면 셰이딩(면 1개 = 밝기 1개)이라, 나누지 않으면 40m 슬래브가 중심점의 밝기로
+// 통째로 칠해져 빛 웅덩이가 보이지 않는다. 조각은 원래 면의 메타데이터(fk/eid/…)를 그대로
+// 물려받으므로 면 클릭(extrudesrf 면 밀당)에는 영향이 없다. lighting이 꺼져 있으면 호출되지 않는다.
+function pushLitPoly(faces, poly, zs, nz, meta) {
+  const MAX_EDGE = 1500, MAX_DEPTH = 4;
+  const d3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+  const emit = (a, b, c, depth) => {
+    if (depth < MAX_DEPTH && Math.max(d3(a, b), d3(b, c), d3(c, a)) > MAX_EDGE) {
+      const ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
+      emit(a, ab, ca, depth + 1); emit(ab, b, bc, depth + 1);
+      emit(ca, bc, c, depth + 1); emit(ab, bc, ca, depth + 1);
+      return;
+    }
+    const P = [proj3D(a[0], a[1], a[2]), proj3D(b[0], b[1], b[2]), proj3D(c[0], c[1], c[2])];
+    faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3,
+      shade: litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, false) });
+  };
+  const V = poly.map((p, i) => [p[0], p[1], zs[i]]);
+  for (let i = 1; i < V.length - 1; i++) emit(V[0], V[i], V[i + 1], 0); // 팬 삼각화
+}
+function cmdLighting() {
+  if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
+    logLine('  조명 보기: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 명령으로 여세요.', 'warn'); return;
+  }
+  v3.lighting = !v3.lighting;
+  const n = v3.lighting ? lightSources().length : 0;
+  if (v3.lighting && !n) logLine('  ▷ 조명 보기 ON — 그런데 배치된 조명 기구가 없습니다. light 명령으로 먼저 조명을 세우세요.', 'warn');
+  else logLine(v3.lighting ? `  ▷ 조명 보기 ON — 야간 화면, 광원 ${n}개가 주변을 밝힙니다 (다시 입력하면 OFF)` : '  ▷ 조명 보기 OFF — 기본 셰이딩으로 복귀', 'info');
+  render3D();
+}
 function cmdLightTag() {
   const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
   if (!sel.length) { logLine('  조명: 선/곡선/원(조명이 설 경로)을 선택한 뒤 실행하세요.', 'warn'); return; }
@@ -6759,6 +6840,7 @@ const INSTANT_CMDS = {
   stair: cmdStairTag,
   railing: cmdRailingTag,
   light: cmdLightTag,
+  lighting: cmdLighting,
   extrudecrv: cmdExtrudeCrv,
   extrudesrf: cmdExtrudeSrf,
   box: cmdBox,
@@ -7121,6 +7203,7 @@ const TOOL_KO = {
   door: '문(DOOR)', window: '창(WINDOW)', section: '단면(SECTION)', elevation: '입면(ELEVATION)',
   railing: '난간(RAILING)',
   light: '조명(LIGHT)',
+  lighting: '조명 보기(LIGHTING)',
 };
 
 const CMD_ALIASES = {
@@ -7174,6 +7257,7 @@ const CMD_ALIASES = {
   stair: 'stair', '계단': 'stair',
   railing: 'railing', handrail: 'railing', 난간: 'railing', 손스침: 'railing',
   light: 'light', lamp: 'light', 조명: 'light', 가로등: 'light', bollard: 'light',
+  lighting: 'lighting', night: 'lighting', 야간: 'lighting', 조명보기: 'lighting', 조명켜기: 'lighting',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv', extrude: 'extrudecrv', ext: 'extrudecrv', 돌출: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
 
@@ -7902,7 +7986,7 @@ function renderProps() {
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
     stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
     railing: [['h', '난간 높이'], ['spacing', '기둥 간격'], ['t', '손스침 두께'], ['postT', '기둥 두께'], ['base', '하단(base)']],
-    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['base', '하단(base)']],
+    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['range', '빛 도달거리'], ['power', '밝기(1=기본)'], ['base', '하단(base)']],
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   if (e.bim) {
@@ -8464,6 +8548,7 @@ const CMD_HELP = [
     ['booleanintersection', '교집합(라이노 BooleanIntersection · bi)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
+    ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘 — 다시 입력하면 OFF. 밝기·도달거리는 특성창에서 조절'],
     ['light', '조명 지정', '선/곡선/원 선택 후 → 높이·간격. 기둥+램프 헤드를 균등 배치(볼라드~1000, 가로등~4000). 표면 위 곡선이면 지형에 맞춰 섬. 배치되는 기구이며 3D 음영을 바꾸는 광원은 아님'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
@@ -8539,7 +8624,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'light', ko: 'BIM 조명', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'light', ko: 'BIM 조명', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -9979,7 +10064,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, pathStations, renderScene, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, pathStations, renderScene, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
