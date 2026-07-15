@@ -803,6 +803,54 @@ function tests(){
     reset();
   }
 
+  // ---------- 조명 조각의 내부 이음선 ----------
+  group('조명 세분화 — 면 위에 격자가 생기지 않아야 (fe = 진짜 모서리만 그림)');
+  {
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V3 = C.v3;
+    setEnts([
+      { type:'LWPOLYLINE', closed:true, layer:'0', points:[[-6000,-6000],[6000,-6000],[6000,6000],[-6000,6000]],
+        bim:{kind:'slab', t:100, top:0} },
+      { type:'CIRCLE', cx:0, cy:0, r:100, layer:'0', zo:2800, light:{} },
+    ]);
+    V3.lighting = true; V3._fast = false;
+    V3.solids = C.bimSolids();
+    V3._lights = C.lightSources();
+    V3._occ = C.shadowOccluders();
+    V3._bounce = null;
+    V3._litCache = new Map(); V3._litBudget = 1200;
+    const faces = [];
+    const slab = V3.solids.find(s => s.eid === 1);
+    const zt = slab.poly.map(() => slab.z1);
+    C.pushLitPoly(faces, slab.poly, zt, 1, { color: slab.color, eid: slab.eid, fk: 'top' }, 'K1', false);
+
+    ok(faces.length > 4, '넓은 상면이 여러 조각으로 나뉨 (' + faces.length + '조각)');
+    ok(faces.every(f => f.fe && f.fe.length === 3), '  조각마다 fe(진짜 모서리 표시)를 가진다');
+    ok(faces.every(f => f.sub === 1), '  조각에 sub 표시 (이음선 판정을 밝기 대신 면 종류로 묶기 위함)');
+    const drawn = faces.reduce((a, f) => a + f.fe.filter(Boolean).length, 0);
+    const total = faces.length * 3;
+    ok(drawn < total * 0.5, '  대부분의 변은 내부선으로 걸러짐 — 이게 안 되면 면에 격자가 생긴다 (' + drawn + '/' + total + ')');
+    ok(drawn > 0, '  그래도 외곽선은 남는다 (면이 윤곽을 통째로 잃으면 안 됨)');
+
+    // 외곽선으로 표시된 변은 반드시 원래 다각형의 둘레 위에 있어야 한다 (캐시된 조각의 월드좌표로 검사)
+    const frags = V3._litCache.get('K1');
+    ok(!!frags && frags.length === faces.length, '  캐시에 조각의 월드좌표가 남는다');
+    const onRim = p => Math.abs(Math.abs(p[0]) - 6000) < 1e-6 || Math.abs(Math.abs(p[1]) - 6000) < 1e-6;
+    let wrong = 0, rim = 0;
+    for (const fr of frags) {
+      const V = [fr.a, fr.b, fr.c];
+      for (let i = 0; i < 3; i++) {
+        if (!fr.fe[i]) continue;
+        rim++;
+        const p = V[i], q = V[(i + 1) % 3];
+        if (!(onRim(p) && onRim(q))) wrong++; // 외곽선인데 둘레 위가 아니면 잘못 표시된 것
+      }
+    }
+    eqi(wrong, 0, '  외곽선 표시된 변은 전부 실제 둘레 위에 있다 (' + rim + '개 검사)');
+    V3.lighting = false; V3._lights = null; V3._occ = null; V3._litCache = new Map();
+    reset();
+  }
+
   // ---------- 실제 광원 (조명 보기) ----------
   group('lighting — 지정한 광원이 3D를 실제로 밝힘 (야간 보기)');
   {

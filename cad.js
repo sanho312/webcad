@@ -2959,7 +2959,9 @@ function zRasterFaces(c, faces, vp, light) {
     const seamShades = new Map(); // eid§변 → Map(shade반올림 → 등장 면 수)
     for (const f of opaque) {
       if (f.isMesh || f.eid == null) continue; // 메시는 자체 특징모서리(fe)로 처리
-      const P = f.pts, s = Math.round(f.shade * 50), seen = new Set();
+      // 조명 조각은 밝기가 조각마다 다른 게 정상이라 shade로 '같은 평면'을 판정할 수 없다.
+      // 같은 면 종류(top/bot)끼리 묶어야 밴드 사이 분할선이 조명 상태에서도 숨는다.
+      const P = f.pts, s = f.sub ? 'L' + f.fk : Math.round(f.shade * 50), seen = new Set();
       for (let i = 0; i < P.length; i++) {
         const k = f.eid + '§' + edgeK(P[i], P[(i + 1) % P.length]);
         if (seen.has(k)) continue; seen.add(k); // 퇴화 면(높이 0 옆면) 내부의 중복 변은 1회만 집계
@@ -2973,14 +2975,12 @@ function zRasterFaces(c, faces, vp, light) {
     for (const f of opaque) {
       const P = f.pts, sel = f._sel;
       const R = sel ? 94 : er, G = sel ? 177 : eg, B = sel ? 255 : eb;
-      // 메시는 특징(코너·경계) 모서리만 그림 → 삼각분할 내부선이 표면에 안 보임.
-      if (f.isMesh && f.fe) {
-        for (let i = 0; i < P.length; i++) if (f.fe[i]) zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
-      } else {
-        for (let i = 0; i < P.length; i++) {
-          if (f.eid != null && seamHide.has(f.eid + '§' + edgeK(P[i], P[(i + 1) % P.length]))) { seamHidden++; continue; } // 내부 이음선
-          zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
-        }
+      // fe = '진짜 모서리' 표시. 메시는 삼각분할 내부선, 조명 조각은 세분화 내부선을
+      // 여기서 걸러 표면에 격자가 생기지 않게 한다.
+      for (let i = 0; i < P.length; i++) {
+        if (f.fe && !f.fe[i]) continue;
+        if (!f.isMesh && f.eid != null && seamHide.has(f.eid + '§' + edgeK(P[i], P[(i + 1) % P.length]))) { seamHidden++; continue; } // 내부 이음선
+        zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
       }
     }
     v3._seamHidden = seamHidden; // 검증용 카운터
@@ -6258,7 +6258,7 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
   if (hit) { // 캐시 적중: 투영만 다시 (밝기·그림자 계산 생략)
     for (const fr of hit) {
       const P = [proj3D(fr.a[0], fr.a[1], fr.a[2]), proj3D(fr.b[0], fr.b[1], fr.b[2]), proj3D(fr.c[0], fr.c[1], fr.c[2])];
-      faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: fr.s, sh3: fr.t3 });
+      faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: fr.s, sh3: fr.t3, sub: 1, fe: fr.fe });
     }
     return;
   }
@@ -6294,7 +6294,11 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
     mCache.set(k, m);
     return m;
   };
-  const emit = (a, b, c, depth) => {
+  // e0/e1/e2 = 변 ab/bc/ca 가 '원래 다각형의 외곽선'인가. 분할하며 물려 내려간다.
+  // 이게 없으면 조각마다 세 변을 다 그려 면 위에 격자가 생긴다 — 이음선 숨김(seamHide)은
+  // '밝기가 같은 두 면'만 숨기는데, 조명 세분화는 일부러 조각마다 밝기를 다르게 만들기 때문에
+  // 그 조건이 절대 성립하지 않는다. 메시의 fe(특징 모서리)와 같은 방식으로 푼다.
+  const emit = (a, b, c, depth, e0, e1, e2) => {
     // '가장 긴 변만' 이등분한다. 네 갈래로 쪼개면 모든 변이 같이 반토막 나서,
     // 벽 윗면 같은 길고 얇은 띠(16m × 0.2m)가 256조각으로 폭발한다(실측: 조각 10,770개 → 913ms).
     // 긴 변만 나누면 필요한 방향으로만 잘려 조각 수가 형상 비율에 맞게 유지된다.
@@ -6311,19 +6315,23 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
       if (maskAt(b) !== ma || maskAt(c) !== ma) { split = true; v3._litBudget--; } // 꼭짓점 간 가림 상태가 다름 = 경계
     }
     if (split) {
-      if (m === dab) { const x = mid(a, b); emit(a, x, c, depth + 1); emit(x, b, c, depth + 1); }
-      else if (m === dbc) { const x = mid(b, c); emit(a, b, x, depth + 1); emit(a, x, c, depth + 1); }
-      else { const x = mid(c, a); emit(a, b, x, depth + 1); emit(x, b, c, depth + 1); }
+      // 쪼갠 변의 두 반쪽은 원래 변의 성질을 물려받고, 새로 생긴 변은 항상 내부선이다
+      if (m === dab) { const x = mid(a, b); emit(a, x, c, depth + 1, e0, false, e2); emit(x, b, c, depth + 1, e0, e1, false); }
+      else if (m === dbc) { const x = mid(b, c); emit(a, b, x, depth + 1, e0, e1, false); emit(a, x, c, depth + 1, false, e1, e2); }
+      else { const x = mid(c, a); emit(a, b, x, depth + 1, e0, false, e2); emit(x, b, c, depth + 1, false, e1, e2); }
       return;
     }
     const sh = litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, !!twoSided);
     const t3 = LIT_RGB[3] ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null; // 색조가 있을 때만
-    frags.push({ a, b, c, s: sh, t3 });
+    const fe = [e0, e1, e2];
+    frags.push({ a, b, c, s: sh, t3, fe });
     const P = [proj3D(a[0], a[1], a[2]), proj3D(b[0], b[1], b[2]), proj3D(c[0], c[1], c[2])];
-    faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: sh, sh3: t3 });
+    faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: sh, sh3: t3, sub: 1, fe });
   };
   const V = poly.map((p, i) => [p[0], p[1], zs[i]]);
-  for (let i = 1; i < V.length - 1; i++) emit(V[0], V[i], V[i + 1], 0); // 팬 삼각화
+  const nV = V.length;
+  // 팬 삼각화: V0-Vi 는 i=1일 때만, Vi+1-V0 는 i+1이 마지막일 때만 외곽선. Vi-Vi+1 은 항상 외곽선.
+  for (let i = 1; i < nV - 1; i++) emit(V[0], V[i], V[i + 1], 0, i === 1, true, i + 1 === nV - 1);
   if (cacheKey != null) cache.set(cacheKey, frags);
 }
 function cmdLighting() {
@@ -10474,7 +10482,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
