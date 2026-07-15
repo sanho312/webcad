@@ -2867,6 +2867,9 @@ function paintFaces(c, faces, light) {
 // 조작 중 렌더 코얼레싱 — 프레임당 최대 1회만 render3D (과도한 렌더로 인한 렉 방지)
 function markInteract() {
   if (!v3) return;
+  // Raytraced: 카메라가 움직이면 누적을 리셋해야 한다 — 안 하면 이전 각도의 샘플이 섞여 뭉개진다.
+  // markInteract는 궤도·줌·팬·편집이 모두 지나는 공통 지점이라 여기 한 곳에만 걸면 빠짐이 없다.
+  if (rt.on) rtCameraChanged();
   // 조명 보기에서 그림자는 비싸다(면×광원×가림형상). 궤도·드래그 중엔 생략해 부드럽게,
   // 멈추면 잠시 뒤 그림자까지 넣어 다시 그린다 — '조작 중 빠른 렌더 / 멈추면 정확 렌더'.
   if (v3.lighting) {
@@ -6433,6 +6436,306 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
   for (let i = 1; i < nV - 1; i++) emit(V[0], V[i], V[i + 1], 0, i === 1, true, i + 1 === nV - 1);
   if (cacheKey != null) cache.set(cacheKey, frags);
 }
+
+// ============================================================
+//  Raytraced 모드 (Phase 2) — three-gpu-pathtracer
+//  WebCAD의 3D는 자체 소프트웨어 래스터라이저(2D 캔버스)다. 패스트레이싱은 WebGL2가
+//  필요하므로 Raytraced일 때만 three.js를 CDN에서 지연 로드해 별도 캔버스를 겹쳐 띄운다.
+//  기존 조명 보기(lighting)는 지시문 §2.4의 '근사 렌더 모드' 폴백 자리를 그대로 맡는다.
+// ============================================================
+const RT_CDN = {
+  three: 'https://esm.sh/three@0.169.0',
+  pt: 'https://esm.sh/three-gpu-pathtracer@0.0.24?deps=three@0.169.0,three-mesh-bvh@0.7.8',
+  bvh: 'https://esm.sh/three-mesh-bvh@0.7.8?deps=three@0.169.0',
+};
+const RT_TRI_WARN = 3e6;      // 이 이상이면 진입 전 경고 (§6)
+const rt = {
+  on: false, mod: null, tracer: null, renderer: null, scene: null, cam: null,
+  cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', err: null,
+};
+// WebGL2 지원 여부. 결과를 캐시하고 시험용 컨텍스트는 반드시 반납한다 —
+// 브라우저는 동시 WebGL 컨텍스트 수를 제한해서, 매번 새로 만들면 몇 번 켰다 끄는 사이
+// 한도가 차서 '지원 안 함'이라는 거짓 안내가 나온다.
+// 성공만 캐시한다. 컨텍스트 한도가 잠깐 찼을 때의 실패를 영구 기억하면
+// 그 뒤로는 멀쩡한 브라우저에도 '지원 안 함'이라고 계속 우기게 된다.
+let _rtSup = false;
+function rtSupported() {
+  if (_rtSup) return true;
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2');
+    if (gl) { _rtSup = true; const ex = gl.getExtension('WEBGL_lose_context'); if (ex) ex.loseContext(); }
+  } catch (e) { /* 지원 안 함 — 다음에 다시 시도 */ }
+  return _rtSup;
+}
+// 개체 색 → PBR. WebCAD 재질은 색(hex)뿐이라 합리적 기본값으로 매핑한다 (§2.2).
+function rtStdMat(T, hex, emissiveRGB, emissiveIntensity) {
+  const [r, g, b] = hexToRgb(hex || '#b9b2a6');
+  const m = new T.MeshStandardMaterial({
+    color: new T.Color(r / 255, g / 255, b / 255), roughness: 0.6, metalness: 0,
+  });
+  if (emissiveRGB) { m.emissive = new T.Color(emissiveRGB[0], emissiveRGB[1], emissiveRGB[2]); m.emissiveIntensity = emissiveIntensity; }
+  return m;
+}
+// WebCAD 형상 → 삼각형. 솔리드(폴리+z)와 메시를 개체별로 묶는다.
+function rtTrisByEntity() {
+  const out = new Map(); // eid → {tris:[[p,p,p]...], color, area}
+  const put = (eid, color) => { let o = out.get(eid); if (!o) out.set(eid, o = { tris: [], color, area: 0 }); return o; };
+  for (const s of (v3.solids || [])) {
+    const P = s.poly, n = P.length; if (!P || n < 3) continue;
+    const o = put(s.eid, s.color || '#b9b2a6');
+    const zt = s.zt || P.map(() => s.z1), zb = s.zb || P.map(() => s.z0);
+    for (let i = 1; i < n - 1; i++) {
+      o.tris.push([[P[0][0], P[0][1], zt[0]], [P[i][0], P[i][1], zt[i]], [P[i + 1][0], P[i + 1][1], zt[i + 1]]]);
+      o.tris.push([[P[0][0], P[0][1], zb[0]], [P[i + 1][0], P[i + 1][1], zb[i + 1]], [P[i][0], P[i][1], zb[i]]]);
+    }
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = [P[i][0], P[i][1], zb[i]], b = [P[j][0], P[j][1], zb[j]];
+      const c = [P[j][0], P[j][1], zt[j]], d = [P[i][0], P[i][1], zt[i]];
+      o.tris.push([a, b, c]); o.tris.push([a, c, d]);
+    }
+  }
+  for (const e of state.entities) {
+    if (e.type !== 'MESH' || !e.tris) continue;
+    const lay = getLayer(e.layer); if (lay && !lay.visible) continue;
+    const o = put(e.id, bimSolidColor(e, '#b9b2a6'));
+    for (const t of e.tris) o.tris.push(t);
+  }
+  for (const o of out.values()) o.area = o.tris.reduce((a, t) => a + triArea(t), 0);
+  return out;
+}
+function triArea(t) {
+  const ux = t[1][0] - t[0][0], uy = t[1][1] - t[0][1], uz = t[1][2] - t[0][2];
+  const vx = t[2][0] - t[0][0], vy = t[2][1] - t[0][1], vz = t[2][2] - t[0][2];
+  return 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+}
+// 지오메트리 서명 — 실제로 형상이 바뀔 때만 BVH를 다시 만든다 (§2.3).
+// 광원 세기·색온도만 바뀌면 이 값이 그대로라 재빌드를 건너뛴다 = 슬라이더 UX의 핵심.
+function rtGeoSig() {
+  let h = state.entities.length + '|' + (v3.solids || []).length + '|';
+  for (const s of (v3.solids || [])) h += s.eid + ',' + Math.round(s.z0) + ',' + Math.round(s.z1) + ',' + s.poly.length + ';';
+  for (const e of state.entities) if (e.type === 'MESH') h += 'M' + e.id + ',' + (e.tris || []).length + ';';
+  return h;
+}
+// 씬 단위는 mm. three는 단위 불문이지만 감쇠가 스케일에 좌우되므로 m로 환산해 넘긴다 (§3.2).
+const RT_MM = 0.001;
+// 루멘 → 발광 radiance: 램버시안 발광면이면 L = Φ / (A·π)  [lm/(m²·sr)]
+// 이 값은 실제 단위라 수백~수천이 되고, 화면에 담으려면 노출(tone mapping)이 필요하다.
+// RT_EXPOSURE는 전형적인 실내가 적정 밝기로 보이도록 정한 값. 근거(손계산):
+//   800lm 다운라이트 2개 · 천장 2.55m → 광도 63.7cd → 바닥 조도 19.6lux
+//   바닥 #9a9a9a 의 선형 반사율 0.323 → 바닥 휘도 L = E·ρ/π ≈ 2.0 cd/m²
+//   이 값을 화면 범위에 담을 노출은 손계산(0.2)이 과했고, 실측 스윕으로 0.05로 정했다:
+//     노출 0.2 → 바닥 213/189 (포화)   0.1 → 175/142   0.05 → 125/92 (계조 살아있음)   0.02 → 65/44 (어두움)
+//   (램프 자체는 1326 cd/m² 라 어느 노출에서도 하얗게 포화 — 광원을 직접 보는 것이므로 정상)
+function rtRadiance(lm, areaM2) { return lm / (Math.max(1e-4, areaM2) * Math.PI); }
+const RT_EXPOSURE = 0.05;
+function rtBuildScene(T) {
+  const scene = new T.Scene();
+  scene.background = new T.Color(0x000000);   // 실내 조명 검토 기본 = 완전한 어둠 (§2.2)
+  scene.environment = null;
+  const byEnt = rtTrisByEntity();
+  const litIds = new Map();                    // eid → LightSource
+  for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) litIds.set(L.objectId, L);
+  let triCount = 0;
+  for (const [eid, o] of byEnt) {
+    if (!o.tris.length) continue;
+    triCount += o.tris.length;
+    const pos = new Float32Array(o.tris.length * 9);
+    let k = 0;
+    for (const t of o.tris) for (const p of t) { pos[k++] = p[0] * RT_MM; pos[k++] = p[1] * RT_MM; pos[k++] = p[2] * RT_MM; }
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+    geo.computeVertexNormals();
+    const L = litIds.get(eid);
+    let mat;
+    if (L) {
+      const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
+      // 루멘 → 발광 radiance: 세기를 발광면 면적(m²)으로 나눈다 (§2.2)
+      const areaM2 = Math.max(1e-4, o.area * RT_MM * RT_MM);
+      mat = rtStdMat(T, '#000000', [c[0] / mx, c[1] / mx, c[2] / mx], rtRadiance(L.intensity, areaM2));
+    } else mat = rtStdMat(T, o.color);
+    const mesh = new T.Mesh(geo, mat);
+    mesh.userData.eid = eid;
+    scene.add(mesh);
+  }
+  rt.triCount = triCount;
+  return scene;
+}
+// WebCAD의 정투영 규약(proj3D)을 그대로 three 카메라로 옮긴다.
+// 어긋나면 레이트레이싱 화면만 다른 각도로 나와 비교가 불가능해진다.
+function rtSyncCamera(T, cam) {
+  const c = Math.cos(v3.yaw), s = Math.sin(v3.yaw);
+  const cp = Math.cos(v3.pitch), sp = Math.sin(v3.pitch);
+  const right = new T.Vector3(c, -s, 0);
+  const up = new T.Vector3(s * sp, c * sp, cp);
+  const fwd = new T.Vector3(s * cp, c * cp, -sp);      // 화면 안쪽(깊이 증가) 방향
+  const vp = v3.vp || { x: 0, y: 0, w: v3.cv.width, h: v3.cv.height };
+  const k = Math.min(vp.w, vp.h) / (v3.fit * 1.4) * v3.zoom;   // px per mm
+  const center = new T.Vector3(v3.cx, v3.cy, v3.cz);
+  const target = center.clone().addScaledVector(right, -v3.panX).addScaledVector(up, -v3.panY);
+  const D = Math.max(1, v3.fit * 4);
+  cam.up.copy(up);
+  cam.position.copy(target).addScaledVector(fwd, -D).multiplyScalar(RT_MM);
+  cam.lookAt(target.clone().multiplyScalar(RT_MM));
+  const hw = (vp.w / 2) / k * RT_MM, hh = (vp.h / 2) / k * RT_MM;
+  cam.left = -hw; cam.right = hw; cam.top = hh; cam.bottom = -hh;
+  cam.near = 0.01; cam.far = (D * 4) * RT_MM;
+  cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+}
+function rtHud(msg) {
+  if (!rt.hud) return;
+  rt.hud.textContent = msg;
+}
+async function rtLoad() {
+  if (rt.mod) return rt.mod;
+  rt.loading = true; rtHud('레이트레이서 불러오는 중…');
+  const T = await import(RT_CDN.three);
+  const P = await import(RT_CDN.pt);
+  const B = await import(RT_CDN.bvh);
+  rt.mod = { T, P, B }; rt.loading = false;
+  return rt.mod;
+}
+function rtReset() { if (rt.tracer) rt.tracer.reset(); }
+async function rtRebuild() {
+  const { T, P, B } = rt.mod;
+  rt.scene = rtBuildScene(T);
+  if (!rt.cam) rt.cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.01, 1000);
+  rtSyncCamera(T, rt.cam);
+  if (!rt.tracer) {
+    rt.tracer = new P.WebGLPathTracer(rt.renderer);
+    // 교차 출처 워커는 브라우저가 차단한다(SecurityError) → 메인 스레드에서 BVH를 만든다.
+    // 작은 장면에선 체감이 없고, 큰 장면은 진입 시 경고로 알린다.
+    rt.tracer.setBVHWorker({ generate: (g, o) => Promise.resolve(new B.MeshBVH(g, o)) });
+    rt.tracer.renderDelay = 0; rt.tracer.minSamples = 1;
+  }
+  await rt.tracer.setSceneAsync(rt.scene, rt.cam);
+  rt.geoSig = rtGeoSig();
+}
+// 프로그레시브 누적 루프. renderSample()은 THREE.Clock(실제 시간)으로 renderDelay를 재므로
+// 빡빡한 for 루프로 돌리면 누적이 시작되지 않는다 — 반드시 프레임마다 한 번씩 부른다.
+function rtLoop() {
+  if (!rt.on) return;
+  rt.raf = requestAnimationFrame(rtLoop);
+  if (!rt.tracer) return;
+  try { rt.tracer.renderSample(); } catch (e) { rt.err = String(e); rt.on = false; rtHud('오류: ' + e); return; }
+  const s = rt.tracer.samples || 0;
+  rtHud(rt.tracer.isCompiling ? '셰이더 준비 중…'
+    : `${s < 1 ? 0 : Math.floor(s)} spp · ${s < 24 ? '수렴 중…' : '완료'}${rt.env === 'day' ? ' · 주광' : ''}`);
+}
+function rtResize() {
+  if (!rt.on || !rt.renderer) return;
+  const vp = v3.vp || { w: v3.cv.width, h: v3.cv.height };
+  const dpr = 1; // 패스트레이싱은 픽셀당 비용이 커서 dpr 배율을 쓰지 않는다
+  rt.cv.style.width = v3.cv.clientWidth + 'px'; rt.cv.style.height = v3.cv.clientHeight + 'px';
+  rt.renderer.setSize(Math.max(1, Math.round(vp.w * dpr)), Math.max(1, Math.round(vp.h * dpr)), false);
+  if (rt.cam) { rtSyncCamera(rt.mod.T, rt.cam); rt.tracer && rt.tracer.updateCamera(); }
+}
+// 카메라가 움직이면 누적을 리셋하고 저해상도로 (§2.3). 멈추면 풀 해상도로 다시 누적.
+function rtCameraChanged() {
+  if (!rt.on || !rt.tracer) return;
+  rtSyncCamera(rt.mod.T, rt.cam);
+  rt.tracer.renderScale = 0.25;      // 조작 중 1/4 해상도 → 응답성 유지
+  rt.tracer.updateCamera();          // 내부에서 누적 리셋
+  clearTimeout(rt._settle);
+  rt._settle = setTimeout(() => {
+    if (!rt.on || !rt.tracer) return;
+    rt.tracer.renderScale = 1; rt.tracer.updateCamera();
+  }, 220);
+}
+// 광원 속성(세기·색온도)만 바뀐 경우: BVH 재빌드 없이 머티리얼만 갱신 + 누적 리셋 (§2.3)
+function rtLightsChanged() {
+  if (!rt.on || !rt.tracer || !rt.scene) return;
+  const T = rt.mod.T;
+  if (rtGeoSig() !== rt.geoSig) { rtRebuild(); return; }   // 형상이 바뀌었으면 재빌드
+  const byEnt = rtTrisByEntity();
+  const lit = new Map();
+  for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) lit.set(L.objectId, L);
+  rt.scene.traverse(o => {
+    if (!o.isMesh) return;
+    const L = lit.get(o.userData.eid), info = byEnt.get(o.userData.eid);
+    if (L && info) {
+      const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
+      const areaM2 = Math.max(1e-4, info.area * RT_MM * RT_MM);
+      o.material.color.setRGB(0, 0, 0);
+      o.material.emissive.setRGB(c[0] / mx, c[1] / mx, c[2] / mx);
+      o.material.emissiveIntensity = rtRadiance(L.intensity, areaM2);
+    } else if (info) {
+      const [r, g, b] = hexToRgb(info.color || '#b9b2a6');
+      o.material.color.setRGB(r / 255, g / 255, b / 255);
+      o.material.emissive.setRGB(0, 0, 0); o.material.emissiveIntensity = 0;
+    }
+    o.material.needsUpdate = true;
+  });
+  rt.tracer.updateMaterials();
+  rt.tracer.updateLights();
+}
+function rtSetEnv(mode) { // 'black' | 'day'
+  rt.env = mode;
+  if (!rt.on || !rt.scene) return;
+  const T = rt.mod.T;
+  if (mode === 'day') { // 균일 스카이 — 인공조명 효과와 대비해 보기 위한 옵션
+    const tex = new T.GradientEquirectTexture ? null : null;
+    rt.scene.background = new T.Color(0x8fb4e8);
+    rt.scene.environment = null;
+    rt.scene.environmentIntensity = 1;
+  } else { rt.scene.background = new T.Color(0x000000); rt.scene.environment = null; }
+  if (rt.tracer) { rt.tracer.updateEnvironment(); rtReset(); }
+}
+async function rtEnter() {
+  if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
+    logLine('  Raytraced: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 명령으로 여세요.', 'warn'); return;
+  }
+  if (!rtSupported()) { // §2.4 폴백
+    logLine('  ⚠ 이 브라우저는 WebGL2를 지원하지 않아 Raytraced 모드를 쓸 수 없습니다.', 'warn');
+    logLine('    대신 lighting(조명 보기)을 켜면 근사 렌더로 확인할 수 있습니다 (근사 모드).', 'info');
+    return;
+  }
+  if (rt.on) { rtExit(); return; }
+  const ov = document.getElementById('bim3d');
+  if (!rt.cv) {
+    rt.cv = document.createElement('canvas');
+    rt.cv.id = 'rtcv';
+    rt.cv.style.cssText = 'position:absolute;inset:0;z-index:19;width:100%;height:100%;';
+    rt.hud = document.createElement('div');
+    rt.hud.style.cssText = 'position:absolute;right:10px;top:8px;z-index:20;font:11px/1.5 var(--mono);'
+      + 'padding:4px 9px;border-radius:980px;background:rgba(10,16,32,.72);color:#cfe0ff;pointer-events:none;';
+    ov.appendChild(rt.cv); ov.appendChild(rt.hud);
+  }
+  rt.cv.style.display = ''; rt.hud.style.display = '';
+  rt.on = true;
+  try {
+    const { T } = await rtLoad();
+    if (!rt.renderer) {
+      // preserveDrawingBuffer: 검증(픽셀 읽기)과 화면 캡처에 필요
+      rt.renderer = new T.WebGLRenderer({ canvas: rt.cv, preserveDrawingBuffer: true });
+      rt.renderer.setPixelRatio(1);
+      // 물리 단위(cd/m²)는 수백~수천이라 그대로 그리면 전부 하얗다 — 노출로 화면 범위에 담는다
+      rt.renderer.toneMapping = T.ACESFilmicToneMapping;
+      rt.renderer.toneMappingExposure = RT_EXPOSURE;
+    }
+    rtResize();
+    await rtRebuild();
+    if (rt.triCount > RT_TRI_WARN && !confirm(`삼각형이 ${rt.triCount.toLocaleString()}개입니다. 레이트레이싱이 매우 느릴 수 있습니다. 계속할까요?`)) { rtExit(); return; }
+    logLine(`  ▷ Raytraced ON — 삼각형 ${rt.triCount.toLocaleString()}개 · 광원 ${lightSources().length}개 · 환경 ${rt.env === 'day' ? '주광' : '검은 환경'} (다시 입력하면 OFF)`, 'info');
+    if (!state.lights.length) logLine('    광원이 없어 화면이 검게 나옵니다 — setaslight 로 광원을 지정하세요.', 'warn');
+    rtLoop();
+  } catch (e) {
+    rt.on = false; rt.err = String(e);
+    logLine('  ⚠ 레이트레이서를 불러오지 못했습니다: ' + e, 'warn');
+    logLine('    lighting(조명 보기)으로 근사 렌더를 쓸 수 있습니다.', 'info');
+    rtExit();
+  }
+}
+function rtExit() {
+  rt.on = false;
+  cancelAnimationFrame(rt.raf);
+  if (rt.cv) rt.cv.style.display = 'none';
+  if (rt.hud) rt.hud.style.display = 'none';
+  render3D();
+}
+function cmdRaytrace() { rtEnter(); }
+
 function cmdLighting() {
   if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
     logLine('  조명 보기: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 명령으로 여세요.', 'warn'); return;
@@ -7350,6 +7653,7 @@ const INSTANT_CMDS = {
   stair: cmdStairTag,
   railing: cmdRailingTag,
   setaslight: cmdSetAsLight,
+  raytrace: cmdRaytrace,
   unsetlight: cmdUnsetLight,
   lighting: cmdLighting,
   extrudecrv: cmdExtrudeCrv,
@@ -7714,6 +8018,7 @@ const TOOL_KO = {
   door: '문(DOOR)', window: '창(WINDOW)', section: '단면(SECTION)', elevation: '입면(ELEVATION)',
   railing: '난간(RAILING)',
   setaslight: '광원으로 지정(SETASLIGHT)',
+  raytrace: '레이트레이싱 렌더(RAYTRACE)',
   unsetlight: '광원 해제(UNSETLIGHT)',
   lighting: '조명 보기(LIGHTING)',
 };
@@ -7770,6 +8075,7 @@ const CMD_ALIASES = {
   railing: 'railing', handrail: 'railing', 난간: 'railing', 손스침: 'railing',
   setaslight: 'setaslight', light: 'setaslight', lamp: 'setaslight', 조명: 'setaslight', 광원지정: 'setaslight', 광원: 'setaslight',
   unsetlight: 'unsetlight', 광원해제: 'unsetlight',
+  raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
   lighting: 'lighting', night: 'lighting', 야간: 'lighting', 조명보기: 'lighting', 조명켜기: 'lighting',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv', extrude: 'extrudecrv', ext: 'extrudecrv', 돌출: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
@@ -8334,6 +8640,9 @@ function openColorPop(anchor, current, onPick) {
 // 레이어 목록 렌더
 // 광원 목록 패널 — 행 클릭=개체 선택, 체크박스=on/off, 솔로=이 광원만 (등기구 하나씩 검토)
 function renderLightList() {
+  // 광원이 바뀌는 모든 경로(지정·해제·on/off·솔로·특성 편집)가 이 함수를 거친다 →
+  // Raytraced 갱신을 여기 한 곳에만 걸면 빠짐이 없다. 형상이 그대로면 BVH는 다시 만들지 않는다.
+  if (rt.on) rtLightsChanged();
   const list = document.getElementById('lightList');
   if (!list) return;
   list.innerHTML = '';
@@ -9169,6 +9478,7 @@ const CMD_HELP = [
     ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘(부드러운 그림자 + 간접광 포함) — 다시 입력하면 OFF. 밝기·도달거리·그림자 부드러움·간접광 세기는 특성창에서 조절'],
     ['setaslight', '광원으로 지정', '선택한 개체를 광원으로 지정 — 형태·색·BIM 정체는 하나도 바뀌지 않고 광원 속성만 붙는다(정육면체 → 정육면체 광원체). 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다. 기본 800lm / 3000K. 세기(lm)·색온도(K)는 특성창에서, on/off·솔로는 사이드바 [광원] 패널에서. 3d 후 lighting 으로 확인'],
     ['unsetlight', '광원 해제', '광원 지정을 푼다 — 개체는 그대로 남는다'],
+    ['raytrace', '레이트레이싱 렌더', '3D 뷰를 경로추적(path tracing)으로 렌더 — 지정한 광원의 직접광·그림자·간접광이 물리적으로 계산되어 프레임이 쌓이며 수렴한다. 환경은 기본이 완전한 어둠이라 광원이 없으면 검은 화면. 카메라를 움직이면 저해상도로 즉시 따라오고 놓으면 다시 수렴. WebGL2가 없으면 lighting(근사 모드)로 안내. 다시 입력하면 OFF'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
@@ -9243,7 +9553,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -10721,7 +11031,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, lightSources, litFace,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
