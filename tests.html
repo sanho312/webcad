@@ -804,6 +804,24 @@ function tests(){
     const at = x => C.litFace(x, 0, 0, 0, 0, 1, false);
     ok(at(0) > at(2000) && at(2000) > at(4000) && at(4000) > at(8000), '가까울수록 밝다 (거리 제곱 감쇠)');
     ok(at(0) < 1.5, '  광원 바로 아래도 상한에 붙지 않음 (계조 유지)');
+
+    // 톤매핑 — 밝기 합이 상한을 넘어도 하드 클립되지 않아야 한다.
+    // (예전엔 min(1.5)로 잘라, 방 안 전 구간이 1.5로 같아지며 감쇠·그림자 계조가 사라졌다)
+    const FAR2 = (8000 * 6) * (8000 * 6);
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:8000, power:1, far2:FAR2, soft:0, bounce:0 }];
+    const hot = C.litFace(0, 0, 0, 0, 0, 1, false);      // 원시 밝기 ≈ 2.5 — 상한 1.5를 넘음
+    const warm = C.litFace(2500, 0, 0, 0, 0, 1, false);  // 원시 ≈ 1.8 — 여전히 상한 위
+    ok(hot > 1.0 && hot < 1.5, '톤매핑: 상한을 넘는 밝기도 1.5에 붙지 않음');
+    ok(warm > 1.0 && warm < 1.5, '  조금 떨어진 곳도 마찬가지');
+    ok(hot - warm > 0.03, '  상한 위 구간에서도 밝기 차가 남는다 (하드 클립이면 둘 다 1.5로 같아짐)');
+    // 무릎 아래(어두운 곳)는 압축하지 않는다 — 밝기를 2배로 하면 증가분도 정확히 2배(선형)
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:8000, power:0.05, far2:FAR2, soft:0, bounce:0 }];
+    const w1 = C.litFace(0, 0, 0, 0, 0, 1, false);
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:8000, power:0.10, far2:FAR2, soft:0, bounce:0 }];
+    const w2 = C.litFace(0, 0, 0, 0, 0, 1, false);
+    ok(w1 < 0.9 && w2 < 0.9, '  약한 빛은 무릎(0.9) 아래');
+    ok(Math.abs((w2 - 0.16) - 2 * (w1 - 0.16)) < 1e-9, '  무릎 아래는 압축 없이 선형 — 어두운 곳의 느낌 보존');
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:5000, power:1 }];
     ok(Math.abs(at(50000) - 0.16) < 0.05, '  아주 먼 곳은 야간 환경광(0.16)으로 수렴');
     ok(C.litFace(0, 0, 0, 0, 0, -1, false) < 0.2, '광원을 등진 면은 어둡다');
     // power / range 특성
@@ -824,6 +842,8 @@ function tests(){
     eq(src[0].z, 2800, '  광원 높이 = 개체가 놓인 z (zo)');
     eq(src[0].soft, 400, '  soft 기본 400 (부드러운 그림자 기본 ON)');
     eq(src[0].bounce, 0.5, '  bounce 기본 0.5 (간접광 기본 ON)');
+    eq(src[0].range, 3000, '  range 기본 3000 — 키우면 방 안에서 감쇠가 사라져 다시 하얗게 뜬다');
+    eq(src[0].power, 1, '  power 기본 1 (특성창 라벨 "1=기본"과 일치)');
     // 광원 지정이 없으면 광원 0
     setEnts([{ type:'LINE', x1:0, y1:0, x2:1000, y2:0, layer:'0' }]);
     eqi(C.lightSources().length, 0, '광원으로 지정하지 않으면 광원 없음');
