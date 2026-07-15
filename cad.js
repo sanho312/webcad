@@ -4486,11 +4486,11 @@ function solidsToTris(onlyIds) {
   }
   return tris;
 }
+// STL/OBJ 저장 — saveBlob에 위임.
+// (이전엔 <a>를 document에 붙이지 않고 click() 해서 다운로드가 걸리지 않았음 = STL/OBJ 저장 불가 버그.
+//  saveBlob은 DOM 부착 후 클릭 + 모바일 공유 + 저장 로그까지 처리하므로 PDF·SVG와 동일 경로로 통일)
 function dl3d(text, name, mime) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type: mime || 'text/plain' }));
-  a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return saveBlob(new Blob([text], { type: mime || 'text/plain' }), name);
 }
 function cmdExportSTL(onlyIds, nameSuffix) {
   const tris = solidsToTris(onlyIds);
