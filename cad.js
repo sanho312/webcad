@@ -2389,33 +2389,41 @@ function drawBimOverlay(e) {
     if (e.type === 'CIRCLE') { const c = worldToScreen(e.cx, e.cy); ctx.arc(c.x, c.y, e.r * sc, 0, Math.PI * 2); }
     else { e.points.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); ctx.closePath(); }
     ctx.fill();
-  } else if (k === 'stair' && e.type === 'LINE') {
-    const b = e.bim, w = b.w || 1200;
-    const a = worldToScreen(e.x1, e.y1), q = worldToScreen(e.x2, e.y2);
-    const dx = q.x - a.x, dy = q.y - a.y, Ls = Math.hypot(dx, dy) || 1;
-    const ux = dx / Ls, uy = dy / Ls, nx = -uy * w * sc / 2, ny = ux * w * sc / 2;
-    ctx.strokeStyle = entityColor(e); ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.85;
-    ctx.beginPath(); // 외곽
-    ctx.moveTo(a.x + nx, a.y + ny); ctx.lineTo(q.x + nx, q.y + ny);
-    ctx.lineTo(q.x - nx, q.y - ny); ctx.lineTo(a.x - nx, a.y - ny); ctx.closePath(); ctx.stroke();
-    const n = Math.max(1, Math.ceil((b.h || 3000) / (b.riser || 180)));
-    ctx.globalAlpha = 0.5;
-    ctx.beginPath(); // 디딤판 선
-    for (let i = 1; i < n; i++) {
-      const px = a.x + ux * Ls * i / n, py = a.y + uy * Ls * i / n;
-      ctx.moveTo(px + nx, py + ny); ctx.lineTo(px - nx, py - ny);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 0.9; // 진행(UP) 화살표
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y); ctx.lineTo(q.x, q.y);
-    ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - ux * 10 - uy * 5, q.y - uy * 10 + ux * 5);
-    ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - ux * 10 + uy * 5, q.y - uy * 10 - ux * 5);
-    ctx.stroke();
-    if (Ls > 40) {
-      ctx.font = '10px -apple-system,system-ui,sans-serif'; ctx.fillStyle = entityColor(e);
-      ctx.fillText('UP', q.x - ux * 18 + 4, q.y - uy * 18 - 4);
+  } else if (k === 'stair' && (e.type === 'LINE' || e.type === 'LWPOLYLINE')) {
+    // 3D 솔리드와 같은 stairSteps()로 그린다 — 평면 심볼과 입체가 어긋나지 않게
+    const S = stairSteps(e);
+    if (S) {
+      const W = p => worldToScreen(p[0], p[1]);
+      ctx.strokeStyle = entityColor(e); ctx.lineWidth = 1;
+      // 외곽 = 좌측 오프셋 경로 + 우측 오프셋 경로 되짚기 (곡선이면 곡선을 따라 휜다)
+      const left = [S.steps[0].quad[0], ...S.steps.map(s => s.quad[1])];
+      const right = [S.steps[0].quad[3], ...S.steps.map(s => s.quad[2])];
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      [...left, ...right.slice().reverse()].forEach((p, i) => { const q = W(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+      ctx.closePath(); ctx.stroke();
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath(); // 디딤판 선 (단 사이 경계)
+      for (let i = 0; i < S.steps.length - 1; i++) {
+        const p1 = W(S.steps[i].quad[1]), p2 = W(S.steps[i].quad[2]);
+        ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
+      }
+      ctx.stroke();
+      // 진행(UP) 화살표 — 경로를 따라가고 끝에서 마지막 진행방향으로 촉
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      S.P.forEach((p, i) => { const q = W(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+      const endP = S.P[S.P.length - 1], q = W(endP);
+      const lt = S.steps[S.steps.length - 1].t;
+      const ux = lt[0], uy = -lt[1]; // 화면 y는 아래로 증가
+      ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - ux * 10 - uy * 5, q.y - uy * 10 + ux * 5);
+      ctx.moveTo(q.x, q.y); ctx.lineTo(q.x - ux * 10 + uy * 5, q.y - uy * 10 - ux * 5);
+      ctx.stroke();
+      const startS = W(S.P[0]);
+      if (Math.hypot(q.x - startS.x, q.y - startS.y) > 40) {
+        ctx.font = '10px -apple-system,system-ui,sans-serif'; ctx.fillStyle = entityColor(e);
+        ctx.fillText('UP', q.x - ux * 18 + 4, q.y - uy * 18 - 4);
+      }
     }
   } else if (k === 'column') {
     ctx.globalAlpha = 0.22; ctx.fillStyle = entityColor(e);
@@ -2465,7 +2473,7 @@ function bimSolids() {
       solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: bimSolidColor(e, '#9aa2af'), eid: e.id });
     } else if (e.bim.kind === 'roof' && e.type === 'LWPOLYLINE') {
       for (const s of roofSolids(e)) { s.eid = e.id; s.rf = true; s.color = bimSolidColor(e, s.color); solids.push(s); }
-    } else if (e.bim.kind === 'stair' && e.type === 'LINE') {
+    } else if (e.bim.kind === 'stair' && (e.type === 'LINE' || e.type === 'LWPOLYLINE')) {
       for (const s of stairSolids(e)) { s.eid = e.id; s.color = bimSolidColor(e, s.color); solids.push(s); }
     } else if (e.bim.kind === 'column') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
@@ -5672,8 +5680,8 @@ function cmdExtrudeCrv() { beginExtrude('extrudecrv'); }
 function cmdExtrudeSrf() { beginExtrude('extrudesrf'); }
 // 계단: LINE = 진행선(시작=아래, 끝=위). 단수 n = ceil(h/최대단높이), 단별 수직 프리즘.
 function cmdStairTag() {
-  const sel = selectedEntities().filter(e => e.type === 'LINE');
-  if (!sel.length) { logLine('  계단: 진행 방향 선(시작=아랫단, 끝=윗단)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const sel = selectedEntities().filter(e => e.type === 'LINE' || (e.type === 'LWPOLYLINE' && !e.closed));
+  if (!sel.length) { logLine('  계단: 진행 방향 선/곡선(시작=아랫단, 끝=윗단)을 선택한 뒤 실행하세요 — 닫힌 폴리라인은 계단 경로가 될 수 없습니다.', 'warn'); return; }
   const w = bimAskNum('계단 폭 (mm):', settings.bim.stairW); if (w == null) return;
   const h = bimAskNum('총 높이 (오르는 높이, mm):', 3000); if (h == null) return;
   const riser = bimAskNum('최대 단높이 (mm):', settings.bim.stairRiser); if (riser == null) return;
@@ -5681,23 +5689,51 @@ function cmdStairTag() {
   pushUndo();
   for (const e of sel) e.bim = { kind: 'stair', w, h, riser, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
   const n = Math.max(1, Math.ceil(h / riser));
-  logLine(`  ✔ 계단 지정 ${sel.length}개 — ${n}단 (단높이 ${(h / n).toFixed(0)}, 폭 ${w}) · 선 방향이 올라가는 방향`, 'ok');
+  const curved = sel.filter(e => e.type === 'LWPOLYLINE').length;  // 곡선 경로 계단
+  const onSrf = sel.filter(e => wallBaseZs(e)).length;             // 표면 위 곡선/3D 선 = 높이를 곡선에서 가져옴
+  logLine(`  ✔ 계단 지정 ${sel.length}개 — ${n}단 (단높이 ${(h / n).toFixed(0)}, 폭 ${w}) · 경로 방향이 올라가는 방향`
+    + (curved ? ` · ${curved}개는 곡선 경로(각 단이 진행방향에 직교)` : '')
+    + (onSrf ? ` · ${onSrf}개는 곡선의 시작·끝 높이를 계단 높이로 사용(단높이는 균일 유지)` : ''), 'ok');
   renderProps(); draw();
 }
-function stairSolids(e) {
-  const b = e.bim, base = b.base || 0, h = b.h || 0, w = b.w || 1200;
-  const L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
-  if (L < 1e-6 || h <= 0) return [];
-  const n = Math.max(1, Math.ceil(h / (b.riser || 180)));
-  const ux = (e.x2 - e.x1) / L, uy = (e.y2 - e.y1) / L;
-  const nx = -uy * w / 2, ny = ux * w / 2;
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const s0 = L * i / n, s1 = L * (i + 1) / n;
-    const ax = e.x1 + ux * s0, ay = e.y1 + uy * s0, bx = e.x1 + ux * s1, by = e.y1 + uy * s1;
-    out.push({ poly: [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]], z0: base, z1: base + h * (i + 1) / n, color: '#b9b2a6' });
+// ---------- 계단 기하 (직선·곡선 공용) ----------
+// 경로를 단 수만큼 등분해 단별 디딤판 사각형과 윗면 높이를 산출.
+// 평면 심볼과 3D 솔리드가 이 함수 하나를 공유해 서로 어긋나지 않게 한다.
+// 곡선(폴리라인) 경로면 각 단이 그 지점의 진행 방향에 직교해 놓인다(L자·아치형·자유곡선 계단).
+// 경로가 표면 위 곡선/3D 선이면 곡선의 시작·끝 높이가 계단의 발밑·꼭대기가 된다.
+//   단높이는 어디까지나 균일하게 유지한다 — 지형을 그대로 따라가면 단높이가 제각각이 되어
+//   계단으로 성립하지 않는다(균일 단높이는 건축 기본).
+function stairSteps(e) {
+  const b = e.bim; if (!b) return null;
+  const w = b.w || 1200;
+  let base = b.base || 0, h = b.h || 0;
+  const pz = wallBaseZs(e);
+  if (pz && pz.length >= 2) {
+    const z0 = pz[0], z1 = pz[pz.length - 1];
+    if (z1 - z0 > 1) { base = z0; h = z1 - z0; } // 경로 방향 = 올라가는 방향
   }
-  return out;
+  if (h <= 0) return null;
+  const n = Math.max(1, Math.ceil(h / (b.riser || 180)));
+  const P = crvSampleN(e, n); // 열린 경로 → n+1점 (단 경계)
+  if (!P || P.length < 2) return null;
+  const steps = [];
+  for (let i = 0; i < Math.min(n, P.length - 1); i++) {
+    const a = P[i], c = P[i + 1];
+    let tx = c[0] - a[0], ty = c[1] - a[1];
+    const L = Math.hypot(tx, ty); if (L < 1e-9) continue;
+    tx /= L; ty /= L;
+    const nx = -ty * w / 2, ny = tx * w / 2; // 그 지점 진행방향에 직교한 디딤판 폭
+    steps.push({
+      quad: [[a[0] + nx, a[1] + ny], [c[0] + nx, c[1] + ny], [c[0] - nx, c[1] - ny], [a[0] - nx, a[1] - ny]],
+      z1: base + h * (i + 1) / n,
+      t: [tx, ty],
+    });
+  }
+  return steps.length ? { steps, base, h, n, w, P } : null;
+}
+function stairSolids(e) {
+  const S = stairSteps(e); if (!S) return [];
+  return S.steps.map(st => ({ poly: st.quad, z0: S.base, z1: st.z1, color: '#b9b2a6' }));
 }
 function cmdRoofTag() {
   const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed);
@@ -8254,7 +8290,7 @@ const CMD_HELP = [
     ['booleanintersection', '교집합(라이노 BooleanIntersection · bi)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
-    ['stair', '계단 지정', '진행 방향 선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이 — 평면 디딤판+UP화살표, 3D 단형, 단면 계단 프로파일 자동'],
+    ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
   { c: '기타', items: [
     ['undo', '실행취소', 'Ctrl+Z와 동일'],
@@ -9767,7 +9803,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,

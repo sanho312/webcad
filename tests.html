@@ -618,6 +618,67 @@ function tests(){
     reset();
   }
 
+  // ---------- 곡선 위 계단 ----------
+  group('stair — 곡선 경로 (L자·아치형) + 표면 위 곡선');
+  {
+    // 직선 계단은 예전 공식과 100% 같아야 (회귀)
+    const straight = { type:'LINE', x1:0, y1:0, x2:4000, y2:0, layer:'0', bim:{kind:'stair', w:1200, h:3000, riser:180, base:0} };
+    setEnts([straight]);
+    const got = C.stairSolids(S0.entities[0]);
+    const oldImpl = (e) => { // 곡선 지원 전의 구현
+      const b=e.bim, base=b.base||0, h=b.h||0, w=b.w||1200;
+      const L=Math.hypot(e.x2-e.x1, e.y2-e.y1); if (L<1e-6||h<=0) return [];
+      const n=Math.max(1,Math.ceil(h/(b.riser||180)));
+      const ux=(e.x2-e.x1)/L, uy=(e.y2-e.y1)/L, nx=-uy*w/2, ny=ux*w/2, o=[];
+      for(let i=0;i<n;i++){ const s0=L*i/n, s1=L*(i+1)/n;
+        const ax=e.x1+ux*s0, ay=e.y1+uy*s0, bx=e.x1+ux*s1, by=e.y1+uy*s1;
+        o.push({poly:[[ax+nx,ay+ny],[bx+nx,by+ny],[bx-nx,by-ny],[ax-nx,ay-ny]], z0:base, z1:base+h*(i+1)/n}); }
+      return o;
+    };
+    const want = oldImpl(S0.entities[0]);
+    eqi(got.length, want.length, '직선 계단 단 수가 예전과 동일');
+    let maxd = 0;
+    for (let i=0;i<Math.min(got.length,want.length);i++){
+      maxd = Math.max(maxd, Math.abs(got[i].z0-want[i].z0), Math.abs(got[i].z1-want[i].z1));
+      for (let k=0;k<4;k++) for (let d=0;d<2;d++) maxd = Math.max(maxd, Math.abs(got[i].poly[k][d]-want[i].poly[k][d]));
+    }
+    ok(maxd < 1e-6, `직선 계단 기하가 예전과 동일 (최대 오차 ${maxd.toExponential(1)})`);
+
+    // L자 곡선 계단 — 각 단이 그 지점 진행방향에 직교
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[3000,0],[3000,3000]], layer:'0',
+               bim:{kind:'stair', w:1200, h:3000, riser:180, base:0} }]);
+    const Lsol = C.stairSolids(S0.entities[0]);
+    ok(Lsol.length > 1, 'L자 곡선 계단 생성');
+    const f = Lsol[0].poly, l = Lsol[Lsol.length-1].poly;
+    const wF = [f[0][0]-f[3][0], f[0][1]-f[3][1]], wL = [l[0][0]-l[3][0], l[0][1]-l[3][1]];
+    ok(Math.abs(wF[0]) < 1 && Math.abs(wF[1]-1200) < 1, '  +X 진행 구간: 디딤판 폭이 Y방향');
+    ok(Math.abs(wL[1]) < 1 && Math.abs(wL[0]+1200) < 1, '  +Y 진행 구간: 디딤판 폭이 X방향 (곡선 따라 회전)');
+    const zsL = Lsol.map(s=>s.z1), dL = zsL.map((z,i)=> i ? z-zsL[i-1] : z-Lsol[0].z0);
+    ok(Math.max(...dL)-Math.min(...dL) < 1e-6, '  단높이 균일 (건축 기본)');
+    eq(Lsol[Lsol.length-1].z1, 3000, '  꼭대기 = base+h');
+
+    // 표면 위 곡선 — 곡선의 시작·끝 높이를 계단 높이로 (bim.h는 무시), 단높이는 균일
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[2000,0],[4000,0]], zs:[500,900,2300], layer:'0',
+               bim:{kind:'stair', w:1200, h:9999, riser:180, base:0} }]);
+    const Ssol = C.stairSolids(S0.entities[0]);
+    ok(Ssol.length > 1, '표면 위 곡선 계단 생성');
+    eq(Ssol[0].z0, 500, '  발밑 = 곡선 시작 높이');
+    eq(Ssol[Ssol.length-1].z1, 2300, '  꼭대기 = 곡선 끝 높이 (bim.h 9999 무시)');
+    const zsS = Ssol.map(s=>s.z1), dS = zsS.map((z,i)=> i ? z-zsS[i-1] : z-Ssol[0].z0);
+    ok(Math.max(...dS)-Math.min(...dS) < 1e-6, '  지형을 타도 단높이는 균일');
+
+    // 평면 폴리라인(z 없음)은 bim.base/h 그대로
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[2000,0],[4000,1000]], layer:'0',
+               bim:{kind:'stair', w:1200, h:1800, riser:180, base:100} }]);
+    const Fsol = C.stairSolids(S0.entities[0]);
+    eq(Fsol[0].z0, 100, '평면 곡선 계단: 발밑 = bim.base');
+    eq(Fsol[Fsol.length-1].z1, 1900, '  꼭대기 = base+h');
+
+    // bimSolids 디스패치 (폴리라인 계단이 3D에 실제로 나오는가)
+    ok(C.bimSolids().filter(s => s.eid === 1).length > 1, '폴리라인 계단이 bimSolids에 포함됨');
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {
