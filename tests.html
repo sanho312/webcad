@@ -378,6 +378,81 @@ function tests(){
     ok(!S0.entities[0] || !S0.entities[0].bim, 'height 단계 취소 → bim 제거(undo 복원)');
     APP.prompt = oldPrompt;
   }
+
+  // ---------- 이미지: 회전·검볼·효과 ----------
+  group('이미지 — 회전 기하 / 검볼 / 라이노 공통 명령');
+  {
+    const mkImg = (o={}) => { setEnts([{type:'IMAGE',layer:'0',x:0,y:0,w:100,h:60,src:'',...o}]); return S0.entities[0]; };
+
+    // 기하 헬퍼
+    let im = mkImg();
+    let ctr = C.imgCenter(im);
+    ok(near(ctr.x,50) && near(ctr.y,30), 'imgCenter = 중심');
+    eqi(C.entityGrips(im).length, 4, '이미지 그립 = 네 모서리');
+    // 회전 0: 모서리는 축 정렬
+    let cs = C.imgCorners(im);
+    ok(near(cs[0].x,0)&&near(cs[0].y,0)&&near(cs[2].x,100)&&near(cs[2].y,60), '회전 0 → 모서리 = 원래 사각형');
+    // 로컬↔월드 왕복
+    im.rot = 37;
+    const wpt = C.imgWorld(im, 12, -8), lpt = C.imgLocal(im, wpt);
+    ok(near(lpt.u,12,1e-9) && near(lpt.v,-8,1e-9), 'imgWorld ↔ imgLocal 왕복 일치(회전 37°)');
+
+    // 회전 반영 히트 판정
+    im = mkImg({ rot: 90 });
+    ctr = C.imgCenter(im);
+    ok(C.entityHit(im, {x:ctr.x, y:ctr.y+45}, 0), '90° 회전 → 세로로 길어진 쪽(중심+45)은 안쪽');
+    ok(!C.entityHit(im, {x:ctr.x+45, y:ctr.y}, 0), '90° 회전 → 가로 45는 바깥 (회전 무시하면 실패)');
+
+    // bbox도 회전 반영
+    im = mkImg({ rot: 90 });
+    let bb = C.entityBBox(im);
+    ok(near(bb.xmax-bb.xmin, 60) && near(bb.ymax-bb.ymin, 100), '회전 90° bbox = 폭·높이 교환');
+
+    // 라이노 공통 명령이 이미지에 적용 (전용 3D/이미지 명령 없이)
+    im = mkImg();
+    C.translateEntity(im, 10, 5);
+    ok(near(im.x,10) && near(im.y,5), 'move(translateEntity) → 이미지 이동');
+    im = mkImg();
+    C.applyTransform(im, C.T_rotate(50, 30, 40));
+    ok(near(im.rot,40) && near(C.imgCenter(im).x,50) && near(C.imgCenter(im).y,30), 'rotate → rot 누적 + 중심 보존');
+    im = mkImg({ rot: 30 });
+    C.applyTransform(im, C.T_mirror(50,30,50,40)); // 수직축
+    ok(im.flip === true && near(im.rot, 150), 'mirror → 좌우반전 + 회전 반사(2*90-30)');
+    im = mkImg();
+    C.scaleEntities([im], {x:50,y:30}, 2);
+    ok(near(im.w,200) && near(im.h,120) && near(C.imgCenter(im).x,50), 'scale 2배 → 중심 기준 확대');
+
+    // 검볼 히트 판정 (선택 1개 & IMAGE일 때만)
+    im = mkImg();
+    S0.tool = 'select'; S0.selection.clear(); S0.selection.add(im.id);
+    ok(!!C.gumballImage(), '이미지 1개 선택 → 검볼 대상');
+    const gs = C.worldToScreen(50, 30);
+    eqi(C.imgGumHit({x:gs.x+40, y:gs.y}), 'x', '검볼 X축 히트');
+    eqi(C.imgGumHit({x:gs.x, y:gs.y-40}), 'y', '검볼 Y축 히트');
+    eqi(C.imgGumHit({x:gs.x, y:gs.y}), 'free', '검볼 중심 = 자유 이동');
+    eqi(C.imgGumHit({x:gs.x+78, y:gs.y}), 'sx', '검볼 X 배율 사각');
+    eqi(C.imgGumHit({x:gs.x+46*Math.cos(Math.PI/4), y:gs.y-46*Math.sin(Math.PI/4)}), 'rot', '검볼 회전 원호');
+    eqi(C.imgGumHit({x:gs.x+300, y:gs.y+300}), null, '검볼 밖 = null (평소 선택 동작)');
+    S0.selection.clear();
+    eqi(C.gumballImage(), null, '선택 없음 → 검볼 없음');
+    // 잠긴 레이어면 검볼/선택 불가
+    im = mkImg({ layer: '잠금' });
+    S0.layers.push({ name:'잠금', color:'#888', visible:true, locked:true });
+    S0.selection.clear(); S0.selection.add(im.id);
+    eqi(C.gumballImage(), null, '잠긴 레이어 → 검볼 없음');
+    S0.layers = S0.layers.filter(l => l.name !== '잠금');
+  }
+
+  // ---------- id 충돌 방지 ----------
+  group('applyDoc — nextId는 항상 최대 id보다 커야 함 (선택·삭제 오작동 방지)');
+  {
+    // 저장본의 nextId가 뒤처진 경우(옛 파일/손상된 세션)에도 새 도형이 기존 id와 겹치면 안 됨
+    reset();
+    const before = S0.entities.length;
+    C.applyDoc({ entities: [{id:7,type:'CIRCLE',cx:0,cy:0,r:5,layer:'0'}], nextId: 1, layers: S0.layers, currentLayer: '0' });
+    ok(S0.nextId > 7, `손상된 nextId(1) 보정 → ${S0.nextId} > 7`);
+    reset();
+  }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });

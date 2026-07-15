@@ -332,6 +332,8 @@ function draw() {
     ctx.restore();
   }
 
+  drawImgGumball(); // 이미지 검볼 (선택 1개 & IMAGE일 때만)
+
   // 커서 십자선
   drawCursor();
 }
@@ -503,14 +505,24 @@ function drawEntity(e, selected, preview) {
         im.onload = () => draw();
       }
       if (e._img.complete && e._img.naturalWidth) {
-        const tl = worldToScreen(e.x, e.y + e.h);
-        const ga = ctx.globalAlpha; ctx.globalAlpha = preview ? 0.4 : 0.9;
-        ctx.drawImage(e._img, tl.x, tl.y, e.w * state.view.scale, e.h * state.view.scale);
-        ctx.globalAlpha = ga;
+        const c = imgCenter(e), s = worldToScreen(c.x, c.y);
+        const W = e.w * state.view.scale, H = e.h * state.view.scale;
+        ctx.save();
+        ctx.translate(s.x, s.y);
+        if (e.rot) ctx.rotate(-e.rot * Math.PI / 180); // 화면 Y는 아래로 증가 → 월드 반시계 = 화면 시계
+        if (e.flip) ctx.scale(-1, 1);
+        // 투명도(op) · 채도(sat) · 명도(bri) — 특성창에서 조절. 기본값이면 필터 미적용(성능).
+        ctx.globalAlpha = (preview ? 0.4 : 0.9) * (e.op != null ? e.op : 1);
+        const sat = e.sat != null ? e.sat : 1, bri = e.bri != null ? e.bri : 1;
+        if (sat !== 1 || bri !== 1) ctx.filter = `saturate(${Math.round(sat * 100)}%) brightness(${Math.round(bri * 100)}%)`;
+        ctx.drawImage(e._img, -W / 2, -H / 2, W, H);
+        ctx.restore();
       }
       if (selected && !preview) {
-        const tl = worldToScreen(e.x, e.y + e.h);
-        ctx.setLineDash([4, 3]); ctx.strokeRect(tl.x, tl.y, e.w * state.view.scale, e.h * state.view.scale); ctx.setLineDash([]);
+        const cs = imgCorners(e).map(p => worldToScreen(p.x, p.y));
+        ctx.setLineDash([4, 3]); ctx.beginPath();
+        cs.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+        ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
       }
       break;
     }
@@ -557,6 +569,27 @@ function drawDraftPolyline() {
   ctx.restore();
 }
 
+// ---------- 이미지 기하 헬퍼 ----------
+// IMAGE는 x,y = (회전 전) 좌하단, w,h = 크기, rot = 중심 기준 반시계 회전(도), flip = 좌우 반전.
+// rot/flip/op/sat/bri는 모두 선택 속성 — 없으면 기존 동작(회전 0·불투명·원본색)과 동일.
+function imgCenter(e) { return { x: e.x + e.w / 2, y: e.y + e.h / 2 }; }
+// 월드 → 이미지 로컬(중심 원점, 회전 해제). 히트/그립 판정 공용.
+function imgLocal(e, w) {
+  const c = imgCenter(e), a = -(e.rot || 0) * Math.PI / 180;
+  const ca = Math.cos(a), sa = Math.sin(a), dx = w.x - c.x, dy = w.y - c.y;
+  return { u: dx * ca - dy * sa, v: dx * sa + dy * ca };
+}
+// 이미지 로컬(u,v) → 월드
+function imgWorld(e, u, v) {
+  const c = imgCenter(e), a = (e.rot || 0) * Math.PI / 180;
+  const ca = Math.cos(a), sa = Math.sin(a);
+  return { x: c.x + u * ca - v * sa, y: c.y + u * sa + v * ca };
+}
+const IMG_CORNER_UV = [[-1, -1], [1, -1], [1, 1], [-1, 1]]; // 좌하 → 우하 → 우상 → 좌상
+function imgCorners(e) { return IMG_CORNER_UV.map(([su, sv]) => imgWorld(e, su * e.w / 2, sv * e.h / 2)); }
+// 중심을 (cx,cy)에 두도록 x,y 재설정 (회전은 중심 기준이므로 중심 이동 = 평행이동)
+function imgSetCenter(e, cx, cy) { e.x = cx - e.w / 2; e.y = cy - e.h / 2; }
+
 function entityGrips(e) {
   switch (e.type) {
     case 'LINE': return [{ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }];
@@ -565,7 +598,7 @@ function entityGrips(e) {
     case 'TEXT': return [{ x: e.x, y: e.y }];
     case 'HATCH': return e.boundary.kind === 'circle' ? [{ x: e.boundary.cx, y: e.boundary.cy }] : e.boundary.points.map(p => ({ x: p[0], y: p[1] }));
     case 'INSERT': return [{ x: e.x, y: e.y }];
-    case 'IMAGE': return [{ x: e.x, y: e.y }];
+    case 'IMAGE': return imgCorners(e); // 네 모서리 = 크기 조절 그립
   }
   return [];
 }
@@ -625,7 +658,7 @@ function entityHit(e, w, tol) {
       return w.x >= e.x - tol && w.x <= e.x + w2 + tol && w.y >= e.y - tol && w.y <= e.y + e.height + tol;
     }
     case 'HATCH': return pointInBoundary(e.boundary, w.x, w.y); // 내부 클릭 = 선택
-    case 'IMAGE': return w.x >= e.x && w.x <= e.x + e.w && w.y >= e.y && w.y <= e.y + e.h;
+    case 'IMAGE': { const L = imgLocal(e, w); return Math.abs(L.u) <= e.w / 2 + tol && Math.abs(L.v) <= e.h / 2 + tol; } // 회전 반영
     case 'INSERT': {
       if (Math.hypot(w.x - e.x, w.y - e.y) <= tol) return true; // 삽입점
       for (const c of insertChildren(e)) if (entityHit(c, w, tol)) return true;
@@ -660,7 +693,8 @@ function entityBBox(e) {
     case 'TEXT': { const w = (e.text ? e.text.length : 0) * e.height * 0.6; return { xmin: e.x, xmax: e.x + w, ymin: e.y, ymax: e.y + e.height }; }
     case 'HATCH': return boundaryBBox(e.boundary);
     case 'INSERT': return insertBBox(e);
-    case 'IMAGE': return { xmin: e.x, ymin: e.y, xmax: e.x + e.w, ymax: e.y + e.h };
+    case 'IMAGE': { const cs = imgCorners(e), xs = cs.map(p => p.x), ys = cs.map(p => p.y);
+      return { xmin: Math.min(...xs), xmax: Math.max(...xs), ymin: Math.min(...ys), ymax: Math.max(...ys) }; }
     case 'MESH': return meshBBox(e);
   }
   return null;
@@ -982,6 +1016,14 @@ function applyTransform(e, T) {
       [e.x, e.y] = T.pt(e.x, e.y);
       if (T.type === 'rotate') e.rot = (e.rot || 0) + T.deg;
       else if (T.type === 'mirror') { e.sx = -(e.sx != null ? e.sx : 1); e.rot = 2 * T.axisDeg - (e.rot || 0); } // 미러: X배율 반전 + 회전 반사
+      break;
+    }
+    // 이미지: 중심을 변환 + 회전각 누적 (rotate/mirror/copy/array 통합 — 라이노와 동일하게 전용 명령 불필요)
+    case 'IMAGE': {
+      const c = imgCenter(e), q = T.pt(c.x, c.y);
+      if (T.type === 'rotate') e.rot = (e.rot || 0) + T.deg;
+      else if (T.type === 'mirror') { e.flip = !e.flip; e.rot = 2 * T.axisDeg - (e.rot || 0); } // 미러: 좌우 반전 + 회전 반사
+      imgSetCenter(e, q[0], q[1]);
       break;
     }
   }
@@ -1399,7 +1441,7 @@ function scaleEntities(ents, base, f) {
         e.spacing = (e.spacing || 5) * af; hatchDirty(e); break;
       }
       case 'INSERT': [e.x, e.y] = sp(e.x, e.y); e.sx = (e.sx != null ? e.sx : 1) * af; e.sy = (e.sy != null ? e.sy : 1) * af; break;
-      case 'IMAGE': [e.x, e.y] = sp(e.x, e.y); e.w *= af; e.h *= af; break;
+      case 'IMAGE': { const c = imgCenter(e), q = sp(c.x, c.y); e.w *= af; e.h *= af; imgSetCenter(e, q[0], q[1]); break; } // 중심 기준(회전 반영)
     }
   }
 }
@@ -1458,6 +1500,7 @@ cv.addEventListener('mousemove', (ev) => {
     }
   }
   if (dragSelect) { dragSelect.x2 = raw.x; dragSelect.y2 = raw.y; }
+  if (imgGumDrag) updateImgGum(ev); // 이미지 검볼 드래그(축 이동·회전·배율)
   if (moveOp) {
     moveOp.dx = mouseWorld.x - moveOp.base.x; moveOp.dy = mouseWorld.y - moveOp.base.y;
     if (moveOp.grip) updateGripMove();
@@ -1492,6 +1535,8 @@ cv.addEventListener('mousedown', (ev) => {
 
 window.addEventListener('mouseup', (ev) => {
   if (isPanning) { isPanning = false; return; }
+  if (imgGumDrag) { imgGumDrag = null; renderProps(); draw(); return; } // 검볼 드래그 종료
+
   if (toolPend) { const tp = toolPend; toolPend = null; handleClick(tp.w, tp.rawW, { shiftKey: tp.shift }); } // 보류된 도구 클릭 실행 (제자리 클릭)
   if (dragSelect) finishDragSelect(ev);
   if (moveOp && state.tool === 'select') finishGripMoveMaybe();
@@ -1649,6 +1694,8 @@ function handleClick(w, rawW, ev) {
   }
   switch (state.tool) {
     case 'select': {
+      const gp = imgGumHit(mouseScreen); // 검볼이 떠 있으면 검볼 조작이 최우선 (이미지 1개 선택 시에만 존재)
+      if (gp && startImgGum(gp)) { draw(); return; }
       const tol = 8 / state.view.scale;
       const hit = pick(w, rawW);
       if (hit) {
@@ -6443,7 +6490,127 @@ function updateGripMove() {
     case 'LWPOLYLINE': e.points[i] = [w.x, w.y]; break;
     case 'CIRCLE': case 'ARC': { const dx = w.x - e.cx, dy = w.y - e.cy; e.cx = w.x; e.cy = w.y; break; }
     case 'TEXT': e.x = w.x; e.y = w.y; break;
+    // 이미지 모서리 그립 = 크기 조절 (반대편 모서리 고정, 회전 상태에서도 동작)
+    case 'IMAGE': {
+      const cor = IMG_CORNER_UV[i]; if (!cor) break;
+      const opp = imgCorners(e)[(i + 2) % 4];      // 고정할 반대편 모서리(월드)
+      const L = imgLocal(e, w);                    // 끄는 점(로컬)
+      const nw = Math.abs(L.u - (-cor[0] * e.w / 2)), nh = Math.abs(L.v - (-cor[1] * e.h / 2));
+      if (nw < 1e-6 || nh < 1e-6) break;           // 0 크기 방지
+      e.w = nw; e.h = nh;
+      // 반대편 모서리가 제자리에 남도록 중심 역산
+      const a = (e.rot || 0) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+      const ou = -cor[0] * nw / 2, ov = -cor[1] * nh / 2;
+      imgSetCenter(e, opp.x - (ou * ca - ov * sa), opp.y - (ou * sa + ov * ca));
+      break;
+    }
   }
+}
+
+// ============================================================
+//  평면 검볼 (이미지) — 선택이 이미지 1개일 때 중심에 표시
+//  X(빨강)/Y(초록) 화살표 = 축 이동 · 끝 사각 = 축 배율 · 원호 = 회전(Shift=15° 스냅)
+//  중심 점 = 자유 이동. 그 외 상황엔 절대 뜨지 않으므로 기존 그립/선택 동작에 영향 없음.
+// ============================================================
+let imgGumDrag = null;
+const GUM2 = { axis: 62, head: 9, scale: 78, ring: 46, tol: 7 }; // 화면 px
+function gumballImage() {
+  if (state.tool !== 'select' || state.selection.size !== 1) return null;
+  const id = state.selection.values().next().value;
+  const e = state.entities.find(x => x.id === id);
+  return (e && e.type === 'IMAGE' && !isLocked(e) && onLv(e)) ? e : null;
+}
+// 화면 좌표 → 검볼 파트. 없으면 null (→ 평소의 선택 동작으로 넘어감)
+function imgGumHit(sc) {
+  const e = gumballImage(); if (!e || !sc) return null;
+  const c = imgCenter(e), s = worldToScreen(c.x, c.y);
+  const dx = sc.x - s.x, dy = sc.y - s.y, r = Math.hypot(dx, dy);
+  const near = (px, py) => Math.hypot(sc.x - px, sc.y - py) <= 8;
+  if (near(s.x + GUM2.scale, s.y)) return 'sx';           // 배율 사각(축 화살표보다 바깥)
+  if (near(s.x, s.y - GUM2.scale)) return 'sy';
+  const a = Math.atan2(-dy, dx) * 180 / Math.PI;          // 화면 → 월드 방향각
+  if (Math.abs(r - GUM2.ring) <= 6 && a >= 22 && a <= 68) return 'rot'; // 1사분면 원호(축과 겹치지 않는 구간만)
+  if (Math.abs(dy) <= GUM2.tol && dx > 8 && dx <= GUM2.axis + GUM2.head) return 'x';
+  if (Math.abs(dx) <= GUM2.tol && dy < -8 && -dy <= GUM2.axis + GUM2.head) return 'y';
+  if (r <= 8) return 'free';
+  return null;
+}
+function startImgGum(part) {
+  const e = gumballImage(); if (!e) return false;
+  const c = imgCenter(e), w = screenToWorld(mouseScreen.x, mouseScreen.y);
+  pushUndo();
+  imgGumDrag = {
+    e, part, c0: { x: c.x, y: c.y }, base: w, w0: e.w, h0: e.h, rot0: e.rot || 0,
+    ang0: Math.atan2(w.y - c.y, w.x - c.x) * 180 / Math.PI,
+    d0: part === 'sx' ? (w.x - c.x) : (w.y - c.y),
+  };
+  return true;
+}
+function updateImgGum(ev) {
+  const g = imgGumDrag; if (!g) return;
+  const e = g.e, w = screenToWorld(mouseScreen.x, mouseScreen.y); // 검볼은 스냅 미적용(예측 가능한 드래그)
+  switch (g.part) {
+    case 'x': imgSetCenter(e, g.c0.x + (w.x - g.base.x), g.c0.y); break;                       // X축만
+    case 'y': imgSetCenter(e, g.c0.x, g.c0.y + (w.y - g.base.y)); break;                       // Y축만
+    case 'free': imgSetCenter(e, g.c0.x + (w.x - g.base.x), g.c0.y + (w.y - g.base.y)); break;
+    case 'rot': {
+      const a = Math.atan2(w.y - g.c0.y, w.x - g.c0.x) * 180 / Math.PI;
+      let nr = g.rot0 + (a - g.ang0);
+      if (ev && ev.shiftKey) nr = Math.round(nr / 15) * 15; // 최종 각도를 15° 배수로 (증분이 아니라 절대각 스냅)
+      e.rot = (nr % 360 + 360) % 360;
+      imgSetCenter(e, g.c0.x, g.c0.y); // 회전은 중심 기준 — 중심 고정
+      break;
+    }
+    case 'sx': case 'sy': {
+      if (Math.abs(g.d0) < 1e-9) break;
+      const d = g.part === 'sx' ? (w.x - g.c0.x) : (w.y - g.c0.y);
+      const f = Math.max(0.02, Math.abs(d / g.d0));
+      if (g.part === 'sx') e.w = g.w0 * f; else e.h = g.h0 * f;
+      imgSetCenter(e, g.c0.x, g.c0.y);
+      break;
+    }
+  }
+}
+function drawImgGumball() {
+  const e = gumballImage(); if (!e || imgGumDrag && imgGumDrag.part === undefined) return;
+  const c = imgCenter(e), s = worldToScreen(c.x, c.y);
+  const A = GUM2.axis, HD = GUM2.head;
+  ctx.save();
+  ctx.lineWidth = 2; ctx.setLineDash([]); ctx.lineCap = 'round';
+  const arrow = (col, tx, ty, ax, ay) => { // ax,ay = 화살촉 방향 단위벡터(화면)
+    ctx.strokeStyle = ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(tx + ax * HD, ty + ay * HD);
+    ctx.lineTo(tx - ay * HD * 0.42, ty + ax * HD * 0.42);
+    ctx.lineTo(tx + ay * HD * 0.42, ty - ax * HD * 0.42);
+    ctx.closePath(); ctx.fill();
+  };
+  arrow('#ff453a', s.x + A, s.y, 1, 0);   // +X (빨강)
+  arrow('#30d158', s.x, s.y - A, 0, -1);  // +Y (초록)
+  // 축 배율 사각
+  ctx.fillStyle = '#ff453a'; ctx.fillRect(s.x + GUM2.scale - 3.5, s.y - 3.5, 7, 7);
+  ctx.fillStyle = '#30d158'; ctx.fillRect(s.x - 3.5, s.y - GUM2.scale - 3.5, 7, 7);
+  // 회전 원호(1사분면)
+  ctx.strokeStyle = '#0A84FF';
+  ctx.beginPath(); ctx.arc(s.x, s.y, GUM2.ring, -Math.PI / 2, 0); ctx.stroke();
+  // 중심(자유 이동)
+  ctx.fillStyle = '#0A84FF'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  // 드래그 중 수치 표시
+  if (imgGumDrag) {
+    const g = imgGumDrag;
+    let t = '';
+    if (g.part === 'rot') t = `${(e.rot || 0).toFixed(1)}°`;
+    else if (g.part === 'sx' || g.part === 'sy') t = `${e.w.toFixed(1)} × ${e.h.toFixed(1)}`;
+    else t = `Δ ${(c.x - g.c0.x).toFixed(1)}, ${(c.y - g.c0.y).toFixed(1)}`;
+    ctx.font = '600 12px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillStyle = 'rgba(0,0,0,.65)';
+    const tw = ctx.measureText(t).width;
+    ctx.fillRect(s.x + 12, s.y - 30, tw + 10, 18);
+    ctx.fillStyle = '#fff'; ctx.fillText(t, s.x + 17, s.y - 14);
+  }
+  ctx.restore();
 }
 
 function commitDraft() {
@@ -7314,7 +7481,7 @@ function renderProps() {
     ARC: [['cx', '중심X'], ['cy', '중심Y'], ['r', '반지름'], ['startAngle', '시작각'], ['endAngle', '끝각']],
     TEXT: [['x', 'X'], ['y', 'Y'], ['height', '높이'], ['rotation', '회전']],
     HATCH: [['spacing', '간격']],
-    IMAGE: [['x', 'X'], ['y', 'Y'], ['w', '폭'], ['h', '높이']],
+    IMAGE: [['x', 'X'], ['y', 'Y'], ['w', '폭'], ['h', '높이'], ['rot', '회전(°)']],
   };
   if (geomRows[e.type]) for (const [k, lab] of geomRows[e.type])
     rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-k="${k}" value="${e[k]}"></div>`;
@@ -7326,6 +7493,20 @@ function renderProps() {
   if (e.type === 'HATCH')
     rows += `<div class="row"><label>패턴</label><select id="pHatch">${Object.keys(HATCH_PATTERNS).map(k =>
       `<option value="${k}" ${e.pattern === k ? 'selected' : ''}>${HATCH_PATTERNS[k].ko}</option>`).join('')}</select></div>`;
+  // 이미지 표시 효과 — 투명도(0%=불투명) · 채도 · 명도 (100% = 원본)
+  if (e.type === 'IMAGE') {
+    const sl = (k, lab, v, max) => `<div class="row"><label>${lab}</label>
+      <input type="range" data-ks="${k}" min="0" max="${max}" step="0.01" value="${v}" style="flex:1;min-width:0;">
+      <span class="ksv" data-for="${k}" style="width:42px;text-align:right;font-variant-numeric:tabular-nums;">${Math.round(v * 100)}%</span></div>`;
+    rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">표시</label><span style="font-size:11px;opacity:.7;">100% = 원본</span></div>`;
+    rows += sl('tr', '투명도', 1 - (e.op != null ? e.op : 1), 1);
+    rows += sl('sat', '채도', e.sat != null ? e.sat : 1, 2);
+    rows += sl('bri', '명도', e.bri != null ? e.bri : 1, 2);
+    rows += `<div style="display:flex;gap:6px;margin-top:6px;">
+      <button class="miniBtn" id="pImgFlip">좌우 반전</button>
+      <button class="miniBtn" id="pImgFit">원본 비율</button>
+      <button class="miniBtn" id="pImgReset">효과 초기화</button></div>`;
+  } else
   rows += `<div class="row"><label>색상</label><input type="color" id="pColor" value="${rgbHex(entityColor(e))}">
     <button class="miniBtn" id="pColClear">레이어색</button></div>`;
   // BIM 속성
@@ -7377,8 +7558,32 @@ function renderProps() {
   const pHatch = document.getElementById('pHatch');
   if (pHatch) pHatch.addEventListener('change', () => { pushUndo(); e.pattern = pHatch.value; hatchDirty(e); draw(); logLine(`  해치 패턴 → ${HATCH_PATTERNS[e.pattern].ko}`, 'info'); });
   document.getElementById('pLayer').addEventListener('change', (ev) => { pushUndo(); e.layer = ev.target.value; propRefresh(); });
-  document.getElementById('pColor').addEventListener('input', (ev) => { pushUndo(); e.color = ev.target.value; propRefresh(); });
-  document.getElementById('pColClear').addEventListener('click', () => { pushUndo(); delete e.color; renderProps(); propRefresh(); });
+  document.getElementById('pColor')?.addEventListener('input', (ev) => { pushUndo(); e.color = ev.target.value; propRefresh(); }); // 이미지엔 색상 행 없음
+  document.getElementById('pColClear')?.addEventListener('click', () => { pushUndo(); delete e.color; renderProps(); propRefresh(); });
+  // 이미지 효과 슬라이더 — 드래그 중엔 draw()만(슬라이더 포커스 유지), 드래그 1회 = undo 1회
+  body.querySelectorAll('input[data-ks]').forEach(inp => {
+    const k = inp.dataset.ks;
+    inp.addEventListener('pointerdown', () => pushUndo());
+    inp.addEventListener('input', () => {
+      const v = parseFloat(inp.value);
+      if (!isFinite(v)) return;
+      if (k === 'tr') e.op = 1 - v; else e[k] = v; // 투명도는 반전(0%=불투명)
+      const lbl = body.querySelector(`.ksv[data-for="${k}"]`);
+      if (lbl) lbl.textContent = Math.round(v * 100) + '%';
+      draw();
+    });
+  });
+  document.getElementById('pImgFlip')?.addEventListener('click', () => { pushUndo(); e.flip = !e.flip; logLine('  ✔ 이미지 좌우 반전', 'ok'); draw(); });
+  document.getElementById('pImgReset')?.addEventListener('click', () => { pushUndo(); e.op = 1; e.sat = 1; e.bri = 1; renderProps(); draw(); logLine('  ✔ 이미지 효과 초기화', 'ok'); });
+  document.getElementById('pImgFit')?.addEventListener('click', () => { // 원본 종횡비 복원 (폭 유지)
+    const im = e._img;
+    if (!im || !im.naturalWidth) { logLine('  이미지 로딩 중입니다. 잠시 후 다시 시도하세요.', 'warn'); return; }
+    pushUndo();
+    const c = imgCenter(e);
+    e.h = e.w * im.naturalHeight / im.naturalWidth;
+    imgSetCenter(e, c.x, c.y);
+    renderProps(); draw(); logLine(`  ✔ 원본 비율 복원 (${im.naturalWidth}×${im.naturalHeight})`, 'ok');
+  });
   document.getElementById('pDel').addEventListener('click', deleteSelection);
 }
 
@@ -7424,7 +7629,7 @@ function zoomFit(robust) {
       case 'CIRCLE': case 'ARC': ext(e.cx - e.r, e.cy - e.r); ext(e.cx + e.r, e.cy + e.r); break;
       case 'TEXT': ext(e.x, e.y); ext(e.x + e.text.length * e.height * .6, e.y + e.height); break;
       case 'HATCH': { const bb = boundaryBBox(e.boundary); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
-      case 'IMAGE': ext(e.x, e.y); ext(e.x + e.w, e.y + e.h); break;
+      case 'IMAGE': for (const p of imgCorners(e)) ext(p.x, p.y); break; // 회전 반영
       case 'INSERT': { const bb = insertBBox(e); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
     }
   }
@@ -7520,11 +7725,15 @@ document.getElementById('imgInput').addEventListener('change', (ev) => {
       const hWorld = wWorld * c.height / c.width;
       const x = state.view.x - wWorld / 2, y = state.view.y - hWorld / 2;
       const lay = ensureLayer('밑그림', '#8a8a94');
-      if (lay.locked === undefined) lay.locked = true; // 기본 잠금 → 위에 바로 트레이싱
+      // 삽입 시 항상 잠금 해제 — 잠긴 레이어에 넣으면 방금 넣은 이미지를 선택·이동·삭제조차 못 한다
+      // (이전 기본값이 잠금이라 "이미지 선택이 안 된다"의 원인이었음). 트레이싱 중 고정이 필요하면
+      // 레이어 창의 🔓 토글로 사용자가 직접 잠그면 되고, 그 상태는 다음 삽입 전까지 유지된다.
+      lay.locked = false;
       pushUndo();
-      addEntity({ type: 'IMAGE', layer: '밑그림', x, y, w: wWorld, h: hWorld, src });
-      logLine(`  ✔ 밑그림 삽입 (${c.width}×${c.height}) — '밑그림' 레이어 🔒 잠금 상태`, 'ok');
-      renderLayers(); updateStat(); draw();
+      const ent = addEntity({ type: 'IMAGE', layer: '밑그림', x, y, w: wWorld, h: hWorld, src, rot: 0, op: 1, sat: 1, bri: 1 });
+      if (ent) { state.selection.clear(); state.selection.add(ent.id); setTool('select'); } // 삽입 직후 선택 → 검볼 바로 사용
+      logLine(`  ✔ 이미지 삽입 (${c.width}×${c.height}) — 클릭 선택 · 검볼로 이동/회전 · 특성창에서 투명도·채도·명도, Del=삭제`, 'ok');
+      renderLayers(); updateStat(); renderProps(); draw();
     };
     img.src = reader.result;
   };
@@ -9094,7 +9303,9 @@ function applyDoc(d) {
   state.layers = (d.layers && d.layers.length) ? d.layers : [{ name: '0', color: '#ffffff', visible: true }];
   if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
   state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
-  state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
+  // nextId는 반드시 기존 최대 id보다 커야 한다. 저장본의 nextId가 뒤처져 있으면(옛 파일·손상된 세션)
+  // 새로 만든 도형이 기존 도형과 같은 id를 갖게 되어 선택·삭제·검볼이 엉뚱한 객체를 잡는다.
+  state.nextId = Math.max(d.nextId || 1, state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
   state.views = d.views || {};
   state.levels = (d.levels && d.levels.length) ? d.levels : [{ name: '1F', elev: 0 }];
@@ -9212,7 +9423,9 @@ function restoreLocal(d) {
   state.layers = (d.layers && d.layers.length) ? d.layers : [{ name: '0', color: '#ffffff', visible: true }];
   if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
   state.currentLayer = d.currentLayer && getLayer(d.currentLayer) ? d.currentLayer : '0';
-  state.nextId = d.nextId || (state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
+  // nextId는 반드시 기존 최대 id보다 커야 한다. 저장본의 nextId가 뒤처져 있으면(옛 파일·손상된 세션)
+  // 새로 만든 도형이 기존 도형과 같은 id를 갖게 되어 선택·삭제·검볼이 엉뚱한 객체를 잡는다.
+  state.nextId = Math.max(d.nextId || 1, state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
   if (d.view) state.view = d.view;
   setFileName(d.fileName || null, d.fileLoc === 'pc' ? null : (d.fileLoc || null)); // 핸들은 복원 불가 → 'pc' 표시는 내림
@@ -9272,6 +9485,11 @@ window.__CADTEST__ = {
   footprintCentroid, runBoolean, boolFinish,
   get v3(){ return (typeof v3!=='undefined') ? v3 : null; }, get extrudePend(){ return extrudePend; }, get lastExtrudeCap(){ return lastExtrudeCap; },
   get boolPending(){return boolPending;}, zTri, zRasterFaces,
+  // 이미지 + 평면 검볼
+  imgCenter, imgCorners, imgLocal, imgWorld, imgSetCenter, gumballImage, imgGumHit, drawImgGumball,
+  get imgGumDrag(){ return imgGumDrag; },
+  get mouseScreen(){ return mouseScreen; },
+  draw, worldToScreen, screenToWorld, entityHit, entityGrips, renderProps, pick, applyDoc,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
