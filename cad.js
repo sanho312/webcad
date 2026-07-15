@@ -2998,6 +2998,8 @@ function renderScene(isActive) {
     v3._occ = occ.length >= SHADOW_TRI_CAP ? null : occ;
     if (!v3._occ && !v3._occWarned) { v3._occWarned = 1; logLine(`  ▷ 형상이 많아(삼각형 ${SHADOW_TRI_CAP}+) 그림자는 생략합니다 — 조명은 그대로 동작`, 'warn'); }
   } else v3._occ = null;
+  // 간접광은 가림 형상이 있어야 계산할 수 있다 (광선을 쏘아 맞는 면을 찾으므로). 조작 중엔 생략.
+  v3._bounce = (v3.lighting && !v3._fast && v3._occ) ? bounceLights() : null;
   if (v3.lighting) {
     const sg = litCacheSig();
     if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; v3._litBudget = 1200; } // 형상·광원이 바뀔 때만 재계산 + 예산 리셋
@@ -5920,6 +5922,7 @@ function lightSources() {
         far2: (rng * 6) * (rng * 6),       // 이보다 멀면 기여가 환경광 수준 → 계산 생략
         power: b.power != null ? b.power : 1,
         soft: b.soft != null ? Math.max(0, b.soft) : Math.max(hd, 400), // 광원 크기 = 그림자 부드러움(0이면 하드 섀도우)
+        bounce: b.bounce != null ? Math.max(0, b.bounce) : 0.5,          // 간접광(반사) 세기, 0=끔
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
     }
@@ -5989,6 +5992,79 @@ function shadowed(ox, oy, oz, lx, ly, lz) {
   }
   return false;
 }
+// ---------- 간접광 (1회 반사) ----------
+// 1차 광원에서 사방으로 광선을 쏘아 '처음 맞는 면'을 찾고, 그 지점을 2차 광원으로 세운다
+// (instant radiosity / VPL). 그러면 그림자 안이나 천장처럼 직접 빛이 닿지 않는 곳도
+// 바닥·벽에 튕긴 빛으로 은은하게 밝아진다.
+// 2차 광원은 그림자 검사를 하지 않는다 — 광원 수만큼 광선이 곱해져 감당이 안 되고,
+// 반사광은 원래 부드러워서 그림자를 생략해도 크게 티가 나지 않는다(표준적인 근사).
+// 주: 이 렌더러는 면 색에 '스칼라 밝기' 하나만 곱하므로 색번짐(빨간 벽 → 붉은 바닥)은 표현 못 한다.
+//     밝기 기반 간접광만 구현한다.
+const BOUNCE_DIRS = (() => { // 피보나치 구면 분포 — 고정·결정적 (난수는 캐시·프레임 안정성을 깬다)
+  const d = [], N = 32;
+  for (let i = 0; i < N; i++) {
+    const z = 1 - 2 * (i + 0.5) / N, r = Math.sqrt(Math.max(0, 1 - z * z));
+    const th = Math.PI * (1 + Math.sqrt(5)) * i;
+    d.push([r * Math.cos(th), r * Math.sin(th), z]);
+  }
+  return d;
+})();
+const BOUNCE_CAP = 96; // 2차 광원 상한 (면마다 순회하므로 상한이 곧 성능)
+// 광선이 처음 맞는 면 — {t, nx, ny, nz}
+function rayHit(ox, oy, oz, dx, dy, dz, maxT) {
+  const O = v3._occ; if (!O || !O.length) return null;
+  let bt = maxT, bn = null;
+  for (const o of O) {
+    const T = o.v;
+    const e1x = T[1][0] - T[0][0], e1y = T[1][1] - T[0][1], e1z = T[1][2] - T[0][2];
+    const e2x = T[2][0] - T[0][0], e2y = T[2][1] - T[0][1], e2z = T[2][2] - T[0][2];
+    const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+    const det = e1x * px + e1y * py + e1z * pz;
+    if (det > -1e-9 && det < 1e-9) continue;
+    const inv = 1 / det;
+    const tx = ox - T[0][0], ty = oy - T[0][1], tz = oz - T[0][2];
+    const u = (tx * px + ty * py + tz * pz) * inv;
+    if (u < 0 || u > 1) continue;
+    const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+    const vv = (dx * qx + dy * qy + dz * qz) * inv;
+    if (vv < 0 || u + vv > 1) continue;
+    const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+    if (t > 1 && t < bt) {
+      bt = t;
+      let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      bn = [nx / nl, ny / nl, nz / nl];
+    }
+  }
+  return bn ? { t: bt, nx: bn[0], ny: bn[1], nz: bn[2] } : null;
+}
+function bounceLights() {
+  const out = [];
+  if (!v3._occ || !v3._lights || !v3._lights.length) return out;
+  for (const g of v3._lights) {
+    const str = g.bounce != null ? g.bounce : 0.5;
+    if (str <= 0) continue;
+    for (const D of BOUNCE_DIRS) {
+      const h = rayHit(g.x, g.y, g.z, D[0], D[1], D[2], g.range * 2);
+      if (!h) continue;
+      let cos = -(D[0] * h.nx + D[1] * h.ny + D[2] * h.nz);
+      if (cos < 0) cos = -cos; // 면의 앞뒤는 신뢰하지 않는다 (메시 winding 문제)
+      if (cos < 0.05) continue; // 스치듯 맞은 면은 기여가 거의 없다
+      const k = h.t / g.range, atten = 1 / (1 + k * k);
+      // 광원이 내뿜는 빛을 방향 수만큼 나눠 갖는다. 나누지 않으면 2차 광원 하나하나가 원본만큼 세서
+      // 다 더했을 때 그림자 안이 직접광만큼 밝아진다(실측: 그림자 0.16 → 1.066, 그림자로 안 보임).
+      const p = g.power * atten * cos * str * (8 / BOUNCE_DIRS.length);
+      if (p < 0.004) continue; // 너무 약한 2차 광원은 버린다 (상한을 아껴 쓰기)
+      const rng = Math.max(500, g.range * 0.5); // 반사광은 멀리 못 간다
+      out.push({
+        x: g.x + D[0] * h.t + h.nx * 20, y: g.y + D[1] * h.t + h.ny * 20, z: g.z + D[2] * h.t + h.nz * 20,
+        nx: h.nx, ny: h.ny, nz: h.nz, range: rng, far2: (rng * 4) * (rng * 4), power: p,
+      });
+      if (out.length >= BOUNCE_CAP) return out;
+    }
+  }
+  return out;
+}
 // ---------- 부드러운 그림자 (펜엄브라) ----------
 // 램프를 '점'이 아니라 넓이가 있는 광원(반지름 soft/2의 원반)으로 보고 여러 점을 샘플한다.
 // 보이는 샘플 비율 = 그 광원이 이 면을 비추는 정도 → 경계에 반그림자가 생긴다.
@@ -6043,6 +6119,21 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
     const k = d / g.range;
     s += dot * g.power * 1.35 / (1 + k * k) * vis; // 바로 아래에서도 상한(1.5)에 붙지 않게 — 빛 웅덩이의 계조를 살림
   }
+  // 간접광(2차 광원) — 그림자 검사 없이 코사인·감쇠만. 그림자 안·천장이 반사광으로 은은히 밝아진다.
+  const B = v3._bounce;
+  if (B) for (const g of B) {
+    const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > g.far2) continue;
+    const d = Math.sqrt(d2) || 1;
+    let dot = (dx * nx + dy * ny + dz * nz) / d;
+    if (twoSided) dot = Math.abs(dot);
+    if (dot <= 0) continue;
+    // 2차 광원은 자기가 붙은 면의 바깥쪽으로만 빛을 뿌린다 (벽 뒤로 새지 않게)
+    if ((-dx * g.nx - dy * g.ny - dz * g.nz) / d <= 0) continue;
+    const k = d / g.range;
+    s += dot * g.power * 1.35 / (1 + k * k);
+  }
   return Math.max(0.05, Math.min(1.5, s));
 }
 // 조명 보기 전용: 넓은 상/하면을 잘게 나눠 빛의 계조가 '면 위에' 나타나게 한다.
@@ -6054,7 +6145,8 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
 // 캐시 키가 바뀌는 경우(형상·광원 변경)에만 재계산 → 반복 렌더가 사실상 공짜가 된다.
 function litCacheSig() {
   let h = '';
-  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft};`;
+  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft},${g.bounce};`;
+  h += 'B' + ((v3._bounce || []).length) + ';'; // 2차 광원이 바뀌면 캐시 무효
   h += '#';
   for (const s of (v3.solids || [])) { // 형상이 바뀌면(이동·높이·개수) 키가 바뀐다
     h += s.eid + ',' + Math.round(s.z0) + ',' + Math.round(s.z1) + ',' + s.poly.length + ',';
@@ -8179,7 +8271,7 @@ function renderProps() {
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
     stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
     railing: [['h', '난간 높이'], ['spacing', '기둥 간격'], ['t', '손스침 두께'], ['postT', '기둥 두께'], ['base', '하단(base)']],
-    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['range', '빛 도달거리'], ['power', '밝기(1=기본)'], ['soft', '그림자 부드러움(광원 크기, 0=선명)'], ['base', '하단(base)']],
+    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['range', '빛 도달거리'], ['power', '밝기(1=기본)'], ['soft', '그림자 부드러움(광원 크기, 0=선명)'], ['bounce', '간접광 세기(0=끔)'], ['base', '하단(base)']],
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   if (e.bim) {
@@ -8741,7 +8833,7 @@ const CMD_HELP = [
     ['booleanintersection', '교집합(라이노 BooleanIntersection · bi)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
-    ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘(부드러운 그림자 포함) — 다시 입력하면 OFF. 밝기·도달거리·그림자 부드러움은 특성창에서 조절'],
+    ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘(부드러운 그림자 + 간접광 포함) — 다시 입력하면 OFF. 밝기·도달거리·그림자 부드러움·간접광 세기는 특성창에서 조절'],
     ['light', '조명 지정', '선/곡선/원 선택 후 → 높이·간격. 기둥+램프 헤드를 균등 배치(볼라드~1000, 가로등~4000). 표면 위 곡선이면 지형에 맞춰 섬. 배치되는 기구이며 3D 음영을 바꾸는 광원은 아님'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
@@ -10257,7 +10349,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, visFraction, pathStations, renderScene, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, pathStations, renderScene, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,

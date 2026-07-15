@@ -886,6 +886,45 @@ function tests(){
       V3._occ = null; V3._lights = null; V3.lighting = false;
     }
 
+    // ── 간접광 (1회 반사) ──
+    // 방 + 가운데 조명 + 가림벽 → 그림자 안이 바닥·벽에 튕긴 빛으로 밝아져야 (단, 직접광보다는 어둡게)
+    setEnts([
+      { type:'LWPOLYLINE', closed:true, points:[[-8000,-5000],[8000,-5000],[8000,5000],[-8000,5000]], layer:'0', bim:{kind:'slab', t:100, top:0} },
+      { type:'LWPOLYLINE', closed:true, points:[[-8000,-5000],[8000,-5000],[8000,5000],[-8000,5000]], layer:'0', bim:{kind:'wall', h:3000, t:200, base:0} },
+      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', bim:{kind:'light', h:2800, spacing:99999, postT:100, headD:300, base:0, range:8000, power:1.2, soft:400} },
+      { type:'LINE', x1:2000, y1:-4000, x2:2000, y2:4000, layer:'0', bim:{kind:'wall', h:2000, t:200, base:0} },
+    ]);
+    if (V3) {
+      V3.lighting = true; V3._fast = false;
+      V3.solids = C.bimSolids();
+      V3._lights = C.lightSources();
+      V3._occ = C.shadowOccluders();
+      const at = x => C.litFace(x, 0, 0, 0, 0, 1, false);
+
+      V3._bounce = null; // 간접광 없이
+      const offShadow = at(4000), lit = at(1000);
+      eq(offShadow, 0.16, '간접광 없으면 그림자 안은 환경광으로 균일');
+
+      for (const g of V3._lights) g.bounce = 0.5;
+      V3._bounce = C.bounceLights();
+      ok(V3._bounce.length > 0, '2차 광원(반사광)이 생성됨');
+      ok(V3._bounce.length <= 96, '  2차 광원 수에 상한이 있다 (성능)');
+      const onShadow = at(4000);
+      ok(onShadow > offShadow, '그림자 안이 반사광으로 밝아짐 (균일하지 않게 됨)');
+      ok(onShadow < lit * 0.5, '  그래도 직접광의 절반 이하 — 여전히 그림자로 보인다');
+      ok(at(4000) > at(6000), '  반사광도 거리에 따라 감쇠');
+      // 세기 조절
+      for (const g of V3._lights) g.bounce = 1.5;
+      V3._bounce = C.bounceLights();
+      ok(at(4000) > onShadow, '간접광 세기를 올리면 더 밝아짐');
+      // 끄기
+      for (const g of V3._lights) g.bounce = 0;
+      V3._bounce = C.bounceLights();
+      eqi(V3._bounce.length, 0, 'bounce=0이면 간접광 끔 (2차 광원 없음)');
+      eq(at(4000), 0.16, '  끄면 그림자 안이 다시 균일');
+      V3._bounce = null; V3._occ = null; V3._lights = null; V3.lighting = false;
+    }
+
     if (V3) V3.lighting = !!wasOn;
     reset();
   }
