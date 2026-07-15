@@ -493,6 +493,39 @@ function tests(){
     reset();
   }
 
+  // ---------- 이미지 DXF 보존 ----------
+  group('이미지 — DXF 저장/불러오기 보존 (999 WCX)');
+  {
+    const SRC = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    setEnts([
+      { type:'IMAGE', layer:'밑그림', x:-10, y:-20, w:100, h:60, src:SRC, rot:33, op:0.6, sat:1.4, bri:0.8, flip:true },
+      { type:'LINE', x1:0, y1:0, x2:100, y2:0, layer:'0' },
+    ]);
+    S0.layers = [{name:'0',color:'#ffffff',visible:true},{name:'밑그림',color:'#8a8a94',visible:true}];
+    const dxf = C.buildDXFText();
+    ok(dxf.includes('999'), 'DXF에 999 WCX 블록 존재');
+    ok(!/^\s*0\s*\nIMAGE\s*$/m.test(dxf), '표준 DXF 엔티티로는 IMAGE를 쓰지 않음 (외부 파일 참조 방식이라 라이노에서 깨짐)');
+
+    C.loadDXF(dxf, 'rt.dxf');
+    const im = S0.entities.find(e => e.type === 'IMAGE');
+    ok(!!im, '왕복 후 이미지가 살아남음 (예전엔 저장하면 사라졌음)');
+    if (im) {
+      eq(im.x, -10, '  x 보존'); eq(im.y, -20, '  y 보존');
+      eq(im.w, 100, '  폭 보존'); eq(im.h, 60, '  높이 보존');
+      eq(im.rot, 33, '  회전 보존');
+      eq(im.op, 0.6, '  투명도 보존'); eq(im.sat, 1.4, '  채도 보존'); eq(im.bri, 0.8, '  명도 보존');
+      ok(im.flip === true, '  좌우반전 보존');
+      eqi(im.src, SRC, '  이미지 데이터 무손실');
+      eqi(im.layer, '밑그림', '  레이어 보존');
+    }
+    ok(S0.entities.some(e => e.type === 'LINE'), '일반 도형도 함께 보존(공존)');
+    // id 충돌 없이 복원되어야 (선택·삭제가 엉뚱한 객체를 잡는 것 방지)
+    const ids = S0.entities.map(e => e.id);
+    eqi(new Set(ids).size, ids.length, '복원된 이미지 id가 기존 도형과 겹치지 않음');
+    ok(S0.nextId > Math.max(...ids), 'nextId가 최대 id보다 큼');
+    reset();
+  }
+
   // ---------- id 충돌 방지 ----------
   group('applyDoc — nextId는 항상 최대 id보다 커야 함 (선택·삭제 오작동 방지)');
   {

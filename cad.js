@@ -6293,7 +6293,9 @@ function exportHatchExpand(ents) {
 function exportEntities(keepInserts) {
   const out = [];
   const emit = (e) => {
-    if (e.type === 'IMAGE') return; // 밑그림은 내보내기 제외
+    // 이미지는 표준 DXF 엔티티로 내보내지 않는다(IMAGE 엔티티는 외부 파일 경로 참조 방식이라
+    // 같이 배포할 파일이 없음). 대신 정의 전체를 999 WCX 블록에 담아 WebCAD에서 복원한다.
+    if (e.type === 'IMAGE') return;
     if (e.type === 'INSERT') { if (keepInserts) out.push(e); else for (const c of insertChildren(e)) emit(c); return; }
     if (e.type !== 'HATCH') { out.push(e); return; }
     const hs = e.pattern === 'solid' ? { segs: [], dots: [] } : hatchSegments(e);
@@ -8342,9 +8344,20 @@ function buildDXFText() {
 
   // WebCAD 확장(999 주석)은 파일 선두에 — 주석의 표준 위치(다른 CAD는 건너뜀)
   {
-    const wcx = { v: 1, ext: [], mesh: [] };
+    const wcx = { v: 1, ext: [], mesh: [], img: [] };
     for (const e of state.entities) {
       if (e.type === 'MESH') { wcx.mesh.push((e.tris || []).length); continue; }
+      // 이미지: 표준 DXF IMAGE 엔티티는 외부 파일 경로를 참조하는 방식이라 브라우저에서 같이 배포할
+      // 파일이 없다. 그래서 정의 전체(데이터 URL 포함)를 WCX에 담는다 — 다른 CAD는 999 주석을
+      // 건너뛰므로 호환성에 영향이 없고, WebCAD에서 열면 효과까지 그대로 복원된다.
+      if (e.type === 'IMAGE') {
+        wcx.img.push({
+          layer: e.layer, lv: e.lv || 0, x: e.x, y: e.y, w: e.w, h: e.h,
+          rot: e.rot || 0, op: e.op != null ? e.op : 1, sat: e.sat != null ? e.sat : 1,
+          bri: e.bri != null ? e.bri : 1, flip: e.flip ? 1 : 0, src: e.src,
+        });
+        continue;
+      }
       const sig = entSig(e); if (!sig) continue;
       const x = {};
       if (e.bim) x.bim = e.bim;
@@ -8354,7 +8367,7 @@ function buildDXFText() {
       if (e.z2 != null) x.z2 = e.z2;
       if (Object.keys(x).length) wcx.ext.push([sig, x]);
     }
-    if (wcx.ext.length || wcx.mesh.length) {
+    if (wcx.ext.length || wcx.mesh.length || wcx.img.length) {
       const js = JSON.stringify(wcx);
       for (let i = 0; i < js.length; i += 200) g(999, 'WCX' + js.slice(i, i + 200));
     }
@@ -8566,6 +8579,10 @@ function showShareResult(url, copied) {
 
 async function saveDXF() {
   const text = buildDXFText();
+  { // 이미지는 파일에 통째로 embed된다 — 용량이 갑자기 커지는 이유를 알 수 있게 알려준다
+    const nImg = state.entities.filter(e => e.type === 'IMAGE').length;
+    if (nImg) logLine(`  이미지 ${nImg}개 포함 → 파일 ${(text.length / 1024 / 1024).toFixed(1)}MB (이미지가 파일 안에 저장됨 · 라이노 등 다른 CAD에서는 표시되지 않음)`, 'info');
+  }
   // 1) 실제 파일 핸들이 있으면 그 파일에 조용히 덮어쓰기 (CAD의 저장과 동일)
   if (fileHandle) {
     try {
@@ -8911,10 +8928,13 @@ function loadDXF(text) {
     const result = parseDXFEntities(pairs);
     pushUndo();
     state.entities = result.entities;
-    try { applyWcxExt(text); } catch (e2) { console.warn('WCX 확장 복원 실패(무시):', e2); } // 999 확장: 3DFACE→MESH, BIM·z 재결합
     state.layers = result.layers.length ? result.layers : [{ name: '0', color: '#ffffff', visible: true }];
     if (!getLayer('0')) state.layers.unshift({ name: '0', color: '#ffffff', visible: true });
     state.currentLayer = '0';
+    // 999 확장 복원: 3DFACE→MESH, BIM·z 재결합, 이미지 복원.
+    // 레이어 확정 이후에 호출해야 한다 — 이미지 복원이 레이어를 참조/추가하는데,
+    // 앞서 호출하면 바로 아래 state.layers 대입에 덮여 사라진다.
+    try { applyWcxExt(text); } catch (e2) { console.warn('WCX 확장 복원 실패(무시):', e2); }
     state.blocks = result.blocks || {}; insertName = null;
     state.nextId = state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1;
     state.selection.clear();
@@ -8966,6 +8986,22 @@ function applyWcxExt(text) {
       if (x.zo != null) e.zo = x.zo;
       if (x.z1 != null) e.z1 = x.z1;
       if (x.z2 != null) e.z2 = x.z2;
+    }
+  }
+  // 3) 이미지 복원 — DXF 엔티티가 아니라 WCX에만 있으므로 정의로부터 새로 만든다.
+  //    (id는 여기서 직접 부여: loadDXF가 nextId를 max(id)+1로 계산하므로 겹치면 안 된다)
+  if (data && Array.isArray(data.img) && data.img.length) {
+    let maxId = state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0);
+    for (const im of data.img) {
+      if (!im || !im.src) continue;
+      state.entities.push({
+        id: ++maxId, type: 'IMAGE', layer: im.layer || '밑그림', lv: im.lv || 0,
+        x: +im.x || 0, y: +im.y || 0, w: +im.w || 1, h: +im.h || 1, src: im.src,
+        rot: +im.rot || 0, op: im.op != null ? +im.op : 1,
+        sat: im.sat != null ? +im.sat : 1, bri: im.bri != null ? +im.bri : 1,
+        flip: !!im.flip,
+      });
+      if (!getLayer(im.layer || '밑그림')) state.layers.push({ name: im.layer || '밑그림', color: '#8a8a94', visible: true });
     }
   }
 }
