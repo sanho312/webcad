@@ -925,6 +925,41 @@ function tests(){
       V3._bounce = null; V3._occ = null; V3._lights = null; V3.lighting = false;
     }
 
+    // ── 색번짐 (컬러 블리딩) ──
+    // 회색 바닥 + 색 있는 벽 → 반사광이 벽 색을 옮겨와 바닥이 그 색으로 물든다.
+    const bleed = (wallColor, bounce) => {
+      setEnts([
+        { type:'LWPOLYLINE', closed:true, points:[[-6000,-4000],[6000,-4000],[6000,4000],[-6000,4000]], layer:'0', color:'#9a9a9a', bim:{kind:'slab', t:100, top:0} },
+        { type:'LINE', x1:-3000, y1:0, x2:-3000, y2:1, layer:'0', bim:{kind:'light', h:2500, spacing:99999, postT:80, headD:250, base:0, range:9000, power:1.2, soft:300, bounce} },
+        { type:'LINE', x1:2000, y1:-4000, x2:2000, y2:4000, layer:'0', color:wallColor, bim:{kind:'wall', h:2500, t:200, base:0} },
+      ]);
+      V3.lighting = true; V3._fast = false;
+      V3.solids = C.bimSolids();
+      V3._lights = C.lightSources();
+      V3._occ = C.shadowOccluders();
+      V3._bounce = C.bounceLights();
+      C.litFace(1700, 0, 0, 0, 0, 1, false);
+      return [C.LIT_RGB[0], C.LIT_RGB[1], C.LIT_RGB[2], C.LIT_RGB[3]];
+    };
+    if (V3) {
+      const off = bleed('#ff2020', 0);
+      eqi(off[3], 0, '간접광이 꺼져 있으면 색조 없음 (채널별 밝기 미사용 = 기존 렌더 경로)');
+      const red = bleed('#ff2020', 0.8);
+      eqi(red[3], 1, '빨간 벽 + 간접광 → 색조 발생');
+      ok(red[0] > red[1] && red[0] > red[2], '  회색 바닥의 R 채널이 G·B보다 밝다 (붉게 물듦)');
+      const grn = bleed('#20ff20', 0.8);
+      ok(grn[1] > grn[0] && grn[1] > grn[2], '초록 벽 → 바닥의 G 채널이 가장 밝다');
+      const gry = bleed('#9a9a9a', 0.8);
+      eqi(gry[3], 0, '회색 벽 → 색조 없음 (채널이 고르면 스칼라 경로로)');
+      // 실제 칠해질 색
+      const c = C.shadeColor3('#9a9a9a', red);
+      ok(c[0] > c[1] && c[0] > c[2], '실제 칠해지는 색도 붉은 회색이 된다');
+      // shadeColor3 자체
+      const t = C.shadeColor3('#808080', [1, 0.5, 0.5]);
+      eqi(t[0], 128, 'shadeColor3: R 채널 그대로'); eqi(t[1], 64, '  G 채널 절반'); eqi(t[2], 64, '  B 채널 절반');
+      V3._bounce = null; V3._occ = null; V3._lights = null; V3.lighting = false;
+    }
+
     if (V3) V3.lighting = !!wasOn;
     reset();
   }
