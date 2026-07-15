@@ -855,6 +855,37 @@ function tests(){
       V3._occ = null; V3._lights = null; V3.lighting = false;
     }
 
+    // ── 부드러운 그림자(펜엄브라) ──
+    // 램프를 넓이가 있는 광원으로 보고 여러 점을 샘플 → 보이는 비율이 곧 빛의 세기.
+    setEnts([
+      { type:'LWPOLYLINE', closed:true, points:[[-12000,-6000],[12000,-6000],[12000,6000],[-12000,6000]], layer:'0', bim:{kind:'slab', t:100, top:0} },
+      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', bim:{kind:'light', h:3000, spacing:99999, postT:100, headD:300, base:0, range:20000, power:1.2} },
+      { type:'LINE', x1:2000, y1:-5000, x2:2000, y2:5000, layer:'0', bim:{kind:'wall', h:1500, t:200, base:0} },
+    ]);
+    if (V3) {
+      V3.lighting = true; V3._fast = false;
+      V3.solids = C.bimSolids();
+      V3._lights = C.lightSources();
+      V3._occ = C.shadowOccluders();
+      const scan = sv => {
+        for (const g of V3._lights) g.soft = sv;
+        const r = [];
+        for (let x = 3200; x <= 4800; x += 100) r.push(C.litFace(x, 0, 0, 0, 0, 1, false));
+        return r;
+      };
+      const midCount = a => a.filter(v => v > 0.25 && v < 1.3).length; // 반그림자(중간 밝기) 개수
+      const hard = scan(0), soft = scan(800), softer = scan(2000);
+      eqi(midCount(hard), 0, '하드(soft=0): 그림자 경계가 계단 — 중간 밝기 없음');
+      ok(midCount(soft) > 0, '부드러운 그림자(soft=800): 경계에 반그림자(중간 밝기) 생김');
+      ok(midCount(softer) >= midCount(soft), '광원이 클수록(soft=2000) 반그림자가 더 넓다');
+      ok(hard.some(v => v < 0.2) && hard.some(v => v > 1.2), '  하드도 그림자/빛 양쪽은 그대로');
+      // 광원 크기 0 = 점광원 → visFraction이 0 또는 1만 반환
+      for (const g of V3._lights) g.soft = 0;
+      const vf = C.visFraction(1000, 0, 0, V3._lights[0], V3._lights[0].x - 1000, V3._lights[0].y, V3._lights[0].z, Math.hypot(1000, V3._lights[0].z));
+      ok(vf === 0 || vf === 1, 'soft=0이면 가림 판정이 0/1 (점광원)');
+      V3._occ = null; V3._lights = null; V3.lighting = false;
+    }
+
     if (V3) V3.lighting = !!wasOn;
     reset();
   }

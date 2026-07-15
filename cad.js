@@ -2998,7 +2998,10 @@ function renderScene(isActive) {
     v3._occ = occ.length >= SHADOW_TRI_CAP ? null : occ;
     if (!v3._occ && !v3._occWarned) { v3._occWarned = 1; logLine(`  ▷ 형상이 많아(삼각형 ${SHADOW_TRI_CAP}+) 그림자는 생략합니다 — 조명은 그대로 동작`, 'warn'); }
   } else v3._occ = null;
-  if (v3.lighting) { const sg = litCacheSig(); if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; } }
+  if (v3.lighting) {
+    const sg = litCacheSig();
+    if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; v3._litBudget = 1200; } // 형상·광원이 바뀔 때만 재계산 + 예산 리셋
+  }
   else { v3._litCache = null; v3._litSig = null; }
   // 바닥 그리드 (z=0, 모델 주변)
   const g = Math.pow(10, Math.round(Math.log10(v3.fit / 8)));
@@ -5916,6 +5919,7 @@ function lightSources() {
         range: rng,                        // 밝기가 절반이 되는 거리
         far2: (rng * 6) * (rng * 6),       // 이보다 멀면 기여가 환경광 수준 → 계산 생략
         power: b.power != null ? b.power : 1,
+        soft: b.soft != null ? Math.max(0, b.soft) : Math.max(hd, 400), // 광원 크기 = 그림자 부드러움(0이면 하드 섀도우)
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
     }
@@ -5985,6 +5989,37 @@ function shadowed(ox, oy, oz, lx, ly, lz) {
   }
   return false;
 }
+// ---------- 부드러운 그림자 (펜엄브라) ----------
+// 램프를 '점'이 아니라 넓이가 있는 광원(반지름 soft/2의 원반)으로 보고 여러 점을 샘플한다.
+// 보이는 샘플 비율 = 그 광원이 이 면을 비추는 정도 → 경계에 반그림자가 생긴다.
+// 원반은 '면을 향하는 방향'에 수직으로 놓는다(구형 광원의 투영 = 원반).
+// 샘플 위치는 고정 패턴 — 난수를 쓰면 프레임마다 흔들리고 캐시도 못 쓴다.
+const SOFT_DISC = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
+function visFraction(ox, oy, oz, g, dx, dy, dz, d) {
+  const r = g.soft / 2;
+  if (r < 1) return shadowed(ox, oy, oz, g.x, g.y, g.z) ? 0 : 1; // 크기 0 = 점광원(하드 섀도우)
+  // 면→광원 방향(단위)에 수직인 정규직교 축 u, v — 원반 광원의 평면
+  const nx = dx / d, ny = dy / d, nz = dz / d;
+  // 보조축은 방향과 평행하지 않게 고른다 (평행하면 외적이 0이 되어 축을 못 만든다)
+  const ax = Math.abs(nz) < 0.9 ? 0 : 1, ay = 0, az = Math.abs(nz) < 0.9 ? 1 : 0;
+  let ux = ny * az - nz * ay, uy = nz * ax - nx * az, uz = nx * ay - ny * ax;
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  const vx = ny * uz - nz * uy, vy = nz * ux - nx * uz, vz = nx * uy - ny * ux; // 이미 단위
+  const at = i => {
+    const s = SOFT_DISC[i];
+    return shadowed(ox, oy, oz, g.x + (ux * s[0] + vx * s[1]) * r, g.y + (uy * s[0] + vy * s[1]) * r, g.z + (uz * s[0] + vz * s[1]) * r) ? 0 : 1;
+  };
+  // 원반 양 끝 두 점이 같은 결과면 그 사이도 같다고 보고 확정 — 대부분의 면은 완전히 밝거나 완전히 그늘.
+  // (두 점 사이만 가로막는 아주 얇은 형상은 놓칠 수 있다 — 반그림자 폭 대비 실익이 큰 근사)
+  // 원반의 네 끝(±u, ±v)이 모두 같으면 그 사이도 같다고 보고 확정 — 대부분의 면은 완전히 밝거나 완전히 그늘.
+  // ±u 두 점만 보면 안 된다: u가 가림 형상과 나란하면(예: Y축 벽 + Y축 u) 두 점이 같은 값이라
+  // 반그림자를 통째로 놓친다(테스트로 실제로 잡힘). 네 방향을 봐야 어느 방향의 경계든 걸린다.
+  const a = at(1);
+  if (at(2) === a && at(3) === a && at(4) === a) return a;
+  let vis = 0;
+  for (let i = 0; i < SOFT_DISC.length; i++) vis += at(i);
+  return vis / SOFT_DISC.length;
+}
 // 면 하나의 밝기 — 월드 위치·법선 기준, 거리 제곱 감쇠 + 그림자.
 // twoSided: 메시는 삼각형 winding을 신뢰할 수 없어 양면 모두 빛을 받게 한다(기존 메시 셰이딩도 abs를 씀).
 function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
@@ -5999,10 +6034,14 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
     let dot = (dx * nx + dy * ny + dz * nz) / d;
     if (twoSided) dot = Math.abs(dot);
     if (dot <= 0) continue; // 광원을 등진 면 — 광선 검사도 생략
-    // 자기 면에 다시 맞는 것(그림자 여드름)을 피하려고 법선 방향으로 살짝 띄워 쏜다
-    if (v3._occ && shadowed(wx + nx * 2, wy + ny * 2, wz + nz * 2, g.x, g.y, g.z)) continue;
+    let vis = 1;
+    if (v3._occ) {
+      // 자기 면에 다시 맞는 것(그림자 여드름)을 피하려고 법선 방향으로 살짝 띄워 쏜다
+      vis = visFraction(wx + nx * 2, wy + ny * 2, wz + nz * 2, g, dx, dy, dz, d);
+      if (vis <= 0) continue; // 완전히 그늘
+    }
     const k = d / g.range;
-    s += dot * g.power * 1.35 / (1 + k * k); // 바로 아래에서도 상한(1.5)에 붙지 않게 — 빛 웅덩이의 계조를 살림
+    s += dot * g.power * 1.35 / (1 + k * k) * vis; // 바로 아래에서도 상한(1.5)에 붙지 않게 — 빛 웅덩이의 계조를 살림
   }
   return Math.max(0.05, Math.min(1.5, s));
 }
@@ -6015,7 +6054,7 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
 // 캐시 키가 바뀌는 경우(형상·광원 변경)에만 재계산 → 반복 렌더가 사실상 공짜가 된다.
 function litCacheSig() {
   let h = '';
-  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power};`;
+  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft};`;
   h += '#';
   for (const s of (v3.solids || [])) { // 형상이 바뀌면(이동·높이·개수) 키가 바뀐다
     h += s.eid + ',' + Math.round(s.z0) + ',' + Math.round(s.z1) + ',' + s.poly.length + ',';
@@ -6037,16 +6076,52 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey) {
   const frags = [];
   // 분할 세밀도는 빛의 감쇠 규모에 맞춘다 — 도달거리가 짧으면 더 곱게, 길면 성기게.
   const rng = Math.min(...(v3._lights || [{ range: 6000 }]).map(g => g.range));
-  const MAX_EDGE = Math.max(800, Math.min(3000, rng / 3)), MAX_DEPTH = 12;
+  const MAX_EDGE = Math.max(800, Math.min(3000, rng / 3)), MIN_EDGE = 250, MAX_DEPTH = 14;
+  // 그림자 경계 세분에는 '전역 예산'을 둔다. 그림자 경계는 계단 함수라 아무리 잘게 나눠도
+  // 꼭짓점 밝기 차이가 줄지 않는다 → 예산이 없으면 모든 경계에서 최소 크기까지 무한정 쪼갠다.
+  // (실측: 예산 없이 벽 20장 장면에서 조각 13,721개 · soft=0일 때 12.6초)
+  // 예산을 다 쓰면 경계 세분만 멈춘다 — 기하 분할과 조명·그림자 자체는 그대로 동작.
   const d3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+  const softOn = !!(v3._occ && (v3._lights || []).some(g => g.soft > 0)); // 반그림자가 존재하는 경우에만 경계 세분
+  // 경계 탐지는 '싸구려 판정'으로 한다: 광원마다 중심 광선 1개로 가림 여부만 보고 비트마스크를 만든다.
+  // 여기서 전체 밝기(litFace: 광원 × 4~9 샘플)를 부르면 후보 삼각형마다 그 비용이 곱해져 감당이 안 된다
+  // (실측: 전체 밝기로 판정 → 30초 타임아웃). 마스크가 다르면 = 그 사이에 그림자 경계가 있다는 뜻.
+  // 꼭짓점은 이웃 삼각형과 공유되므로 좌표로 메모이즈.
+  const mCache = new Map();
+  const maskAt = p => {
+    const k = (p[0] | 0) + ',' + (p[1] | 0) + ',' + (p[2] | 0);
+    let m = mCache.get(k);
+    if (m !== undefined) return m;
+    m = 0;
+    const L = v3._lights || [];
+    for (let i = 0; i < L.length && i < 30; i++) {
+      const g = L[i];
+      const dx = g.x - p[0], dy = g.y - p[1], dz = g.z - p[2];
+      if (dx * dx + dy * dy + dz * dz > g.far2) continue;
+      if (dx * 0 + dy * 0 + dz * nz <= 0) continue; // 등진 면 (상/하면이라 법선은 (0,0,nz))
+      if (!shadowed(p[0], p[1], p[2] + nz * 2, g.x, g.y, g.z)) m |= (1 << i);
+    }
+    mCache.set(k, m);
+    return m;
+  };
   const emit = (a, b, c, depth) => {
     // '가장 긴 변만' 이등분한다. 네 갈래로 쪼개면 모든 변이 같이 반토막 나서,
     // 벽 윗면 같은 길고 얇은 띠(16m × 0.2m)가 256조각으로 폭발한다(실측: 조각 10,770개 → 913ms).
     // 긴 변만 나누면 필요한 방향으로만 잘려 조각 수가 형상 비율에 맞게 유지된다.
     const dab = d3(a, b), dbc = d3(b, c), dca = d3(c, a);
     const m = Math.max(dab, dbc, dca);
-    if (depth < MAX_DEPTH && m > MAX_EDGE) {
+    let split = depth < MAX_DEPTH && m > MAX_EDGE;
+    // 그림자 경계에서만 추가로 잘게 나눈다. 이게 없으면 반그림자(수백 mm)가 조각(수 m)보다 작아
+    // 화면에 아예 나타나지 않는다(실측: 0.16 → 0.62로 건너뜀 = 중간 밝기 소실).
+    // 반그림자가 있을 때만(soft>0) 경계를 더 잘게 나눈다.
+    // 하드 섀도우(soft=0)는 경계가 계단이라 아무리 나눠도 값이 수렴하지 않고 비용만 폭증한다
+    // (실측: 하드에서 경계 세분을 켜면 12.6초 → 끄면 0.15초. 게다가 나눠도 보이는 게 달라지지 않음).
+    if (softOn && !split && depth < MAX_DEPTH && m > MIN_EDGE && v3._litBudget > 0) {
+      const ma = maskAt(a);
+      if (maskAt(b) !== ma || maskAt(c) !== ma) { split = true; v3._litBudget--; } // 꼭짓점 간 가림 상태가 다름 = 경계
+    }
+    if (split) {
       if (m === dab) { const x = mid(a, b); emit(a, x, c, depth + 1); emit(x, b, c, depth + 1); }
       else if (m === dbc) { const x = mid(b, c); emit(a, b, x, depth + 1); emit(a, x, c, depth + 1); }
       else { const x = mid(c, a); emit(a, b, x, depth + 1); emit(x, b, c, depth + 1); }
@@ -8104,7 +8179,7 @@ function renderProps() {
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
     stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
     railing: [['h', '난간 높이'], ['spacing', '기둥 간격'], ['t', '손스침 두께'], ['postT', '기둥 두께'], ['base', '하단(base)']],
-    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['range', '빛 도달거리'], ['power', '밝기(1=기본)'], ['base', '하단(base)']],
+    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['range', '빛 도달거리'], ['power', '밝기(1=기본)'], ['soft', '그림자 부드러움(광원 크기, 0=선명)'], ['base', '하단(base)']],
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   if (e.bim) {
@@ -8666,7 +8741,7 @@ const CMD_HELP = [
     ['booleanintersection', '교집합(라이노 BooleanIntersection · bi)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
-    ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘 — 다시 입력하면 OFF. 밝기·도달거리는 특성창에서 조절'],
+    ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘(부드러운 그림자 포함) — 다시 입력하면 OFF. 밝기·도달거리·그림자 부드러움은 특성창에서 조절'],
     ['light', '조명 지정', '선/곡선/원 선택 후 → 높이·간격. 기둥+램프 헤드를 균등 배치(볼라드~1000, 가로등~4000). 표면 위 곡선이면 지형에 맞춰 섬. 배치되는 기구이며 3D 음영을 바꾸는 광원은 아님'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
@@ -10182,7 +10257,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, pathStations, renderScene, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, visFraction, pathStations, renderScene, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
