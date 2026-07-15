@@ -735,6 +735,63 @@ function tests(){
     reset();
   }
 
+  // ---------- 곡선 위 조명 ----------
+  group('light — 곡선/표면 위 곡선을 따라 조명 기구(기둥 + 램프 헤드)');
+  {
+    const heads = sol => sol.filter(s => s.glow);
+    const posts = sol => sol.filter(s => !s.glow);
+
+    // 직선 경로 볼라드
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:9000, y2:0, layer:'0',
+               bim:{kind:'light', h:1000, spacing:3000, postT:80, headD:200, base:0} }]);
+    let sol = C.lightSolids(S0.entities[0]);
+    eqi(heads(sol).length, 4, '직선 9000 / 간격 3000 → 조명 4개 (양 끝 포함)');
+    eqi(posts(sol).length, 4, '  기구마다 기둥 1개');
+    eq(posts(sol)[0].z0, 0, '  기둥 발밑 = base');
+    eq(posts(sol)[0].z1, 800, '  기둥 머리 = h - headD');
+    eq(heads(sol)[0].z0, 800, '  램프 헤드가 기둥 위에 얹힘');
+    eq(heads(sol)[0].z1, 1000, '  헤드 꼭대기 = h');
+    ok(heads(sol).every(h => h.glow === true), '  헤드에 glow 플래그 (음영 없이 밝게)');
+
+    // 표면 위 곡선 — 지형에 발을 붙이고 기구 높이는 균일
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[3000,0],[6000,0]], zs:[0,900,2100], layer:'0',
+               bim:{kind:'light', h:1000, spacing:2000, postT:80, headD:200, base:0} }]);
+    sol = C.lightSolids(S0.entities[0]);
+    const P = posts(sol), H = heads(sol);
+    ok(P.length > 2, '곡선 조명 생성');
+    ok(P.some(p => p.z0 > 0), '  기둥 발밑이 지형을 따라 올라감');
+    ok(H.every((h, i) => Math.abs((h.z1 - P[i].z0) - 1000) < 1e-6), '  기구 높이는 어디서나 1000 균일');
+
+    // 가로등 높이
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:12000, y2:0, layer:'0',
+               bim:{kind:'light', h:4000, spacing:6000, postT:80, headD:200, base:0} }]);
+    sol = C.lightSolids(S0.entities[0]);
+    eqi(heads(sol).length, 3, '가로등 12000 / 간격 6000 → 3개');
+    eq(heads(sol)[0].z1, 4000, '  헤드가 4000 높이에');
+
+    // 원형 경로
+    setEnts([{ type:'CIRCLE', cx:0, cy:0, r:3000, layer:'0',
+               bim:{kind:'light', h:1000, spacing:3000, postT:80, headD:200, base:0} }]);
+    sol = C.lightSolids(S0.entities[0]);
+    eqi(heads(sol).length, 6, '원형(둘레 18850) / 간격 3000 → 6개');
+
+    // 3D 반영 + 발광 면은 음영 없이 (shade=1)
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:100, y2:0, layer:'0',
+               bim:{kind:'light', h:2000, spacing:9000, postT:200, headD:600, base:0} }]);
+    ok(C.bimSolids().filter(s => s.eid === 1).length > 0, '조명이 bimSolids(3D)에 포함됨');
+
+    // 명령어
+    eqi(C.CMD_ALIASES['light'], 'light', "'light' 명령 등록");
+    eqi(C.CMD_ALIASES['조명'], 'light', "  한글 별칭 '조명'");
+    eqi(C.CMD_ALIASES['가로등'], 'light', "  별칭 '가로등'");
+    ok(!!C.INSTANT_CMDS['light'], '  light가 실행 가능한 명령');
+
+    // pathStations — 난간·조명 공용 배치 로직
+    const pp = C.railingPath({ type:'LINE', x1:0, y1:0, x2:1000, y2:0, bim:{ base:0 } });
+    eqi(C.pathStations(pp, 250).length, 5, 'pathStations: 1000을 250 간격 → 5지점(양 끝 포함)');
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {

@@ -59,7 +59,7 @@ let settings = {
   osnapModes: { endpoint: true, midpoint: true, center: true, quad: true, perp: true, nearest: true, intersection: true, tangent: true, surface: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
-  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180, railH: 1100, railSpacing: 1200 }, // BIM 기본값(mm)
+  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180, railH: 1100, railSpacing: 1200, lightH: 1000, lightSpacing: 3000 }, // BIM 기본값(mm)
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
@@ -2439,6 +2439,27 @@ function drawBimOverlay(e) {
         if (isPost) ctx.fill(); else ctx.stroke();
       }
     }
+  } else if (k === 'light') {
+    // 평면: 경로(점선) + 조명 위치마다 ⊕ 심볼 (조명 기호 관례)
+    const P = railingPath(e);
+    if (P) {
+      const b = e.bim, rr = Math.max(3, (b.headD || 200) * sc / 2);
+      ctx.strokeStyle = entityColor(e); ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.35; ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      P.V.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+      if (P.closed) ctx.closePath();
+      ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = 0.9;
+      for (const st of pathStations(P, Math.max(200, b.spacing || 3000))) {
+        const q = worldToScreen(st.x, st.y);
+        ctx.beginPath(); ctx.arc(q.x, q.y, rr, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); // ⊕ 십자
+        ctx.moveTo(q.x - rr, q.y); ctx.lineTo(q.x + rr, q.y);
+        ctx.moveTo(q.x, q.y - rr); ctx.lineTo(q.x, q.y + rr);
+        ctx.stroke();
+      }
+    }
   } else if (k === 'column') {
     ctx.globalAlpha = 0.22; ctx.fillStyle = entityColor(e);
     ctx.beginPath();
@@ -2491,6 +2512,8 @@ function bimSolids() {
       for (const s of stairSolids(e)) { s.eid = e.id; s.color = bimSolidColor(e, s.color); solids.push(s); }
     } else if (e.bim.kind === 'railing') {
       for (const s of railingSolids(e)) solids.push(s); // 손스침 + 동자기둥
+    } else if (e.bim.kind === 'light') {
+      for (const s of lightSolids(e)) solids.push(s); // 조명 기구(기둥 + 램프 헤드)
     } else if (e.bim.kind === 'column') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
       solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: bimSolidColor(e, '#8fa3c8'), eid: e.id });
@@ -3028,13 +3051,13 @@ function renderScene(isActive) {
       if ((mx - ccx) * onx + (my - ccy) * ony < 0) { onx = -onx; ony = -ony; } // 중심 반대쪽 = 바깥
       if (cull && !facesCam(mx, my, midz, onx, ony, 0)) continue; // 안쪽 면(카메라 반대) 제외
       const lightA = Math.abs(onx * 0.8 + ony * 0.35);
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: s.glow ? 1 : 0.55 + 0.45 * lightA, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1))   // 상면 (위 향함)
       faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' });
     if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1))  // 하면 (아래 향함)
-      faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' });
+      faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: s.glow ? 1 : 0.5, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' });
   }
   // 가져온/불리언 3D 메시 — 삼각형별 법선 셰이딩. 내부 삼각분할선은 감추고 '진짜 모서리'만 표시
   for (const e of state.entities) {
@@ -5755,7 +5778,7 @@ function stairSolids(e) {
 // ---------- 난간 (railing) ----------
 // 경로(직선·곡선·원)를 따라 [상단 손스침] + [일정 간격 동자기둥]을 세운다.
 // 경로가 표면 위 곡선(zs)이나 3D 선(z1/z2)이면 바닥이 그 높이를 따라간다 — 벽과 같은 규약.
-// 경로 정점 + 바닥 높이 (닫힌 경로도 지원 — 발코니 난간)
+// 경로 정점 + 바닥 높이 (닫힌 경로도 지원) — 난간·조명 등 '경로를 따라 세우는' 요소 공용
 function railingPath(e) {
   const b = e.bim; if (!b) return null;
   let V, closed;
@@ -5773,6 +5796,34 @@ function railingPath(e) {
   for (let k = 0; k < nE; k++) { const k2 = (k + 1) % n; const L = Math.hypot(V[k2][0] - V[k][0], V[k2][1] - V[k][1]); segLen.push(L); total += L; }
   if (total < 1e-6) return null;
   return { V, n, nE, closed, zAt, segLen, total, onSrf: !!pz };
+}
+// 경로를 따라 일정 간격의 '설치 지점' 산출 — 난간 동자기둥·조명 기둥 공용.
+// 양 끝을 포함해 균등 배치(닫힌 경로는 끝=시작이라 하나 생략). 지점마다 바닥 높이와 진행방향을 준다.
+function pathStations(P, spacing) {
+  const { V, n, nE, closed, zAt, segLen, total } = P;
+  const cnt = Math.max(1, Math.round(total / Math.max(1, spacing)));
+  const out = [];
+  for (let i = 0; i <= cnt; i++) {
+    if (closed && i === cnt) break;
+    const d = total * i / cnt;
+    let acc = 0, k = 0;
+    while (k < nE - 1 && acc + segLen[k] < d) { acc += segLen[k]; k++; }
+    const k2 = (k + 1) % n, L = segLen[k] || 1;
+    const u = Math.max(0, Math.min(1, (d - acc) / L));
+    out.push({
+      x: V[k][0] + (V[k2][0] - V[k][0]) * u,
+      y: V[k][1] + (V[k2][1] - V[k][1]) * u,
+      z: zAt(k) + (zAt(k2) - zAt(k)) * u,   // 지형을 따라간 바닥 높이
+      ux: (V[k2][0] - V[k][0]) / L, uy: (V[k2][1] - V[k][1]) / L,
+    });
+  }
+  return out;
+}
+// 설치 지점에 진행방향으로 정렬된 정사각 단면
+function stationQuad(st, size) {
+  const ax = st.ux * size / 2, ay = st.uy * size / 2, bx = -st.uy * size / 2, by = st.ux * size / 2;
+  return [[st.x - ax - bx, st.y - ay - by], [st.x + ax - bx, st.y + ay - by],
+          [st.x + ax + bx, st.y + ay + by], [st.x - ax + bx, st.y - ay + by]];
 }
 function railingSolids(e) {
   const P = railingPath(e); if (!P) return [];
@@ -5796,25 +5847,45 @@ function railingSolids(e) {
       color: col, eid: e.id,
     });
   }
-  // 2) 동자기둥 — 호 길이 sp 간격으로 균등 배치 (양 끝 포함, 닫힌 경로는 끝=시작이라 하나 생략)
-  const cnt = Math.max(1, Math.round(total / sp));
-  for (let i = 0; i <= cnt; i++) {
-    if (closed && i === cnt) break;
-    const d = total * i / cnt;
-    let acc = 0, k = 0;
-    while (k < nE - 1 && acc + segLen[k] < d) { acc += segLen[k]; k++; }
-    const k2 = (k + 1) % n, L = segLen[k] || 1;
-    const u = Math.max(0, Math.min(1, (d - acc) / L));
-    const x = V[k][0] + (V[k2][0] - V[k][0]) * u, y = V[k][1] + (V[k2][1] - V[k][1]) * u;
-    const z = zAt(k) + (zAt(k2) - zAt(k)) * u;
-    const ux = (V[k2][0] - V[k][0]) / L, uy = (V[k2][1] - V[k][1]) / L; // 기둥을 진행방향에 맞춰 세움
-    const ax = ux * pt / 2, ay = uy * pt / 2, bx = -uy * pt / 2, by = ux * pt / 2;
-    out.push({
-      poly: [[x - ax - bx, y - ay - by], [x + ax - bx, y + ay - by], [x + ax + bx, y + ay + by], [x - ax + bx, y - ay + by]],
-      z0: z, z1: z + h - t, color: col, eid: e.id,
-    });
+  // 2) 동자기둥 — 호 길이 sp 간격으로 균등 배치. 발밑은 지형 높이, 머리는 손스침 바로 아래.
+  for (const st of pathStations(P, sp))
+    out.push({ poly: stationQuad(st, pt), z0: st.z, z1: st.z + h - t, color: col, eid: e.id });
+  return out;
+}
+
+// ---------- 조명 (light) ----------
+// 경로를 따라 일정 간격으로 조명 기구(기둥 + 램프 헤드)를 세운다.
+// 볼라드(낮은 기둥등)든 가로등이든 높이만 바꾸면 된다. 경로에 높이가 있으면 지형을 따라 선다.
+// 주의: 3D 뷰의 셰이딩을 바꾸는 '광원'이 아니라 배치되는 '기구'다 (렌더러에는 광원 개념이 없음).
+// 램프 헤드는 glow 플래그로 음영 없이 밝게 그려 조명처럼 보이게 한다.
+function lightSolids(e) {
+  const P = railingPath(e); if (!P) return [];
+  const b = e.bim;
+  const h = b.h || 1000, sp = Math.max(200, b.spacing || 3000);
+  const pt = b.postT || 80, hd = b.headD || 200;
+  const col = bimSolidColor(e, '#8a8f98');
+  const out = [];
+  for (const st of pathStations(P, sp)) {
+    const headZ0 = st.z + Math.max(0, h - hd);
+    out.push({ poly: stationQuad(st, pt), z0: st.z, z1: headZ0, color: col, eid: e.id });          // 기둥
+    out.push({ poly: stationQuad(st, hd), z0: headZ0, z1: st.z + h, color: '#ffe9a8', eid: e.id, glow: true }); // 램프 헤드(발광)
   }
   return out;
+}
+function cmdLightTag() {
+  const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
+  if (!sel.length) { logLine('  조명: 선/곡선/원(조명이 설 경로)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const h = bimAskNum('조명 높이 (mm) — 볼라드 ~1000, 가로등 ~4000:', settings.bim.lightH || 1000); if (h == null) return;
+  const sp = bimAskNum('조명 간격 (mm):', settings.bim.lightSpacing || 3000); if (sp == null) return;
+  settings.bim.lightH = h; settings.bim.lightSpacing = sp; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'light', h, spacing: sp, postT: 80, headD: 200, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
+  const onSrf = sel.filter(e => wallBaseZs(e)).length;
+  let cnt = 0; for (const e of sel) cnt += lightSolids(e).length / 2;
+  logLine(`  ✔ 조명 지정 ${sel.length}개 — 기구 ${Math.round(cnt)}개 (높이 ${h}, 간격 ${sp})`
+    + (onSrf ? ` · ${onSrf}개는 곡선 높이를 따라 지형에 섬` : '')
+    + ' — 배치되는 조명 기구입니다(3D 음영을 바꾸는 광원은 아님)', 'ok');
+  renderProps(); draw(); boolRefresh();
 }
 function cmdRailingTag() {
   const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
@@ -6687,6 +6758,7 @@ const INSTANT_CMDS = {
   column: cmdColumnTag,
   stair: cmdStairTag,
   railing: cmdRailingTag,
+  light: cmdLightTag,
   extrudecrv: cmdExtrudeCrv,
   extrudesrf: cmdExtrudeSrf,
   box: cmdBox,
@@ -7048,6 +7120,7 @@ const TOOL_KO = {
   align: '정렬(ALIGN)', xline: '무한 구성선(XLINE)', breakpt: '점에서 끊기(BREAKPT)',
   door: '문(DOOR)', window: '창(WINDOW)', section: '단면(SECTION)', elevation: '입면(ELEVATION)',
   railing: '난간(RAILING)',
+  light: '조명(LIGHT)',
 };
 
 const CMD_ALIASES = {
@@ -7100,6 +7173,7 @@ const CMD_ALIASES = {
   roof: 'roof',
   stair: 'stair', '계단': 'stair',
   railing: 'railing', handrail: 'railing', 난간: 'railing', 손스침: 'railing',
+  light: 'light', lamp: 'light', 조명: 'light', 가로등: 'light', bollard: 'light',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv', extrude: 'extrudecrv', ext: 'extrudecrv', 돌출: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
 
@@ -7828,10 +7902,11 @@ function renderProps() {
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
     stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
     railing: [['h', '난간 높이'], ['spacing', '기둥 간격'], ['t', '손스침 두께'], ['postT', '기둥 두께'], ['base', '하단(base)']],
+    light: [['h', '조명 높이'], ['spacing', '조명 간격'], ['postT', '기둥 두께'], ['headD', '램프 크기'], ['base', '하단(base)']],
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   if (e.bim) {
-    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
+    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', light: '조명', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
     rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">BIM</label><span style="font-weight:590;">${kindKo}</span></div>`;
     for (const [k, lab] of (BIM_FIELDS[e.bim.kind] || []))
       rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-bk="${k}" value="${e.bim[k] != null ? e.bim[k] : 0}"></div>`;
@@ -8389,6 +8464,7 @@ const CMD_HELP = [
     ['booleanintersection', '교집합(라이노 BooleanIntersection · bi)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
+    ['light', '조명 지정', '선/곡선/원 선택 후 → 높이·간격. 기둥+램프 헤드를 균등 배치(볼라드~1000, 가로등~4000). 표면 위 곡선이면 지형에 맞춰 섬. 배치되는 기구이며 3D 음영을 바꾸는 광원은 아님'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
@@ -8463,7 +8539,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'light', ko: 'BIM 조명', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -9903,7 +9979,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, pathStations, renderScene, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
