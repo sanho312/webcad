@@ -569,6 +569,55 @@ function tests(){
     reset();
   }
 
+  // ---------- 곡선을 따라 벽 세우기 ----------
+  group('wall — 표면 위 곡선/3D 선을 따라 세우기 (바닥이 지형을 탐)');
+  {
+    // 평면 벽은 예전 그대로 (zb/zt 없이 평평한 프리즘)
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:5000, y2:0, layer:'0', bim:{kind:'wall', h:3000, t:200, base:0} }]);
+    let sol = C.bimSolids();
+    eqi(sol.length, 1, '평면 벽 = 밴드 1개');
+    eq(sol[0].z0, 0, '  바닥 0'); eq(sol[0].z1, 3000, '  상단 3000');
+    ok(sol[0].zb === undefined && sol[0].zt === undefined, '  평면 벽엔 정점별 z 없음 (기존 동작 유지)');
+
+    // 표면 위 곡선(zs) 벽 — 바닥이 곡선을 따라가고 높이는 어디서나 동일
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[2000,0],[4000,0]], zs:[0,800,1500], layer:'0',
+               bim:{kind:'wall', h:3000, t:200, base:0} }]);
+    sol = C.bimSolids();
+    eqi(sol.length, 2, '곡선 벽 = 세그먼트마다 밴드');
+    ok(sol.every(s => !!s.zb && !!s.zt), '  모든 밴드에 정점별 바닥·상단');
+    ok(sol.every(s => s.zb.every((b, i) => Math.abs((s.zt[i] - b) - 3000) < 1e-6)), '  벽 높이가 어디서나 3000 (기울어져도 균일)');
+    eq(sol[0].zb[0], 0, '  1구간 시작 바닥 = 곡선 z(0)');
+    eq(sol[0].zb[1], 800, '  1구간 끝 바닥 = 곡선 z(800)');
+    eq(sol[1].zb[1], 1500, '  2구간 끝 바닥 = 곡선 z(1500)');
+    ok(sol.every(s => Math.abs(s.z0 - Math.min(...s.zb)) < 1e-6 && Math.abs(s.z1 - Math.max(...s.zt)) < 1e-6),
+       '  스칼라 z0/z1이 min(zb)/max(zt)로 유효 (fit·검볼·단면 등 나머지 코드 안전)');
+
+    // 3D 선(z1/z2)도 경로로 동작
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:6000, y2:0, z1:0, z2:1200, layer:'0', bim:{kind:'wall', h:3000, t:200, base:0} }]);
+    sol = C.bimSolids();
+    ok(sol[0].zb && Math.abs(sol[0].zb[0] - 0) < 1 && Math.abs(sol[0].zb[1] - 1200) < 1, '3D 선(z1/z2) 벽도 바닥이 기울어짐');
+
+    // 경사 벽 위의 창 — 개구부도 같이 기울고, 씰 높이가 지역 바닥 기준으로 유지
+    setEnts([
+      { type:'LINE', x1:0, y1:0, x2:6000, y2:0, z1:0, z2:1200, layer:'0', bim:{kind:'wall', h:3000, t:200, base:0} },
+      { type:'LINE', x1:2400, y1:0, x2:3600, y2:0, layer:'0', bim:{kind:'opening', ot:'window', h:1200, sill:900} },
+    ]);
+    sol = C.bimSolids();
+    const glass = sol.find(s => s.glass);
+    ok(!!glass, '경사 벽에도 창(유리) 생성');
+    ok(glass && glass.zb[0] !== glass.zb[1], '  유리도 지형을 따라 기울어짐');
+    ok(glass && Math.abs((glass.zt[0] - glass.zb[0]) - 1200) < 1, '  창 높이 1200 유지');
+    ok(sol.every(s => !!s.zb), '  개구부 앞/아래/인방 밴드 전부 기울어짐');
+
+    // bim.base = 지형에서 들어올리는 오프셋으로 계속 동작
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[2000,0]], zs:[0,500], layer:'0',
+               bim:{kind:'wall', h:2000, t:200, base:300} }]);
+    sol = C.bimSolids();
+    eq(sol[0].zb[0], 300, 'base=300 → 곡선 위로 300 들어올림');
+    eq(sol[0].zb[1], 800, '  끝점도 곡선(500)+300');
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {

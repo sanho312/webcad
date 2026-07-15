@@ -2290,7 +2290,8 @@ function cmdWallTag() {
   settings.bim.wallH = h; settings.bim.wallT = t; saveSettings();
   pushUndo();
   for (const e of sel) e.bim = { kind: 'wall', h, t, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
-  logLine(`  ✔ 벽 지정 ${sel.length}개 (높이 ${h}, 두께 ${t}) — 평면에 두께 밴드로 표시`, 'ok');
+  const onSrf = sel.filter(e => wallBaseZs(e)).length; // 표면 위 곡선·3D 선 = 바닥이 지형을 타는 벽
+  logLine(`  ✔ 벽 지정 ${sel.length}개 (높이 ${h}, 두께 ${t}) — 평면에 두께 밴드로 표시` + (onSrf ? ` · ${onSrf}개는 곡선 높이를 따라 세워짐(바닥이 지형을 탐)` : ''), 'ok');
   renderProps(); draw();
 }
 function cmdSlabTag() {
@@ -2473,6 +2474,10 @@ function bimSolids() {
   }
   for (const w of walls) {
     const t = w.bim.t, h = w.bim.h, base = w.bim.base || 0;
+    // 곡선을 따라 세운 벽: 경로가 표면 위 곡선(zs)이거나 3D 선(z1/z2)이면 바닥이 그 높이를 따라간다.
+    // bim.base는 지형으로부터의 '들어올림' 오프셋으로 계속 동작한다(기본 0 = 곡선 위에 그대로 앉음).
+    const wz = wallBaseZs(w);
+    const lift = wz ? (base - lvElev()) : 0;
     const wallCol = bimSolidColor(w, '#cfc7ba'); // 벽 불투명 밴드 색 (레이어/명시 색 반영)
     // 꼭짓점 링 구성: LINE=2점 열린, 폴리라인=점열(닫힘 여부), 원=24각 닫힘
     let V, closedW;
@@ -2510,6 +2515,9 @@ function bimSolids() {
       const x2 = V[k2][0], y2 = V[k2][1];
       const L = Math.hypot(x2 - x1, y2 - y1); if (L < 1e-6) continue;
       const ux = (x2 - x1) / L, uy = (y2 - y1) / L;
+      // 이 구간의 바닥 높이 (곡선을 따라 세운 벽이면 양 끝 정점 z를 세그먼트 안에서 보간)
+      const bz0 = wz ? wz[k] + lift : base, bz1 = wz ? wz[k2] + lift : base;
+      const baseAt = (s) => bz0 + (bz1 - bz0) * (L ? Math.max(0, Math.min(1, s / L)) : 0);
       // 이 세그먼트 위의 개구부(콜리니어) 수집 → 구간 분할
       const cuts = [];
       for (const o of opens) {
@@ -2530,7 +2538,19 @@ function bimSolids() {
         let B1 = [bx + nx, by + ny], B2 = [bx - nx, by - ny];
         if (s0 <= 0.01) { A1 = mitO[k]; A2 = mitI[k]; }            // 세그 시작 = 마이터 코너
         if (s1 >= L - 0.01) { B1 = mitO[k2]; B2 = mitI[k2]; }      // 세그 끝 = 마이터 코너
-        solids.push({ poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id, open: t <= 2 || glass, seg: k });
+        const sol = { poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id, open: t <= 2 || glass, seg: k };
+        if (wz) {
+          // 곡선을 따라 세운 벽: z0/z1을 '이 구간 바닥 기준의 오프셋'으로 재해석해 양 끝에서 기울인다.
+          // (개구부 상·하단 밴드도 같은 오프셋을 유지하므로 창·문이 지형을 따라 같이 기울어짐)
+          const dz0 = z0 - base, dz1 = z1 - base;
+          const bA = baseAt(s0), bB = baseAt(s1);
+          // poly 순서 = [A1(s0), B1(s1), B2(s1), A2(s0)]
+          sol.zb = [bA + dz0, bB + dz0, bB + dz0, bA + dz0];
+          sol.zt = [bA + dz1, bB + dz1, bB + dz1, bA + dz1];
+          sol.z0 = Math.min(...sol.zb); // 스칼라 z0/z1은 항상 유효하게 유지 (fit·검볼·단면 등 나머지 코드용)
+          sol.z1 = Math.max(...sol.zt);
+        }
+        solids.push(sol);
       };
       let cur = 0;
       for (const c of cuts) {
@@ -2545,6 +2565,15 @@ function bimSolids() {
     }
   }
   return solids;
+}
+// 벽 경로의 정점별 바닥 높이 — 표면 위 곡선(zs) / 3D 선(z1,z2)이면 배열, 평면 도형이면 null(예전 동작)
+function wallBaseZs(w) {
+  if (w.type === 'LWPOLYLINE' && polyHasZ(w)) return w.zs;
+  if (w.type === 'LINE' && (w.z1 != null || w.z2 != null)) {
+    const zb = lvElev() + (w.zo || 0);
+    return [w.z1 != null ? w.z1 : zb, w.z2 != null ? w.z2 : zb];
+  }
+  return null;
 }
 function circlePoly(cx, cy, r, n) {
   const p = [];
@@ -2955,11 +2984,14 @@ function renderScene(isActive) {
     if (s.rf && v3.roof === 'hide') continue; // 지붕 숨김 모드
     const n = s.poly.length;
     const zt = s.zt || s.poly.map(() => s.z1);
+    // zb = 정점별 바닥 높이(선택) — 지형·표면 위 곡선을 따라 세운 벽처럼 바닥이 기울어진 솔리드용.
+    // 없으면 예전대로 평평한 s.z0. (s.z0은 항상 min(zb)로 유지되므로 다른 코드는 그대로 동작)
+    const zb = s.zb || s.poly.map(() => s.z0);
     const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
-    const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
+    const bot = s.poly.map((p, i) => proj3D(p[0], p[1], zb[i]));
     const cull = !s.open; // 닫힌 솔리드만 백페이스 컬링 (서피스·유리는 양면 표시)
     let ccx = 0, ccy = 0; for (const p of s.poly) { ccx += p[0]; ccy += p[1]; } ccx /= n; ccy /= n;
-    const midz = (s.z0 + (Math.max(...zt))) / 2;
+    const midz = (Math.min(...zb) + Math.max(...zt)) / 2;
     // 면이 카메라를 향하는가: 법선 방향으로 살짝 이동 시 깊이가 줄면(가까워지면) 정면
     const facesCam = (wx, wy, wz, nx, ny, nz) => proj3D(wx + nx * epsW, wy + ny * epsW, wz + nz * epsW)[2] < proj3D(wx, wy, wz)[2];
     for (let i = 0; i < n; i++) {
@@ -2977,7 +3009,7 @@ function renderScene(isActive) {
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1))   // 상면 (위 향함)
       faces.push({ pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 1.0, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' });
-    if (!cull || facesCam(ccx, ccy, s.z0, 0, 0, -1))  // 하면 (아래 향함)
+    if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1))  // 하면 (아래 향함)
       faces.push({ pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, color: s.color, shade: 0.5, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' });
   }
   // 가져온/불리언 3D 메시 — 삼각형별 법선 셰이딩. 내부 삼각분할선은 감추고 '진짜 모서리'만 표시
@@ -3013,8 +3045,9 @@ function renderScene(isActive) {
       for (const s of v3.solids) {
         if (!v3.srfHi.has(s.eid)) continue;
         const zt = s.zt || s.poly.map(() => s.z1);
+        const zb = s.zb || s.poly.map(() => s.z0);
         const top = s.poly.map((p, i) => proj3D(p[0], p[1], zt[i]));
-        const bot = s.poly.map(p => proj3D(p[0], p[1], s.z0));
+        const bot = s.poly.map((p, i) => proj3D(p[0], p[1], zb[i]));
         // 강조 대상: 원기둥 옆면=클릭 변 사각, 아랫면 모드=아랫면, 기본=윗면
         const hi = (sd && sd.i != null && sd.i < s.poly.length) ? [bot[sd.i], bot[sd.j], top[sd.j], top[sd.i]] : (fb ? bot : top);
         const ref = fb ? top : bot; // 점선 참조 윤곽
@@ -3286,11 +3319,12 @@ function renderScene(isActive) {
   }
   // 3D 벽 그리기 미리보기 (모든 뷰포트에 표시)
   if (v3.wallMode && v3.wallP1) {
-    const ze = cplaneZ(), dpr = devicePixelRatio || 1;
+    const dpr = devicePixelRatio || 1;
+    const ze = v3.wallP1[2] != null ? v3.wallP1[2] : cplaneZ(); // 지형 위 시작점이면 그 높이에 표시
     const a = proj3D(v3.wallP1[0], v3.wallP1[1], ze);
     c.fillStyle = '#ff9f0a'; c.beginPath(); c.arc(a[0], a[1], 4 * dpr, 0, Math.PI * 2); c.fill();
     if (v3.wallCur && (v3.wallCur[0] !== v3.wallP1[0] || v3.wallCur[1] !== v3.wallP1[1])) {
-      const b = proj3D(v3.wallCur[0], v3.wallCur[1], ze);
+      const b = proj3D(v3.wallCur[0], v3.wallCur[1], v3.wallCur[2] != null ? v3.wallCur[2] : ze);
       c.strokeStyle = '#ff9f0a'; c.lineWidth = 2 * dpr; c.setLineDash([6 * dpr, 4 * dpr]);
       c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); c.setLineDash([]);
       c.font = `${11 * dpr}px -apple-system,system-ui,sans-serif`; c.fillStyle = '#ff9f0a';
@@ -3522,7 +3556,7 @@ function bind3D(ov, cv3) {
         const cur = sn ? { x: sn.x, y: sn.y, z: sn.z != null ? sn.z : cplaneZ() }
                        : { x: Math.round(w[0]), y: Math.round(w[1]), z: cplaneZ() };
         v3.toolCur = cur;
-        if (v3.wallMode && v3.wallP1) v3.wallCur = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
+        if (v3.wallMode && v3.wallP1) v3.wallCur = [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10, (sn && sn.z != null) ? sn.z : cplaneZ()];
         mouseWorld = { x: cur.x, y: cur.y };  // 2D 파이프라인의 러버밴드 로직 재사용
         updateDraft();
         const co = document.getElementById('coords');
@@ -3844,7 +3878,7 @@ function snap3D(px, py, w, exclude) {
     const selfPts = [];
     for (const p of pts) selfPts.push([p.x, p.y, cplaneZ()]);
     if (v3 && v3.line3d && v3.line3d.p1) selfPts.push([v3.line3d.p1.x, v3.line3d.p1.y, v3.line3d.p1.z]);
-    if (v3 && v3.wallMode && v3.wallP1) selfPts.push([v3.wallP1[0], v3.wallP1[1], cplaneZ()]);
+    if (v3 && v3.wallMode && v3.wallP1) selfPts.push([v3.wallP1[0], v3.wallP1[1], v3.wallP1[2] != null ? v3.wallP1[2] : cplaneZ()]);
     for (const sp of selfPts) {
       const s = proj3D(sp[0], sp[1], sp[2]);
       const d = Math.hypot(s[0] - px, s[1] - py);
@@ -3972,7 +4006,7 @@ function snap3D(px, py, w, exclude) {
   let base3 = null;
   if (typeof pts !== 'undefined' && pts.length) { const lp = pts[pts.length - 1]; base3 = [lp.x, lp.y, cplaneZ()]; }
   if (v3 && v3.line3d && v3.line3d.p1) base3 = [v3.line3d.p1.x, v3.line3d.p1.y, v3.line3d.p1.z];
-  if (v3 && v3.wallMode && v3.wallP1) base3 = [v3.wallP1[0], v3.wallP1[1], cplaneZ()];
+  if (v3 && v3.wallMode && v3.wallP1) base3 = [v3.wallP1[0], v3.wallP1[1], v3.wallP1[2] != null ? v3.wallP1[2] : cplaneZ()];
   if (!best && base3) {
     let pt3 = null, ptD = 12 * dpr3s;
     for (const e of snapEnts) {
@@ -4108,16 +4142,25 @@ function wall3DClick(e) {
   const w = unproj3D(px, py, cplaneZ());
   if (!w) return;
   const sn = snap3D(px, py, null);
-  if (sn && sn.z != null && Math.abs(sn.z - cplaneZ()) > 0.5) { // 스냅점 높이로 작업면 이동 (벽 base 반영)
+  // 표면 스냅은 작업면을 옮기지 않는다 — 지형 위에 벽을 그릴 때 클릭마다 작업면이 튀면 안 되고,
+  // 높이는 아래에서 정점별(z1/z2)로 저장되므로 옮길 이유도 없다.
+  if (sn && sn.z != null && sn.kind !== 'surface' && Math.abs(sn.z - cplaneZ()) > 0.5) {
     setCplane(sn.z);
     logLine(`  ▷ 작업면을 스냅점 높이 ${Math.round(sn.z)}(으)로 이동 — 벽이 이 높이에서 시작됩니다`, 'info');
   }
-  const pt = sn ? [sn.x, sn.y] : [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10];
+  // [x, y, z] — 배열이라 기존 [0]/[1] 접근은 그대로 동작
+  const pt = sn ? [sn.x, sn.y, sn.z != null ? sn.z : cplaneZ()]
+                : [Math.round(w[0] / 10) * 10, Math.round(w[1] / 10) * 10, cplaneZ()];
   if (!v3.wallP1) { v3.wallP1 = pt; v3.wallCur = pt; render3D(); return; }
   if (Math.hypot(pt[0] - v3.wallP1[0], pt[1] - v3.wallP1[1]) < 10) return; // 같은 점
   pushUndo();
-  const ln = addEntity({ type: 'LINE', x1: v3.wallP1[0], y1: v3.wallP1[1], x2: pt[0], y2: pt[1] });
-  ln.bim = { kind: 'wall', h: settings.bim.wallH, t: settings.bim.wallT, base: cplaneZ() };
+  const p1 = v3.wallP1;
+  const ln = addEntity({ type: 'LINE', x1: p1[0], y1: p1[1], x2: pt[0], y2: pt[1] });
+  // 두 끝 높이가 다르면 정점별 높이로 저장 → 벽 바닥이 지형을 탄다 (bimSolids의 wallBaseZs가 읽음)
+  const za = p1[2] != null ? p1[2] : cplaneZ(), zb2 = pt[2] != null ? pt[2] : cplaneZ();
+  const sloped = Math.abs(za - zb2) > 0.5;
+  if (sloped) { ln.z1 = za; ln.z2 = zb2; delete ln.zo; }
+  ln.bim = { kind: 'wall', h: settings.bim.wallH, t: settings.bim.wallT, base: sloped ? lvElev() : cplaneZ() };
   v3.wallP1 = pt; // 연속 그리기: 끝점이 다음 시작점
   v3.solids = bimSolids();
   logLine(`  ✔ 벽 생성 (${ln.x1},${ln.y1}) → (${ln.x2},${ln.y2}) · 길이 ${Math.round(Math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1))} — 평면에도 동시 반영`, 'ok');
@@ -8176,7 +8219,7 @@ const CMD_HELP = [
     ['uniso', '격리 해제', '모든 레이어 표시 (즉시 실행)'],
   ]},
   { c: 'BIM (2D→3D)', items: [
-    ['wall', '벽 지정', '선/폴리라인 선택 후 실행 → 높이·두께 입력. 평면에 두께 밴드 표시'],
+    ['wall', '벽 지정', '선/폴리라인 선택 후 실행 → 높이·두께 입력. 표면 위 곡선을 고르면 벽 바닥이 그 지형을 그대로 탐(높이는 균일 유지)'],
     ['slab', '슬래브 지정', '닫힌 폴리라인/원 선택 후 → 두께 입력 (바닥판)'],
     ['column', '기둥 지정', '원/닫힌 폴리라인 선택 후 → 높이 입력'],
     ['door', '문 배치', '벽 선을 클릭한 위치에 문 개구부 생성 (폭 입력)'],
