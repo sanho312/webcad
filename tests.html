@@ -829,6 +829,32 @@ function tests(){
     setEnts([{ type:'LINE', x1:0, y1:0, x2:1000, y2:0, layer:'0' }]);
     eqi(C.lightSources().length, 0, '조명 기구가 없으면 광원 없음');
 
+    // ── 그림자 ──
+    // 바닥 + 조명(x=0) + 벽(x=2000) → 벽 뒤는 그림자, 벽을 지우면 밝아져야 (대조군)
+    setEnts([
+      { type:'LWPOLYLINE', closed:true, points:[[-12000,-6000],[12000,-6000],[12000,6000],[-12000,6000]], layer:'0', bim:{kind:'slab', t:100, top:0} },
+      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', bim:{kind:'light', h:3000, spacing:99999, postT:100, headD:300, base:0, range:8000, power:1.2} },
+      { type:'LINE', x1:2000, y1:-4000, x2:2000, y2:4000, layer:'0', bim:{kind:'wall', h:2500, t:200, base:0} },
+    ]);
+    if (V3) {
+      V3.lighting = true; V3._fast = false;
+      V3.solids = C.bimSolids();
+      V3._lights = C.lightSources();
+      V3._occ = C.shadowOccluders();
+      ok(V3._occ.length > 0, '가림 형상(벽·바닥) 수집됨');
+      const at = x => C.litFace(x, 0, 0, 0, 0, 1, false);
+      ok(at(1000) > 0.8, '조명과 벽 사이(벽 앞) 바닥은 밝다');
+      ok(at(4000) < 0.3, '벽 뒤 바닥은 그림자 (환경광만)');
+      ok(at(7000) < 0.3, '  더 멀리도 그림자 안');
+      ok(at(1000) - at(4000) > 0.5, '  그림자 경계가 뚜렷');
+      // 대조군: 벽을 지우면 같은 자리가 밝아져야 = 그림자의 원인이 벽임을 증명
+      S0.entities = S0.entities.filter(e => !(e.bim && e.bim.kind === 'wall'));
+      V3.solids = C.bimSolids();
+      V3._occ = C.shadowOccluders();
+      ok(C.litFace(4000, 0, 0, 0, 0, 1, false) > 0.8, '벽을 지우면 같은 자리가 밝아짐 (그림자의 원인 = 벽)');
+      V3._occ = null; V3._lights = null; V3.lighting = false;
+    }
+
     if (V3) V3.lighting = !!wasOn;
     reset();
   }

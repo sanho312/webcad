@@ -2857,7 +2857,15 @@ function paintFaces(c, faces, light) {
 }
 // 조작 중 렌더 코얼레싱 — 프레임당 최대 1회만 render3D (과도한 렌더로 인한 렉 방지)
 function markInteract() {
-  if (!v3 || v3._rafPending) return;
+  if (!v3) return;
+  // 조명 보기에서 그림자는 비싸다(면×광원×가림형상). 궤도·드래그 중엔 생략해 부드럽게,
+  // 멈추면 잠시 뒤 그림자까지 넣어 다시 그린다 — '조작 중 빠른 렌더 / 멈추면 정확 렌더'.
+  if (v3.lighting) {
+    v3._fast = true;
+    clearTimeout(v3._settleT);
+    v3._settleT = setTimeout(() => { v3._fast = false; render3D(); }, 180);
+  }
+  if (v3._rafPending) return;
   v3._rafPending = true;
   requestAnimationFrame(() => { v3._rafPending = false; render3D(); });
 }
@@ -2984,6 +2992,14 @@ function renderScene(isActive) {
   const c = v3.ctx;
   const faces = [];
   v3._lights = v3.lighting ? lightSources() : null; // 프레임당 1회 광원 수집 (조명 보기 OFF면 null → 예전 셰이딩)
+  // 그림자용 가림 형상도 프레임당 1회. 삼각형이 상한을 넘으면 그림자만 생략(조명은 유지) — 느려지는 것보다 낫다.
+  if (v3.lighting && !v3._fast && v3._lights && v3._lights.length) {
+    const occ = shadowOccluders();
+    v3._occ = occ.length >= SHADOW_TRI_CAP ? null : occ;
+    if (!v3._occ && !v3._occWarned) { v3._occWarned = 1; logLine(`  ▷ 형상이 많아(삼각형 ${SHADOW_TRI_CAP}+) 그림자는 생략합니다 — 조명은 그대로 동작`, 'warn'); }
+  } else v3._occ = null;
+  if (v3.lighting) { const sg = litCacheSig(); if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; } }
+  else { v3._litCache = null; v3._litSig = null; }
   // 바닥 그리드 (z=0, 모델 주변)
   const g = Math.pow(10, Math.round(Math.log10(v3.fit / 8)));
   const gx0 = Math.floor((v3.cx - v3.fit) / g) * g, gx1 = v3.cx + v3.fit, gy0 = Math.floor((v3.cy - v3.fit) / g) * g, gy1 = v3.cy + v3.fit;
@@ -3058,12 +3074,12 @@ function renderScene(isActive) {
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1)) {  // 상면 (위 향함)
       const mTop = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' };
-      if (v3.lighting && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop); // 넓은 면에도 빛 웅덩이가 보이게
+      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop, s.eid + '|t|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z1)); // 넓은 면에도 빛 웅덩이가 보이게 (조작 중엔 생략)
       else faces.push({ ...mTop, pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 1.0 });
     }
     if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1)) { // 하면 (아래 향함)
       const mBot = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' };
-      if (v3.lighting && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot);
+      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot, s.eid + '|b|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z0));
       else faces.push({ ...mBot, pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 0.5 });
     }
   }
@@ -5894,9 +5910,11 @@ function lightSources() {
     const P = railingPath(e); if (!P) continue;
     const b = e.bim, h = b.h || 1000, hd = b.headD || 200;
     for (const st of pathStations(P, Math.max(200, b.spacing || 3000))) {
+      const rng = Math.max(100, b.range || 8000);
       out.push({
         x: st.x, y: st.y, z: st.z + h - hd / 2, // 램프 헤드 중심
-        range: Math.max(100, b.range || 8000),  // 밝기가 절반이 되는 거리
+        range: rng,                        // 밝기가 절반이 되는 거리
+        far2: (rng * 6) * (rng * 6),       // 이보다 멀면 기여가 환경광 수준 → 계산 생략
         power: b.power != null ? b.power : 1,
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
@@ -5904,7 +5922,70 @@ function lightSources() {
   }
   return out;
 }
-// 면 하나의 밝기 — 월드 위치·법선 기준, 거리 제곱 감쇠.
+// ---------- 그림자 ----------
+// 면 → 광원 선분이 다른 형상에 막히면 그 광원은 그 면을 비추지 못한다.
+// 삼각형 수가 많으면 비용이 크므로 상한을 두고, 넘으면 그림자를 생략한다(조명은 그대로 동작).
+const SHADOW_TRI_CAP = 2000;
+function shadowOccluders() {
+  const tris = [];
+  const push = (a, b, c) => { if (tris.length < SHADOW_TRI_CAP) tris.push({ v: [a, b, c] }); };
+  for (const s of (v3.solids || [])) {
+    if (s.glass || s.glow) continue; // 유리·램프 헤드는 빛을 막지 않는다
+    const P = s.poly, n = P.length; if (!P || n < 3) continue;
+    const zt = s.zt || P.map(() => s.z1), zb = s.zb || P.map(() => s.z0);
+    for (let i = 1; i < n - 1; i++) { // 윗면·바닥면
+      push([P[0][0], P[0][1], zt[0]], [P[i][0], P[i][1], zt[i]], [P[i + 1][0], P[i + 1][1], zt[i + 1]]);
+      push([P[0][0], P[0][1], zb[0]], [P[i][0], P[i][1], zb[i]], [P[i + 1][0], P[i + 1][1], zb[i + 1]]);
+    }
+    for (let i = 0; i < n; i++) { // 옆면
+      const j = (i + 1) % n;
+      const a = [P[i][0], P[i][1], zb[i]], b = [P[j][0], P[j][1], zb[j]];
+      const c = [P[j][0], P[j][1], zt[j]], d = [P[i][0], P[i][1], zt[i]];
+      push(a, b, c); push(a, c, d);
+    }
+  }
+  for (const e of state.entities) {
+    if (e.type !== 'MESH' || !e.tris) continue;
+    const l = getLayer(e.layer); if (l && !l.visible) continue;
+    for (const t of e.tris) push(t[0], t[1], t[2]);
+  }
+  for (const o of tris) { // 빠른 배제용 AABB
+    const [a, b, c] = o.v;
+    o.bb = [Math.min(a[0], b[0], c[0]), Math.min(a[1], b[1], c[1]), Math.min(a[2], b[2], c[2]),
+            Math.max(a[0], b[0], c[0]), Math.max(a[1], b[1], c[1]), Math.max(a[2], b[2], c[2])];
+  }
+  return tris;
+}
+// 선분(면→광원)이 막혔는가 — Möller–Trumbore
+function shadowed(ox, oy, oz, lx, ly, lz) {
+  const O = v3._occ; if (!O || !O.length) return false;
+  const dx = lx - ox, dy = ly - oy, dz = lz - oz;
+  const maxT = 1; // 광원까지를 t=1로 정규화
+  const sx0 = Math.min(ox, lx), sx1 = Math.max(ox, lx);
+  const sy0 = Math.min(oy, ly), sy1 = Math.max(oy, ly);
+  const sz0 = Math.min(oz, lz), sz1 = Math.max(oz, lz);
+  for (const o of O) {
+    const bb = o.bb; // 선분 AABB와 안 겹치면 즉시 배제 (대부분 여기서 걸러짐)
+    if (bb[3] < sx0 || bb[0] > sx1 || bb[4] < sy0 || bb[1] > sy1 || bb[5] < sz0 || bb[2] > sz1) continue;
+    const T = o.v;
+    const e1x = T[1][0] - T[0][0], e1y = T[1][1] - T[0][1], e1z = T[1][2] - T[0][2];
+    const e2x = T[2][0] - T[0][0], e2y = T[2][1] - T[0][1], e2z = T[2][2] - T[0][2];
+    const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+    const det = e1x * px + e1y * py + e1z * pz;
+    if (det > -1e-9 && det < 1e-9) continue; // 광선과 평행
+    const inv = 1 / det;
+    const tx = ox - T[0][0], ty = oy - T[0][1], tz = oz - T[0][2];
+    const u = (tx * px + ty * py + tz * pz) * inv;
+    if (u < 0 || u > 1) continue;
+    const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+    const vv = (dx * qx + dy * qy + dz * qz) * inv;
+    if (vv < 0 || u + vv > 1) continue;
+    const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+    if (t > 1e-3 && t < maxT - 1e-3) return true; // 사이에 가로막는 형상이 있음
+  }
+  return false;
+}
+// 면 하나의 밝기 — 월드 위치·법선 기준, 거리 제곱 감쇠 + 그림자.
 // twoSided: 메시는 삼각형 winding을 신뢰할 수 없어 양면 모두 빛을 받게 한다(기존 메시 셰이딩도 abs를 씀).
 function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
   const L = v3 && v3._lights;
@@ -5912,10 +5993,14 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
   let s = NIGHT_AMBIENT;
   for (const g of L) {
     const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
-    const d = Math.hypot(dx, dy, dz) || 1;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > g.far2) continue; // 도달거리 훨씬 밖 = 기여가 환경광 수준 → 광선 검사까지 생략(가장 큰 절감)
+    const d = Math.sqrt(d2) || 1;
     let dot = (dx * nx + dy * ny + dz * nz) / d;
     if (twoSided) dot = Math.abs(dot);
-    if (dot <= 0) continue; // 광원을 등진 면
+    if (dot <= 0) continue; // 광원을 등진 면 — 광선 검사도 생략
+    // 자기 면에 다시 맞는 것(그림자 여드름)을 피하려고 법선 방향으로 살짝 띄워 쏜다
+    if (v3._occ && shadowed(wx + nx * 2, wy + ny * 2, wz + nz * 2, g.x, g.y, g.z)) continue;
     const k = d / g.range;
     s += dot * g.power * 1.35 / (1 + k * k); // 바로 아래에서도 상한(1.5)에 붙지 않게 — 빛 웅덩이의 계조를 살림
   }
@@ -5925,23 +6010,56 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
 // 이 렌더러는 평면 셰이딩(면 1개 = 밝기 1개)이라, 나누지 않으면 40m 슬래브가 중심점의 밝기로
 // 통째로 칠해져 빛 웅덩이가 보이지 않는다. 조각은 원래 면의 메타데이터(fk/eid/…)를 그대로
 // 물려받으므로 면 클릭(extrudesrf 면 밀당)에는 영향이 없다. lighting이 꺼져 있으면 호출되지 않는다.
-function pushLitPoly(faces, poly, zs, nz, meta) {
-  const MAX_EDGE = 1500, MAX_DEPTH = 4;
+// 조명은 '카메라와 무관'하다 — 형상·광원이 그대로면 궤도를 돌려도 밝기는 변하지 않는다.
+// 그래서 (월드 삼각형 + 밝기)를 캐시해두고, 매 프레임 투영만 다시 한다.
+// 캐시 키가 바뀌는 경우(형상·광원 변경)에만 재계산 → 반복 렌더가 사실상 공짜가 된다.
+function litCacheSig() {
+  let h = '';
+  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power};`;
+  h += '#';
+  for (const s of (v3.solids || [])) { // 형상이 바뀌면(이동·높이·개수) 키가 바뀐다
+    h += s.eid + ',' + Math.round(s.z0) + ',' + Math.round(s.z1) + ',' + s.poly.length + ',';
+    for (const p of s.poly) h += Math.round(p[0]) + '.' + Math.round(p[1]) + '_';
+    h += ';';
+  }
+  return h + '#' + state.entities.length;
+}
+function pushLitPoly(faces, poly, zs, nz, meta, cacheKey) {
+  const cache = v3._litCache || (v3._litCache = new Map());
+  const hit = cacheKey != null ? cache.get(cacheKey) : null;
+  if (hit) { // 캐시 적중: 투영만 다시 (밝기·그림자 계산 생략)
+    for (const fr of hit) {
+      const P = [proj3D(fr.a[0], fr.a[1], fr.a[2]), proj3D(fr.b[0], fr.b[1], fr.b[2]), proj3D(fr.c[0], fr.c[1], fr.c[2])];
+      faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: fr.s });
+    }
+    return;
+  }
+  const frags = [];
+  // 분할 세밀도는 빛의 감쇠 규모에 맞춘다 — 도달거리가 짧으면 더 곱게, 길면 성기게.
+  const rng = Math.min(...(v3._lights || [{ range: 6000 }]).map(g => g.range));
+  const MAX_EDGE = Math.max(800, Math.min(3000, rng / 3)), MAX_DEPTH = 12;
   const d3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
   const emit = (a, b, c, depth) => {
-    if (depth < MAX_DEPTH && Math.max(d3(a, b), d3(b, c), d3(c, a)) > MAX_EDGE) {
-      const ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
-      emit(a, ab, ca, depth + 1); emit(ab, b, bc, depth + 1);
-      emit(ca, bc, c, depth + 1); emit(ab, bc, ca, depth + 1);
+    // '가장 긴 변만' 이등분한다. 네 갈래로 쪼개면 모든 변이 같이 반토막 나서,
+    // 벽 윗면 같은 길고 얇은 띠(16m × 0.2m)가 256조각으로 폭발한다(실측: 조각 10,770개 → 913ms).
+    // 긴 변만 나누면 필요한 방향으로만 잘려 조각 수가 형상 비율에 맞게 유지된다.
+    const dab = d3(a, b), dbc = d3(b, c), dca = d3(c, a);
+    const m = Math.max(dab, dbc, dca);
+    if (depth < MAX_DEPTH && m > MAX_EDGE) {
+      if (m === dab) { const x = mid(a, b); emit(a, x, c, depth + 1); emit(x, b, c, depth + 1); }
+      else if (m === dbc) { const x = mid(b, c); emit(a, b, x, depth + 1); emit(a, x, c, depth + 1); }
+      else { const x = mid(c, a); emit(a, b, x, depth + 1); emit(x, b, c, depth + 1); }
       return;
     }
+    const sh = litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, false);
+    frags.push({ a, b, c, s: sh });
     const P = [proj3D(a[0], a[1], a[2]), proj3D(b[0], b[1], b[2]), proj3D(c[0], c[1], c[2])];
-    faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3,
-      shade: litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, false) });
+    faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: sh });
   };
   const V = poly.map((p, i) => [p[0], p[1], zs[i]]);
   for (let i = 1; i < V.length - 1; i++) emit(V[0], V[i], V[i + 1], 0); // 팬 삼각화
+  if (cacheKey != null) cache.set(cacheKey, frags);
 }
 function cmdLighting() {
   if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
@@ -10064,7 +10182,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, pathStations, renderScene, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightSolids, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, pathStations, renderScene, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
