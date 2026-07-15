@@ -679,6 +679,62 @@ function tests(){
     reset();
   }
 
+  // ---------- 곡선 위 난간 ----------
+  group('railing — 곡선/표면 위 곡선을 따라 손스침 + 동자기둥');
+  {
+    const rails = sol => sol.filter(s => s.zb);   // 손스침 밴드에만 정점별 z가 있음
+    const posts = sol => sol.filter(s => !s.zb);
+
+    // 직선 난간: 손스침 1구간 + 간격대로 기둥
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:6000, y2:0, layer:'0',
+               bim:{kind:'railing', h:1100, t:50, postT:60, spacing:1200, base:0} }]);
+    let sol = C.railingSolids(S0.entities[0]);
+    eqi(rails(sol).length, 1, '직선 난간: 손스침 1구간');
+    eqi(posts(sol).length, 6, '  기둥 6개 (6000 ÷ 1200 = 5구간 → 양 끝 포함 6)');
+    eq(rails(sol)[0].z0, 1050, '  손스침 아랫면 = h - t');
+    eq(rails(sol)[0].z1, 1100, '  손스침 윗면 = h');
+    eq(posts(sol)[0].z0, 0, '  기둥 발밑 = base');
+    eq(posts(sol)[0].z1, 1050, '  기둥 머리 = 손스침 아래');
+
+    // 표면 위 곡선: 손스침이 곡선을 따라 기울고 두께는 일정, 기둥은 지형에 발을 붙임
+    setEnts([{ type:'LWPOLYLINE', closed:false, points:[[0,0],[2000,0],[4000,0]], zs:[0,600,1500], layer:'0',
+               bim:{kind:'railing', h:1100, t:50, postT:60, spacing:1000, base:0} }]);
+    sol = C.railingSolids(S0.entities[0]);
+    eqi(rails(sol).length, 2, '곡선 난간: 세그먼트마다 손스침');
+    ok(rails(sol).every(s => s.zb[0] !== s.zb[1]), '  손스침이 곡선을 따라 기울어짐');
+    ok(rails(sol).every(s => s.zt.every((z, i) => Math.abs((z - s.zb[i]) - 50) < 1e-6)), '  손스침 두께 50 일정');
+    eq(rails(sol)[0].zb[0], 1050, '  시작 손스침 = 곡선(0) + h - t');
+    eq(rails(sol)[1].zt[1], 2600, '  끝 손스침 윗면 = 곡선(1500) + h');
+    ok(posts(sol).every(p => Math.abs((p.z1 - p.z0) - 1050) < 1e-6), '  기둥은 전부 같은 길이(지형에서 손스침까지)');
+    ok(posts(sol).some(p => p.z0 > 0), '  기둥 발밑이 지형을 따라 올라감');
+
+    // 닫힌 폴리라인 = 발코니 난간
+    setEnts([{ type:'LWPOLYLINE', closed:true, points:[[0,0],[3000,0],[3000,2000],[0,2000]], layer:'0',
+               bim:{kind:'railing', h:1200, t:50, postT:60, spacing:1000, base:3000} }]);
+    sol = C.railingSolids(S0.entities[0]);
+    eqi(rails(sol).length, 4, '발코니(닫힌 폴리라인): 손스침 4구간으로 한 바퀴');
+    eq(rails(sol)[0].z0, 4150, '  base 3000 위에 얹힘 (3000 + 1200 - 50)');
+
+    // 원형 난간
+    setEnts([{ type:'CIRCLE', cx:0, cy:0, r:2000, layer:'0',
+               bim:{kind:'railing', h:1100, t:50, postT:60, spacing:1500, base:0} }]);
+    sol = C.railingSolids(S0.entities[0]);
+    eqi(rails(sol).length, 32, '원형 난간: 32각형으로 한 바퀴');
+    ok(posts(sol).length >= 6, '  둘레를 따라 기둥 배치');
+
+    // bimSolids 디스패치 + 3D 반영
+    setEnts([{ type:'LINE', x1:0, y1:0, x2:3000, y2:0, layer:'0',
+               bim:{kind:'railing', h:1100, t:50, postT:60, spacing:1000, base:0} }]);
+    ok(C.bimSolids().filter(s => s.eid === 1).length > 1, '난간이 bimSolids(3D)에 포함됨');
+
+    // 명령어 — 라이노처럼 이름/별칭 해석
+    eqi(C.CMD_ALIASES['railing'], 'railing', "'railing' 명령 등록");
+    eqi(C.CMD_ALIASES['난간'], 'railing', "  한글 별칭 '난간'");
+    eqi(C.CMD_ALIASES['handrail'], 'railing', "  별칭 'handrail'");
+    ok(!!C.INSTANT_CMDS['railing'], '  railing이 실행 가능한 명령');
+    reset();
+  }
+
   // ---------- 명령어 체계: 라이노 이름 + 2D/3D 분리 재발 방지 ----------
   group('명령어 체계 — 라이노 이름 준수 / 평면·3D 전용 분리 금지');
   {

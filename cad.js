@@ -59,7 +59,7 @@ let settings = {
   osnapModes: { endpoint: true, midpoint: true, center: true, quad: true, perp: true, nearest: true, intersection: true, tangent: true, surface: true },
   polar: 0,      // 폴라 트래킹 각도(0=끄기, 15/30/45/90)
   dim: { txt: 0, dec: 2, suffix: false }, // 치수: 문자높이(0=그리기설정 따름)·소수자릿수·단위표시
-  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180 }, // BIM 기본값(mm)
+  bim: { wallH: 2700, wallT: 200, slabT: 150, colH: 2700, doorW: 900, doorH: 2100, winW: 1500, winH: 1200, winSill: 900, roofRise: 1200, stairW: 1200, stairRiser: 180, railH: 1100, railSpacing: 1200 }, // BIM 기본값(mm)
   aliases: {},   // 사용자 단축키: { 입력값: 도구명 }
 };
 (function loadSettings() {
@@ -2425,6 +2425,20 @@ function drawBimOverlay(e) {
         ctx.fillText('UP', q.x - ux * 18 + 4, q.y - uy * 18 - 4);
       }
     }
+  } else if (k === 'railing') {
+    // 평면: 손스침 경로(실선) + 동자기둥 위치(작은 사각) — 3D와 같은 railingSolids로 그려 어긋나지 않게
+    const rs = railingSolids(e);
+    if (rs.length) {
+      ctx.strokeStyle = entityColor(e); ctx.fillStyle = entityColor(e); ctx.lineWidth = 1;
+      for (const s of rs) {
+        const isPost = !s.zb; // 손스침 밴드에만 zb가 있다 — 나머지는 기둥
+        ctx.globalAlpha = isPost ? 0.75 : 0.5;
+        ctx.beginPath();
+        s.poly.forEach((p, i) => { const q = worldToScreen(p[0], p[1]); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+        ctx.closePath();
+        if (isPost) ctx.fill(); else ctx.stroke();
+      }
+    }
   } else if (k === 'column') {
     ctx.globalAlpha = 0.22; ctx.fillStyle = entityColor(e);
     ctx.beginPath();
@@ -2475,6 +2489,8 @@ function bimSolids() {
       for (const s of roofSolids(e)) { s.eid = e.id; s.rf = true; s.color = bimSolidColor(e, s.color); solids.push(s); }
     } else if (e.bim.kind === 'stair' && (e.type === 'LINE' || e.type === 'LWPOLYLINE')) {
       for (const s of stairSolids(e)) { s.eid = e.id; s.color = bimSolidColor(e, s.color); solids.push(s); }
+    } else if (e.bim.kind === 'railing') {
+      for (const s of railingSolids(e)) solids.push(s); // 손스침 + 동자기둥
     } else if (e.bim.kind === 'column') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
       solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: bimSolidColor(e, '#8fa3c8'), eid: e.id });
@@ -5735,6 +5751,85 @@ function stairSolids(e) {
   const S = stairSteps(e); if (!S) return [];
   return S.steps.map(st => ({ poly: st.quad, z0: S.base, z1: st.z1, color: '#b9b2a6' }));
 }
+
+// ---------- 난간 (railing) ----------
+// 경로(직선·곡선·원)를 따라 [상단 손스침] + [일정 간격 동자기둥]을 세운다.
+// 경로가 표면 위 곡선(zs)이나 3D 선(z1/z2)이면 바닥이 그 높이를 따라간다 — 벽과 같은 규약.
+// 경로 정점 + 바닥 높이 (닫힌 경로도 지원 — 발코니 난간)
+function railingPath(e) {
+  const b = e.bim; if (!b) return null;
+  let V, closed;
+  if (e.type === 'LINE') { V = [[e.x1, e.y1], [e.x2, e.y2]]; closed = false; }
+  else if (e.type === 'LWPOLYLINE' && e.points && e.points.length >= 2) { V = e.points.map(p => [p[0], p[1]]); closed = !!e.closed && e.points.length > 2; }
+  else if (e.type === 'CIRCLE') { V = circlePoly(e.cx, e.cy, e.r, 32); closed = true; }
+  else return null;
+  const n = V.length, nE = closed ? n : n - 1;
+  if (nE < 1) return null;
+  const pz = wallBaseZs(e);
+  const lift = pz ? ((b.base || 0) - lvElev()) : 0;
+  const zAt = i => (pz && pz[i] != null) ? pz[i] + lift : (b.base || 0); // 정점별 바닥
+  const segLen = [];
+  let total = 0;
+  for (let k = 0; k < nE; k++) { const k2 = (k + 1) % n; const L = Math.hypot(V[k2][0] - V[k][0], V[k2][1] - V[k][1]); segLen.push(L); total += L; }
+  if (total < 1e-6) return null;
+  return { V, n, nE, closed, zAt, segLen, total, onSrf: !!pz };
+}
+function railingSolids(e) {
+  const P = railingPath(e); if (!P) return [];
+  const b = e.bim;
+  const h = b.h || 1100, t = b.t || 50, pt = b.postT || 60, sp = Math.max(100, b.spacing || 1200);
+  const col = bimSolidColor(e, '#9aa2af');
+  const { V, n, nE, closed, zAt, segLen, total } = P;
+  const out = [];
+  // 1) 상단 손스침 — 세그먼트별 얇은 밴드. 바닥 높이를 따라 기울어진다(zb/zt).
+  for (let k = 0; k < nE; k++) {
+    const k2 = (k + 1) % n, a = V[k], c = V[k2], L = segLen[k];
+    if (L < 1e-6) continue;
+    const ux = (c[0] - a[0]) / L, uy = (c[1] - a[1]) / L;
+    const nx = -uy * t / 2, ny = ux * t / 2;
+    const zA = zAt(k), zC = zAt(k2);
+    out.push({
+      poly: [[a[0] + nx, a[1] + ny], [c[0] + nx, c[1] + ny], [c[0] - nx, c[1] - ny], [a[0] - nx, a[1] - ny]],
+      zb: [zA + h - t, zC + h - t, zC + h - t, zA + h - t],
+      zt: [zA + h, zC + h, zC + h, zA + h],
+      z0: Math.min(zA, zC) + h - t, z1: Math.max(zA, zC) + h,
+      color: col, eid: e.id,
+    });
+  }
+  // 2) 동자기둥 — 호 길이 sp 간격으로 균등 배치 (양 끝 포함, 닫힌 경로는 끝=시작이라 하나 생략)
+  const cnt = Math.max(1, Math.round(total / sp));
+  for (let i = 0; i <= cnt; i++) {
+    if (closed && i === cnt) break;
+    const d = total * i / cnt;
+    let acc = 0, k = 0;
+    while (k < nE - 1 && acc + segLen[k] < d) { acc += segLen[k]; k++; }
+    const k2 = (k + 1) % n, L = segLen[k] || 1;
+    const u = Math.max(0, Math.min(1, (d - acc) / L));
+    const x = V[k][0] + (V[k2][0] - V[k][0]) * u, y = V[k][1] + (V[k2][1] - V[k][1]) * u;
+    const z = zAt(k) + (zAt(k2) - zAt(k)) * u;
+    const ux = (V[k2][0] - V[k][0]) / L, uy = (V[k2][1] - V[k][1]) / L; // 기둥을 진행방향에 맞춰 세움
+    const ax = ux * pt / 2, ay = uy * pt / 2, bx = -uy * pt / 2, by = ux * pt / 2;
+    out.push({
+      poly: [[x - ax - bx, y - ay - by], [x + ax - bx, y + ay - by], [x + ax + bx, y + ay + by], [x - ax + bx, y - ay + by]],
+      z0: z, z1: z + h - t, color: col, eid: e.id,
+    });
+  }
+  return out;
+}
+function cmdRailingTag() {
+  const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
+  if (!sel.length) { logLine('  난간: 선/곡선/원(난간이 설 경로)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const h = bimAskNum('난간 높이 (mm):', settings.bim.railH || 1100); if (h == null) return;
+  const sp = bimAskNum('동자기둥 간격 (mm):', settings.bim.railSpacing || 1200); if (sp == null) return;
+  settings.bim.railH = h; settings.bim.railSpacing = sp; saveSettings();
+  pushUndo();
+  for (const e of sel) e.bim = { kind: 'railing', h, t: 50, postT: 60, spacing: sp, base: (e.bim && e.bim.base != null) ? e.bim.base : lvElev() };
+  const onSrf = sel.filter(e => wallBaseZs(e)).length;
+  logLine(`  ✔ 난간 지정 ${sel.length}개 (높이 ${h}, 기둥 간격 ${sp})`
+    + (onSrf ? ` · ${onSrf}개는 곡선 높이를 따라감` : '')
+    + ' — 경사진 난간은 경로에 높이가 있어야 합니다(표면 위 곡선 또는 3D 선)', 'ok');
+  renderProps(); draw(); boolRefresh();
+}
 function cmdRoofTag() {
   const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed);
   if (!sel.length) { logLine('  지붕: 닫힌 폴리라인(지붕 외곽)을 선택한 뒤 실행하세요.', 'warn'); return; }
@@ -6591,6 +6686,7 @@ const INSTANT_CMDS = {
   slab: cmdSlabTag,
   column: cmdColumnTag,
   stair: cmdStairTag,
+  railing: cmdRailingTag,
   extrudecrv: cmdExtrudeCrv,
   extrudesrf: cmdExtrudeSrf,
   box: cmdBox,
@@ -6951,6 +7047,7 @@ const TOOL_KO = {
   centerline: '중심선(CENTERLINE)', revcloud: '구름형 리비전(REVCLOUD)', frame: '도면 틀(FRAME)',
   align: '정렬(ALIGN)', xline: '무한 구성선(XLINE)', breakpt: '점에서 끊기(BREAKPT)',
   door: '문(DOOR)', window: '창(WINDOW)', section: '단면(SECTION)', elevation: '입면(ELEVATION)',
+  railing: '난간(RAILING)',
 };
 
 const CMD_ALIASES = {
@@ -7002,6 +7099,7 @@ const CMD_ALIASES = {
   level: 'level', lv: 'level',
   roof: 'roof',
   stair: 'stair', '계단': 'stair',
+  railing: 'railing', handrail: 'railing', 난간: 'railing', 손스침: 'railing',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv', extrude: 'extrudecrv', ext: 'extrudecrv', 돌출: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
 
@@ -7729,10 +7827,11 @@ function renderProps() {
     column: [['h', '높이'], ['base', '하단(base)']],
     opening: [['h', '개구 높이'], ['sill', '씰 높이']],
     stair: [['w', '폭'], ['h', '총높이'], ['riser', '단높이(최대)'], ['base', '하단(base)']],
+    railing: [['h', '난간 높이'], ['spacing', '기둥 간격'], ['t', '손스침 두께'], ['postT', '기둥 두께'], ['base', '하단(base)']],
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   if (e.bim) {
-    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
+    const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
     rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">BIM</label><span style="font-weight:590;">${kindKo}</span></div>`;
     for (const [k, lab] of (BIM_FIELDS[e.bim.kind] || []))
       rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-bk="${k}" value="${e.bim[k] != null ? e.bim[k] : 0}"></div>`;
@@ -8290,6 +8389,7 @@ const CMD_HELP = [
     ['booleanintersection', '교집합(라이노 BooleanIntersection · bi)', '입체 2개+ 선택 → 겹치는 부분만 남김'],
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
+    ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
   { c: '기타', items: [
@@ -8363,7 +8463,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -9803,7 +9903,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, roofSolids, solidTopZ,
+  bimSolids, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
   runBoolean, meshFeat, meshComponents, meshEdgeKey, detectDoubleOutlineWall,
