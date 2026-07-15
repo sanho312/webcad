@@ -443,6 +443,56 @@ function tests(){
     S0.layers = S0.layers.filter(l => l.name !== '잠금');
   }
 
+  // ---------- DXF 레이어/색 충실도 ----------
+  group('DXF 레이어 — 색 정확도(트루컬러) + 소유자(330) + 왕복 보존');
+  {
+    reset();
+    S0.layers = [
+      { name:'0', color:'#ffffff', visible:true },
+      { name:'벽체', color:'#ff0000', visible:true },
+      { name:'Furniture', color:'#0080ff', visible:true },   // ACI에 없는 색 — 예전엔 7(흰색)로 뭉개짐
+      { name:'가구-갈색', color:'#8b4513', visible:true },
+      { name:'점선', color:'#ffff00', visible:true, linetype:'dashed' },
+      { name:'숨김', color:'#ff00ff', visible:false },
+    ];
+    S0.currentLayer = '0';
+    S0.entities = [
+      { id:1, type:'LINE', x1:0,y1:0,x2:100,y2:0, layer:'0', lv:0 },
+      { id:2, type:'LINE', x1:0,y1:10,x2:100,y2:10, layer:'벽체', lv:0 },
+      { id:3, type:'LWPOLYLINE', closed:true, points:[[0,0],[10,0],[10,10]], layer:'Furniture', lv:0 },
+      { id:4, type:'LINE', x1:1,y1:1,x2:5,y2:5, layer:'가구-갈색', lv:0 },
+      { id:5, type:'LINE', x1:5,y1:5,x2:9,y2:9, layer:'점선', lv:0 },
+      { id:6, type:'ARC', cx:0,cy:0,r:30,startAngle:0,endAngle:90, layer:'숨김', lv:0 },
+      { id:7, type:'LINE', x1:2,y1:2,x2:8,y2:8, layer:'0', color:'#12ab34', lv:0 },
+    ];
+    S0.nextId = 8;
+    const dxf = C.buildDXFText();
+
+    // 62(ACI)는 더 이상 무조건 7로 떨어지지 않는다
+    eqi(C.dxfColorIndex('#ff0000'), 1, 'ACI: 순수 빨강 → 1');
+    ok(C.dxfColorIndex('#0080ff') !== 7, 'ACI: #0080ff가 7(흰색)로 뭉개지지 않음 (예전 버그)');
+    ok(C.dxfColorIndex('#8b4513') !== 7, 'ACI: 갈색이 7로 뭉개지지 않음');
+    // 420(트루컬러)로 정확한 색 전달
+    eqi(C.dxfTrueColor('#0080ff'), 0x0080ff, '트루컬러 420 = 0x0080ff 정확');
+    ok(dxf.includes('420\n' + 0x0080ff), 'DXF에 Furniture 트루컬러 420 기록됨');
+    // 소유자 330 — 심볼 테이블/레코드 모두
+    const layerSeg = dxf.slice(dxf.indexOf('  2\nLAYER'), dxf.indexOf('  2\nSTYLE'));
+    eqi((layerSeg.match(/^330$/gm) || []).length, 1 + S0.layers.length, 'LAYER 테이블 + 레코드마다 330(소유자) 존재');
+    ok(!layerSeg.includes('390\nF'), '끊어진 플롯스타일 핸들(390 F) 제거됨');
+
+    // 왕복: 저장 → 불러오기에서 레이어 색·가시성·엔티티 소속이 그대로
+    const before = S0.layers.map(l => `${l.name}=${l.color}${l.visible?'':'(off)'}`).join('|');
+    const beforeEnts = S0.entities.map(e => `${e.type}@${e.layer}`).sort().join('|');
+    C.loadDXF(dxf, 'rt.dxf');
+    const after = S0.layers.map(l => `${l.name}=${l.color}${l.visible?'':'(off)'}`).join('|');
+    const afterEnts = S0.entities.map(e => `${e.type}@${e.layer}`).sort().join('|');
+    eqi(after, before, 'DXF 왕복 — 레이어 이름·색·가시성 100% 보존');
+    eqi(afterEnts, beforeEnts, 'DXF 왕복 — 엔티티의 레이어 소속 보존');
+    const ec = S0.entities.find(e => e.color);
+    eqi(ec && ec.color, '#12ab34', 'DXF 왕복 — 개체 개별색도 정확히 보존');
+    reset();
+  }
+
   // ---------- id 충돌 방지 ----------
   group('applyDoc — nextId는 항상 최대 id보다 커야 함 (선택·삭제 오작동 방지)');
   {

@@ -8285,16 +8285,38 @@ window.addEventListener('keydown', (ev) => {
 // ============================================================
 //  DXF 쓰기 (R12 ASCII — 호환성 우선)
 // ============================================================
-function dxfColorIndex(hex) {
-  // 간단 매핑: 자주 쓰는 AutoCAD 색번호로 근사
-  const map = {
-    '#ff0000': 1, '#ffff00': 2, '#00ff00': 3, '#00ffff': 4,
-    '#0000ff': 5, '#ff00ff': 6, '#ffffff': 7, '#808080': 8,
-  };
-  hex = rgbHex(hex).toLowerCase();
-  if (map[hex]) return map[hex];
-  return 7; // 기본 흰/검
+// ACI(AutoCAD Color Index) 기본 팔레트 — 62번 코드용 근사값
+const ACI_PALETTE = {
+  1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255], 5: [0, 0, 255],
+  6: [255, 0, 255], 7: [255, 255, 255], 8: [128, 128, 128], 9: [192, 192, 192],
+  // 자주 쓰는 중간색(표준 ACI 값) — 근사 품질을 위해 확장
+  10: [255, 0, 0], 20: [255, 63, 0], 30: [255, 127, 0], 40: [255, 191, 0], 50: [255, 255, 0],
+  60: [191, 255, 0], 70: [127, 255, 0], 80: [63, 255, 0], 90: [0, 255, 0], 100: [0, 255, 63],
+  110: [0, 255, 127], 120: [0, 255, 191], 130: [0, 255, 255], 140: [0, 191, 255], 150: [0, 127, 255],
+  160: [0, 63, 255], 170: [0, 0, 255], 180: [63, 0, 255], 190: [127, 0, 255], 200: [191, 0, 255],
+  210: [255, 0, 255], 220: [255, 0, 191], 230: [255, 0, 127], 240: [255, 0, 63],
+  250: [51, 51, 51], 251: [80, 80, 80], 252: [105, 105, 105], 253: [130, 130, 130], 254: [190, 190, 190], 255: [255, 255, 255],
+};
+function hexToRgb(hex) {
+  const h = rgbHex(hex).replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
 }
+// 62번(ACI) 코드용 — 팔레트에서 가장 가까운 색번호. 예전엔 8개 hex만 정확히 일치시키고
+// 나머지를 전부 7(흰색)으로 떨어뜨려서, 라이노에서 대부분의 레이어가 같은 색으로 보였다
+// (= "레이어가 적용되지 않은" 것처럼 보이던 원인). 이제 최근접 색으로 근사한다.
+function dxfColorIndex(hex) {
+  const [r, g, b] = hexToRgb(hex);
+  let best = 7, bestD = Infinity;
+  for (const k in ACI_PALETTE) {
+    const [pr, pg, pb] = ACI_PALETTE[k];
+    const d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
+    if (d < bestD) { bestD = d; best = +k; }
+  }
+  return best;
+}
+// 420번(트루컬러) 코드용 — 24비트 RGB 정수. 라이노·오토캐드는 420이 있으면 이 값을 쓰므로
+// 62의 근사 오차와 무관하게 화면 색이 정확히 재현된다.
+function dxfTrueColor(hex) { const [r, g, b] = hexToRgb(hex); return (r << 16) | (g << 8) | b; }
 // 엔티티 지오메트리 시그니처 — DXF 저장/불러오기에서 BIM 속성·z값을 같은 도형에 재결합하기 위한 키
 function entSig(e) {
   const R = v => Math.round((+v || 0) * 100) / 100;
@@ -8352,10 +8374,14 @@ function buildDXFText() {
   g(0, 'SECTION'); g(2, 'CLASSES'); g(0, 'ENDSEC');
 
   // TABLES
+  // R13+ 규칙: 심볼 테이블은 330=0(루트 소유), 각 레코드는 330=소속 테이블 핸들을 가져야 한다.
+  // 이게 없으면 라이노는 파일은 열되 레이어 테이블을 무시하고 전부 기본 레이어에 올린다(실측).
+  const tbl = (name, count) => { const h = H(); g(0, 'TABLE'); g(2, name); g(5, h); g(330, '0'); g(100, 'AcDbSymbolTable'); g(70, count); return h; };
+  const rec = (type, ownerH, sub) => { g(0, type); g(5, H()); g(330, ownerH); g(100, 'AcDbSymbolTableRecord'); g(100, sub); };
   g(0, 'SECTION'); g(2, 'TABLES');
   // VPORT — 필수
-  g(0, 'TABLE'); g(2, 'VPORT'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1);
-  g(0, 'VPORT'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbViewportTableRecord');
+  const hVportTab = tbl('VPORT', 1);
+  rec('VPORT', hVportTab, 'AcDbViewportTableRecord');
   g(2, '*Active'); g(70, 0);
   g(10, 0); g(20, 0); g(11, 1); g(21, 1); g(12, 0); g(22, 0); g(13, 0); g(23, 0);
   g(14, 10); g(24, 10); g(15, 10); g(25, 10); g(16, 0); g(26, 0); g(36, 1);
@@ -8367,46 +8393,53 @@ function buildDXFText() {
   const usedLts = new Set(['continuous']);
   for (const l of state.layers) if (l.linetype && LTDEF[l.linetype]) usedLts.add(l.linetype);
   for (const e of state.entities) if (e.linetype && LTDEF[e.linetype]) usedLts.add(e.linetype);
-  g(0, 'TABLE'); g(2, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, usedLts.size + 2);
-  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'ByBlock'); g(70, 0); g(3, ''); g(72, 65); g(73, 0); g(40, 0);
-  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'ByLayer'); g(70, 0); g(3, ''); g(72, 65); g(73, 0); g(40, 0);
-  g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, 0);
-  for (const lt of usedLts) { if (lt === 'continuous') continue; const pat = LTDEF[lt]; const total = pat.reduce((s, v) => s + Math.abs(v), 0);
-    g(0, 'LTYPE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLinetypeTableRecord'); g(2, lt.toUpperCase()); g(70, 0); g(3, lt); g(72, 65); g(73, pat.length); g(40, total);
-    for (const v of pat) g(49, v); }
+  const hLtypeTab = tbl('LTYPE', usedLts.size + 2);
+  const ltRec = (name, desc, pat) => {
+    rec('LTYPE', hLtypeTab, 'AcDbLinetypeTableRecord');
+    g(2, name); g(70, 0); g(3, desc); g(72, 65); g(73, pat ? pat.length : 0);
+    g(40, pat ? pat.reduce((s, v) => s + Math.abs(v), 0) : 0);
+    if (pat) for (const v of pat) g(49, v);
+  };
+  ltRec('ByBlock', '', null); ltRec('ByLayer', '', null); ltRec('CONTINUOUS', 'Solid line', null);
+  for (const lt of usedLts) { if (lt === 'continuous') continue; ltRec(lt.toUpperCase(), lt, LTDEF[lt]); }
   g(0, 'ENDTAB');
   // LAYER
-  g(0, 'TABLE'); g(2, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, state.layers.length);
+  const hLayerTab = tbl('LAYER', state.layers.length);
   for (const l of state.layers) {
-    g(0, 'LAYER'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbLayerTableRecord');
+    rec('LAYER', hLayerTab, 'AcDbLayerTableRecord');
     g(2, l.name); g(70, l.visible ? 0 : 1);
-    g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color));
+    g(62, (l.visible ? 1 : -1) * dxfColorIndex(l.color)); // 음수 = 레이어 꺼짐
+    g(420, dxfTrueColor(l.color)); // 트루컬러 — 레이어 색을 정확히 전달
     g(6, (l.linetype && LTDEF[l.linetype]) ? l.linetype.toUpperCase() : 'CONTINUOUS');
-    if (l.lineweight != null && l.lineweight >= 0) g(370, l.lineweight);
-    g(390, 'F'); // 플롯스타일 핸들(관례값)
+    g(370, (l.lineweight != null && l.lineweight >= 0) ? l.lineweight : -3); // -3 = 기본(ByLayer 두께)
+    // 390(플롯스타일)·347(재질)은 실제 객체 핸들을 가리켜야 하는 하드 포인터라 생략한다.
+    // 예전엔 g(390,'F')로 존재하지도 않는 핸들을 썼는데, 이 끊어진 참조 때문에 라이노가
+    // 레이어 레코드를 통째로 버리고 모든 객체를 기본 레이어에 올렸다. 선택 필드는 없는 게 정답.
   }
   g(0, 'ENDTAB');
   // STYLE — TEXT가 참조하는 문자 스타일
-  g(0, 'TABLE'); g(2, 'STYLE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1);
-  g(0, 'STYLE'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbTextStyleTableRecord');
+  const hStyleTab = tbl('STYLE', 1);
+  rec('STYLE', hStyleTab, 'AcDbTextStyleTableRecord');
   g(2, 'Standard'); g(70, 0); g(40, 0); g(41, 1); g(50, 0); g(71, 0); g(42, 2.5); g(3, 'txt'); g(4, '');
   g(0, 'ENDTAB');
   // VIEW / UCS — 비어 있어도 테이블 자체는 존재해야 함
-  g(0, 'TABLE'); g(2, 'VIEW'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 0); g(0, 'ENDTAB');
-  g(0, 'TABLE'); g(2, 'UCS'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 0); g(0, 'ENDTAB');
+  tbl('VIEW', 0); g(0, 'ENDTAB');
+  tbl('UCS', 0); g(0, 'ENDTAB');
   // APPID
-  g(0, 'TABLE'); g(2, 'APPID'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1);
-  g(0, 'APPID'); g(5, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0);
+  const hAppidTab = tbl('APPID', 1);
+  rec('APPID', hAppidTab, 'AcDbRegAppTableRecord'); g(2, 'ACAD'); g(70, 0);
   g(0, 'ENDTAB');
-  // DIMSTYLE
-  g(0, 'TABLE'); g(2, 'DIMSTYLE'); g(5, H()); g(100, 'AcDbSymbolTable'); g(70, 1); g(100, 'AcDbDimStyleTable'); g(71, 0);
-  g(0, 'DIMSTYLE'); g(105, H()); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbDimStyleTableRecord'); g(2, 'Standard'); g(70, 0);
+  // DIMSTYLE — 레코드 핸들 코드가 5가 아니라 105 (표준)
+  const hDimTab = H();
+  g(0, 'TABLE'); g(2, 'DIMSTYLE'); g(5, hDimTab); g(330, '0'); g(100, 'AcDbSymbolTable'); g(70, 1); g(100, 'AcDbDimStyleTable'); g(71, 0);
+  g(0, 'DIMSTYLE'); g(105, H()); g(330, hDimTab); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbDimStyleTableRecord'); g(2, 'Standard'); g(70, 0);
   g(0, 'ENDTAB');
   // BLOCK_RECORD — R13+ 필수. 모든 블록(모델/페이퍼 공간 포함)의 소유 레코드
-  g(0, 'TABLE'); g(2, 'BLOCK_RECORD'); g(5, hBlkRecTab); g(100, 'AcDbSymbolTable'); g(70, 2 + blkNames.length);
-  g(0, 'BLOCK_RECORD'); g(5, hMSpace); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, '*Model_Space'); g(70, 0);
-  g(0, 'BLOCK_RECORD'); g(5, hPSpace); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, '*Paper_Space'); g(70, 0);
-  for (const nm of blkNames) { g(0, 'BLOCK_RECORD'); g(5, hBlkRec[nm]); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, nm); g(70, 0); }
+  g(0, 'TABLE'); g(2, 'BLOCK_RECORD'); g(5, hBlkRecTab); g(330, '0'); g(100, 'AcDbSymbolTable'); g(70, 2 + blkNames.length);
+  const blkRec = (h, nm) => { g(0, 'BLOCK_RECORD'); g(5, h); g(330, hBlkRecTab); g(100, 'AcDbSymbolTableRecord'); g(100, 'AcDbBlockTableRecord'); g(2, nm); g(70, 0); };
+  blkRec(hMSpace, '*Model_Space');
+  blkRec(hPSpace, '*Paper_Space');
+  for (const nm of blkNames) blkRec(hBlkRec[nm], nm);
   g(0, 'ENDTAB');
   g(0, 'ENDSEC');
 
@@ -8752,7 +8785,8 @@ function buildPDF(opt) {
 }
 function writeEntity(g, e, H, owner) {
   // AC1021(R2007) 구조: 핸들(5) + 소유자(330, R13+ 필수) + AcDbEntity + 서브클래스 마커
-  const head = (type, sub) => { g(0, type); g(5, H()); if (owner) g(330, owner); g(100, 'AcDbEntity'); g(8, e.layer); if (e.color) g(62, dxfColorIndex(e.color));
+  const head = (type, sub) => { g(0, type); g(5, H()); if (owner) g(330, owner); g(100, 'AcDbEntity'); g(8, e.layer);
+    if (e.color) { g(62, dxfColorIndex(e.color)); g(420, dxfTrueColor(e.color)); } // 62=근사 ACI + 420=정확한 트루컬러
     if (e.linetype && e.linetype !== 'continuous') g(6, e.linetype.toUpperCase());
     if (e.lineweight != null && e.lineweight >= 0) g(370, e.lineweight); g(100, sub); };
   switch (e.type) {
@@ -8946,8 +8980,16 @@ function parseDXFPairs(text) {
   return pairs;
 }
 function aci2hex(n) {
-  const t = { 1: '#ff0000', 2: '#ffff00', 3: '#00ff00', 4: '#00ffff', 5: '#0000ff', 6: '#ff00ff', 7: '#ffffff', 8: '#808080', 9: '#c0c0c0' };
-  return t[Math.abs(n)] || '#ffffff';
+  const p = ACI_PALETTE[Math.abs(n)];
+  if (!p) return '#ffffff';
+  return '#' + p.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+// 420(트루컬러) 24비트 정수 → hex
+function tc2hex(n) {
+  const v = n & 0xffffff;
+  return '#' + ((v >> 16) & 255).toString(16).padStart(2, '0')
+             + ((v >> 8) & 255).toString(16).padStart(2, '0')
+             + (v & 255).toString(16).padStart(2, '0');
 }
 function parseDXFEntities(pairs) {
   const entities = [], layers = [];
@@ -8961,6 +9003,10 @@ function parseDXFEntities(pairs) {
     if (d[62] !== undefined) {
       const n = parseInt(Array.isArray(d[62]) ? d[62][0] : d[62], 10);
       if (n !== 256 && n !== 0) base.color = aci2hex(n); // 256=ByLayer, 0=ByBlock → 기본색
+    }
+    if (d[420] !== undefined) { // 트루컬러가 있으면 62의 근사값보다 우선
+      const n = parseInt(Array.isArray(d[420]) ? d[420][0] : d[420], 10);
+      if (isFinite(n)) base.color = tc2hex(n);
     }
     if (d[6] !== undefined) { const lt = String(Array.isArray(d[6]) ? d[6][0] : d[6]).trim().toLowerCase(); if (LINETYPES[lt] !== undefined && lt !== 'continuous' && lt !== 'bylayer') base.linetype = lt; }
     if (d[370] !== undefined) { const lw = parseInt(Array.isArray(d[370]) ? d[370][0] : d[370], 10); if (lw >= 0) base.lineweight = lw; }
@@ -9163,11 +9209,13 @@ function parseDXFEntities(pairs) {
         while (j < p.length && p[j][0] !== 0) {
           const [c, v] = p[j];
           if (c === 2) lay.name = v.trim();
-          else if (c === 62) { const n = parseInt(v, 10); lay.visible = n >= 0; lay.color = aci2hex(n); }
+          else if (c === 62) { const n = parseInt(v, 10); lay.visible = n >= 0; if (!lay._tc) lay.color = aci2hex(n); } // 음수 = 꺼짐
+          else if (c === 420) { const n = parseInt(v, 10); if (isFinite(n)) { lay.color = tc2hex(n); lay._tc = 1; } } // 트루컬러 우선(62보다 정확)
           else if (c === 6) { const lt = v.trim().toLowerCase(); if (LINETYPES[lt] !== undefined && lt !== 'continuous') lay.linetype = lt; }
           else if (c === 370) { const lw = parseInt(v, 10); if (lw >= 0) lay.lineweight = lw; }
           j++;
         }
+        delete lay._tc; // 파싱용 임시 플래그
         if (!out.find(l => l.name === lay.name)) out.push(lay);
       } else j++;
     }
@@ -9490,6 +9538,7 @@ window.__CADTEST__ = {
   get imgGumDrag(){ return imgGumDrag; },
   get mouseScreen(){ return mouseScreen; },
   draw, worldToScreen, screenToWorld, entityHit, entityGrips, renderProps, pick, applyDoc,
+  dxfColorIndex, dxfTrueColor, aci2hex, tc2hex,
   exportEntities, computeHatchSegs: (e) => hatchSegments(e),
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
