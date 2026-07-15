@@ -6692,14 +6692,32 @@ async function rtRebuild() {
 }
 // 프로그레시브 누적 루프. renderSample()은 THREE.Clock(실제 시간)으로 renderDelay를 재므로
 // 빡빡한 for 루프로 돌리면 누적이 시작되지 않는다 — 반드시 프레임마다 한 번씩 부른다.
+// 수렴 목표 — 여기 도달하면 샘플링을 멈추고 GPU를 쉰다.
+// 예전에는 멈추는 조건이 아예 없었다. 24 spp 에서 '완료'라고 써놓고는 계속 renderSample() 을
+// 돌려 900 spp 를 넘겨도 GPU를 100%로 태웠다 — 라벨만 완료였지 실제로는 끝나지 않았다.
+// 해석적 광원(NEE) 도입 뒤 실측 (800lm 램프 장면, 바닥 영역):
+//   16 spp 0.5초 · 평균 42.0 · 상대노이즈 0.241      ← 밝기는 여기서 이미 확정
+//   32 spp 1.0초 · 42.4 · 0.220
+//   64 spp 1.8초 · 42.7 · 0.194                      ← 채택
+//   128 spp 3.5초 · 41.9 · 0.170
+//   256 spp 6.8초 · 41.7 · 0.160
+// 64 를 넘기면 노이즈가 사실상 평평해진다(남은 값의 대부분은 실제 명암 기울기라 더 내려가지
+// 않는다). 그래서 시간을 4배 더 써도 눈에 보이는 이득이 없다.
+const RT_TARGET_SPP = 64;
 function rtLoop() {
   if (!rt.on) return;
   rt.raf = requestAnimationFrame(rtLoop);
   if (!rt.tracer) return;
-  try { rt.tracer.renderSample(); } catch (e) { rt.err = String(e); rt.on = false; rtHud('오류: ' + e); return; }
+  const done = (rt.tracer.samples || 0) >= RT_TARGET_SPP;
+  // 수렴했으면 그리지 않는다. 캔버스는 마지막 프레임을 그대로 유지한다.
+  // 카메라·광원·형상이 바뀌면 rtReset()이 samples를 0으로 되돌려 여기서 다시 돌기 시작한다.
+  if (!done) {
+    try { rt.tracer.renderSample(); } catch (e) { rt.err = String(e); rt.on = false; rtHud('오류: ' + e); return; }
+  }
   const s = rt.tracer.samples || 0;
   rtHud(rt.tracer.isCompiling ? '셰이더 준비 중…'
-    : `${s < 1 ? 0 : Math.floor(s)} spp · ${s < 24 ? '수렴 중…' : '완료'}`
+    : (s >= RT_TARGET_SPP ? `${RT_TARGET_SPP} spp · 완료`
+      : `${s < 1 ? 0 : Math.floor(s)}/${RT_TARGET_SPP} spp · 수렴 중…`)
       + (rt.env === 'day' ? ' · 주광' : '')
       );
 }
@@ -11493,7 +11511,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
