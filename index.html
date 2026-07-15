@@ -778,6 +778,19 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         </div>
       </div>
 
+      <div class="section" data-sec="sensors">
+        <h3>조도 분석</h3>
+        <div class="body">
+          <div id="sensorList"></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+            <button class="miniBtn" id="btnFalseColor" title="표면 조도를 색으로 표시 (falsecolor)">조도 색표시</button>
+            <button class="miniBtn" id="btnFcMax" title="색 스케일 최대값 (fcmax)">스케일…</button>
+            <button class="miniBtn" id="btnAddSensor" title="선택한 사각 영역에 측정면 추가 (addsensorplane)">+ 측정면</button>
+            <button class="miniBtn" id="btnSensorCSV" title="조도 CSV 내보내기 (sensorcsv)">CSV</button>
+          </div>
+        </div>
+      </div>
+
       <div class="section" data-sec="props" style="flex:1;overflow:auto;">
         <h3>속성 / 선택</h3>
         <div class="body" id="propsBody">
@@ -831,7 +844,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260716c"></script>
+<script src="cad.js?v=20260716d"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>

@@ -920,6 +920,71 @@ function tests(){
     reset();
   }
 
+  // ---------- 조도 분석 (Phase 4) ----------
+  group('조도 분석 — 조도(lux)·False Color·측정면·CSV');
+  {
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V3 = C.v3;
+    setEnts([
+      { type:'LWPOLYLINE', closed:true, layer:'0', points:[[0,0],[6000,0],[6000,4000],[0,4000]], bim:{kind:'slab',t:100,top:0} },
+      { type:'LWPOLYLINE', closed:true, layer:'0', points:[[2880,1880],[3120,1880],[3120,2120],[2880,2120]],
+        bim:{kind:'column',h:80,base:2550}, light:{ intensity:800, colorTemp:3000 } },
+    ]);
+    V3.lighting = true; V3._fast = false; V3._occ = null; V3._bounce = null;
+    V3.solids = C.bimSolids();
+    V3._lights = C.lightSources();
+    eqi(V3._lights.length, 1, '광원 1개');
+    eq(V3._lights[0].lm, 800, '  광원이 물리 광속(lm)을 들고 있다 — 조도 계산의 근거');
+
+    // ★ 조도는 손계산과 일치해야 한다. 단위(mm→m)를 틀리면 10^6 배 어긋난다 (§3.2)
+    const em = C.lightEmitters(S0.entities[1], S0.lights[0])[0];
+    const h = em.z / 1000;                       // 발광점 높이 (m)
+    const hand = (800 / (4 * Math.PI)) / (h * h); // E = I/d²  (균등 배광)
+    const got = C.illuminanceAt(3000, 2000, 0, 0, 0, 1);
+    ok(Math.abs(got - hand) / hand < 0.02, '★ 조도가 손계산과 일치 (E = I/d², 단위 m)');
+    // 코사인 법칙
+    const d = Math.hypot(2000, em.z), cos = em.z / d;
+    const hand2 = (800 / (4 * Math.PI)) * cos / Math.pow(d / 1000, 2);
+    ok(Math.abs(C.illuminanceAt(5000, 2000, 0, 0, 0, 1) - hand2) / hand2 < 0.02, '  비스듬한 점도 코사인 법칙 일치');
+    // 선형성
+    S0.lights[0].intensity = 1600; V3._lights = C.lightSources();
+    ok(Math.abs(C.illuminanceAt(3000, 2000, 0, 0, 0, 1) - got * 2) / got < 0.01, '  세기 2배 → 조도 정확히 2배');
+    S0.lights[0].intensity = 800; V3._lights = C.lightSources();
+    ok(C.illuminanceAt(3000, 2000, 0, 0, 0, -1) === 0, '  광원을 등진 면은 0 lux');
+
+    // §4.1 False Color 스케일
+    eqi(C.falseColor(250, 500), '#20c060', 'False Color 중간 = 초록');
+    eqi(C.falseColor(9999, 500), '#ff3020', '  최대 이상 = 빨강');
+    ok(C.falseColor(0, 500) !== C.falseColor(500, 500), '  0과 최대가 다른 색');
+    ok(C.falseColor(250, 500) !== C.falseColor(250, 1000), '  스케일 최대값이 색을 바꾼다 (주거 500 / 사무 1000)');
+    V3.falseColor = true; V3.fcMax = 500;
+    ok(/F500/.test(C.litCacheSig()), '  조도 표시가 조명 캐시 서명에 들어간다 (안 그러면 옛 색이 남는다)');
+    V3.falseColor = false;
+
+    // §4.2 측정면
+    S0.sensors.length = 0; S0.nextSensorId = 1;
+    S0.sensors.push({ id:'S1', x0:0, y0:0, x1:6000, y1:4000, z:750, spacing:500 });
+    const st = C.sensorMeasure(S0.sensors[0]);
+    eqi(st.n, 117, '측정면 격자: 6000/500+1 × 4000/500+1 = 13×9 = 117점');
+    ok(st.min > 0 && st.avg > st.min && st.max > st.avg, '  최소 < 평균 < 최대');
+    ok(Math.abs(st.u0 - st.min / st.avg) < 1e-9, '  균제도 U0 = min/avg');
+
+    // §4.2 CSV + §4.3 고지
+    const csv = C.sensorCSV();
+    const csvLines = csv.split(String.fromCharCode(10));
+    eqi(csvLines[0], 'plane,x_mm,y_mm,z_mm,illuminance_lux', 'CSV 헤더');
+    eqi(csvLines.filter(l => /^S1,/.test(l)).length, 117, '  측정점 117행');
+    ok(/법규·인증용 조도 계산/.test(csv) && /균등 배광/.test(csv), '§4.3 CSV에 정확도 고지 (근사치임을 명시)');
+
+    // 명령·별칭
+    eqi(C.CMD_ALIASES['falsecolor'], 'falsecolor', "'falsecolor' 명령");
+    eqi(C.CMD_ALIASES['조도'], 'falsecolor', "  한글 별칭 '조도'");
+    eqi(C.CMD_ALIASES['측정면'], 'addsensorplane', "  '측정면' → addsensorplane");
+    eqi(C.CMD_ALIASES['조도csv'], 'sensorcsv', "  '조도csv' → sensorcsv");
+    V3.lighting = false; V3._lights = null; S0.sensors.length = 0;
+    reset();
+  }
+
   // ---------- 실제 광원 (조명 보기) ----------
   group('lighting — 지정한 광원이 3D를 실제로 밝힘 (야간 보기)');
   {

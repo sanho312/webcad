@@ -20,6 +20,8 @@ const state = {
   entities: [],          // {id,type,layer,color, ...geom}  · 광원이면 lightId 참조를 가진다
   lights: [],            // LightSource[] — 개체와 분리된 광원 속성 컬렉션 (objectId로 연결)
   nextLightId: 1,
+  sensors: [],           // 조도 측정면 (격자 측정점) — Phase 4
+  nextSensorId: 1,
   layers: [],            // {name,color,visible}
   currentLayer: '0',
   currentColor: null,    // null = 레이어색(ByLayer), 아니면 '#rrggbb'
@@ -104,6 +106,7 @@ function snapshot() {
     entities: liveEnts(), layers: state.layers,
     currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks,
     lights: state.lights, nextLightId: state.nextLightId, // 광원 지정/해제도 undo 대상
+    sensors: state.sensors, nextSensorId: state.nextSensorId,
   });
 }
 let apiRev = 0; // 변경 카운터 (클라우드 자동저장의 dirty 판단용)
@@ -114,8 +117,9 @@ function restore(snap) {
   state.entities = d.entities; state.layers = d.layers;
   state.currentLayer = d.currentLayer; state.nextId = d.nextId; state.blocks = d.blocks || {};
   state.lights = d.lights || []; state.nextLightId = d.nextLightId || 1;
+  state.sensors = d.sensors || []; state.nextSensorId = d.nextSensorId || 1;
   state.selection.clear();
-  renderLayers(); renderLightList();
+  renderLayers(); renderLightList(); renderSensorList();
   if (typeof refreshBlockList === 'function') refreshBlockList(); draw(); updateStat();
   if (typeof autosave === 'function') autosave();
 }
@@ -3088,11 +3092,12 @@ function renderScene(isActive) {
       if ((mx - ccx) * onx + (my - ccy) * ony < 0) { onx = -onx; ony = -ony; } // 중심 반대쪽 = 바깥
       if (cull && !facesCam(mx, my, midz, onx, ony, 0)) continue; // 안쪽 면(카메라 반대) 제외
       const lightA = Math.abs(onx * 0.8 + ony * 0.35);
-      let sSh, sSh3 = null;
+      let sSh, sSh3 = null, sFc = null;
       if (s.glow) sSh = 1;
+      else if (v3.falseColor) { sSh = 1; sFc = falseColor(illuminanceAt(mx, my, midz, onx, ony, 0), v3.fcMax); } // 조도 색표시
       else if (v3.lighting) { sSh = litFace(mx, my, midz, onx, ony, 0, !!s.lit); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
       else sSh = 0.55 + 0.45 * lightA;
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
+      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: sFc || s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1)) {  // 상면 (위 향함)
@@ -3118,16 +3123,20 @@ function renderScene(isActive) {
       const vx = t[2][0] - t[0][0], vy = t[2][1] - t[0][1], vz = t[2][2] - t[0][2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-      const shade = v3.lighting
-        ? litFace((t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3, (t[0][2] + t[1][2] + t[2][2]) / 3, nx, ny, nz, true)
-        : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8);
-      const msh3 = (v3.lighting && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
+      const mcx = (t[0][0] + t[1][0] + t[2][0]) / 3, mcy = (t[0][1] + t[1][1] + t[2][1]) / 3, mcz = (t[0][2] + t[1][2] + t[2][2]) / 3;
+      const mfc = v3.falseColor ? falseColor(illuminanceAt(mcx, mcy, mcz, nx, ny, nz), v3.fcMax) : null;
+      const shade = mfc ? 1 : (v3.lighting
+        ? litFace(mcx, mcy, mcz, nx, ny, nz, true)
+        : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8));
+      const msh3 = (!mfc && v3.lighting && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
       const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
-      faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
+      faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mfc || mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
     }
   }
   const light = document.documentElement.classList.contains('light');
   zRasterFaces(c, faces, v3.vp, light);                // 항상 정확한 Z-버퍼 은면 제거 (회전·호버·정지 모두)
+  if (v3.falseColor) { drawSensors(c, v3.vp); fcLegend(c, v3.vp); }   // 조도 숫자 + 범례 (§4.1/§4.2)
+  else if (state.sensors.length && v3.lighting) drawSensors(c, v3.vp);
   // 광원 기즈모 — 어느 개체가 광원인지 일반 뷰에서도 알아볼 수 있게 (꺼진 광원은 흐리게)
   for (const g of lightGizmos()) {
     const p = proj3D(g.x, g.y, g.z);
@@ -6091,6 +6100,7 @@ function lightSources() {
         soft: L.soft != null ? Math.max(0, L.soft) : 400, // 광원 크기 = 그림자 부드러움(0이면 하드 섀도우)
         bounce: L.bounce != null ? Math.max(0, L.bounce) : 0.5, // 간접광(반사) 세기, 0=끔
         cr: c[0] / mx, cg: c[1] / mx, cb: c[2] / mx,      // 색온도 → 채널별 비율
+        lm: L.intensity,                                   // 물리 광속 — 조도(lux) 계산에 쓴다
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
     }
@@ -6348,6 +6358,7 @@ function litCacheSig() {
   for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft},${g.bounce},`
     + `${(g.cr || 0).toFixed(3)},${(g.cg || 0).toFixed(3)},${(g.cb || 0).toFixed(3)};`;
   h += 'B' + ((v3._bounce || []).length) + ';'; // 2차 광원이 바뀌면 캐시 무효
+  h += 'F' + (v3.falseColor ? (v3.fcMax || FC_MAX_DEF) : 0) + ';'; // 조도 표시/스케일이 바뀌면 색이 달라진다
   h += '#';
   for (const s of (v3.solids || [])) { // 형상이 바뀌면(이동·높이·개수) 키가 바뀐다
     h += s.eid + ',' + Math.round(s.z0) + ',' + Math.round(s.z1) + ',' + s.poly.length + ',';
@@ -6362,7 +6373,7 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
   if (hit) { // 캐시 적중: 투영만 다시 (밝기·그림자 계산 생략)
     for (const fr of hit) {
       const P = [proj3D(fr.a[0], fr.a[1], fr.a[2]), proj3D(fr.b[0], fr.b[1], fr.b[2]), proj3D(fr.c[0], fr.c[1], fr.c[2])];
-      faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: fr.s, sh3: fr.t3, sub: 1, fe: fr.fe });
+      faces.push({ ...meta, ...(fr.fc ? { color: fr.fc } : {}), pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: fr.s, sh3: fr.t3, sub: 1, fe: fr.fe });
     }
     return;
   }
@@ -6425,12 +6436,15 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
       else { const x = mid(c, a); emit(a, b, x, depth + 1, e0, false, e2); emit(x, b, c, depth + 1, false, e1, e2); }
       return;
     }
-    const sh = litFace((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, 0, 0, nz, !!twoSided);
-    const t3 = LIT_RGB[3] ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null; // 색조가 있을 때만
+    const cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3, cz = (a[2] + b[2] + c[2]) / 3;
+    // 조도 색표시: 밝기 대신 lux를 색으로. 측정면과 같은 illuminanceAt()을 쓰므로 숫자와 색이 일치한다.
+    const fc = v3.falseColor ? falseColor(illuminanceAt(cx, cy, cz, 0, 0, nz), v3.fcMax) : null;
+    const sh = fc ? 1 : litFace(cx, cy, cz, 0, 0, nz, !!twoSided);
+    const t3 = (!fc && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null; // 색조가 있을 때만
     const fe = [e0, e1, e2];
-    frags.push({ a, b, c, s: sh, t3, fe });
+    frags.push({ a, b, c, s: sh, t3, fe, fc });
     const P = [proj3D(a[0], a[1], a[2]), proj3D(b[0], b[1], b[2]), proj3D(c[0], c[1], c[2])];
-    faces.push({ ...meta, pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: sh, sh3: t3, sub: 1, fe });
+    faces.push({ ...meta, ...(fc ? { color: fc } : {}), pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, shade: sh, sh3: t3, sub: 1, fe });
   };
   const V = poly.map((p, i) => [p[0], p[1], zs[i]]);
   const nV = V.length;
@@ -6751,6 +6765,193 @@ function rtExit() {
 }
 function cmdRaytrace() { rtEnter(); }
 
+
+// ============================================================
+//  조도 분석 (Phase 4) — False Color + 측정면
+//  조도는 광원의 '실제 루멘'으로 해석적으로 계산한다. False Color와 측정면이 같은
+//  함수를 쓰므로 화면의 색과 측정점 숫자가 반드시 일치한다.
+//  근사임을 분명히 한다: IES 배광 없이 균등 배광 가정 (§4.3).
+// ============================================================
+// 조도(lux). 거리는 반드시 m로 환산한다 — 씬 단위가 mm라 그냥 쓰면 조도가 10^6 배 틀어진다 (§3.2).
+function illuminanceAt(wx, wy, wz, nx, ny, nz) {
+  const L = (typeof v3 !== 'undefined' && v3 && v3._lights) ? v3._lights : lightSources();
+  let E = 0;
+  for (const g of L) {
+    const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    const d = Math.sqrt(d2) || 1;
+    const cos = (dx * nx + dy * ny + dz * nz) / d;
+    if (cos <= 0) continue;                       // 광원을 등진 면
+    let vis = 1;
+    if (typeof v3 !== 'undefined' && v3 && v3._occ) {
+      vis = visFraction(wx + nx * 2, wy + ny * 2, wz + nz * 2, g, dx, dy, dz, d);
+      if (vis <= 0) continue;                     // 완전히 그늘
+    }
+    const I = (g.lm || 0) / (4 * Math.PI);        // 광도(cd) — 균등 배광 가정
+    const dM2 = d2 * RT_MM * RT_MM;               // mm² → m²
+    E += I * cos / Math.max(1e-9, dM2) * vis;
+  }
+  return E;
+}
+// False Color 스케일: 0=파랑 → 중간=초록 → 최대 이상=빨강 (§4.1)
+const FC_MAX_DEF = 500; // 주거 검토 기본. 사무는 1000 등으로 조절.
+function falseColor(E, max) {
+  const t = Math.max(0, Math.min(1, E / Math.max(1, max || FC_MAX_DEF)));
+  const mix = (a, b, u) => Math.round(a + (b - a) * u);
+  let r, g, b;
+  if (t < 0.5) { const u = t / 0.5; r = mix(32, 32, u); g = mix(80, 192, u); b = mix(255, 96, u); }
+  else { const u = (t - 0.5) / 0.5; r = mix(32, 255, u); g = mix(192, 48, u); b = mix(96, 32, u); }
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function fcLegend(c, vp) {
+  const max = v3.fcMax || FC_MAX_DEF;
+  const w = 150, h = 12, x = vp.x + 12, y = vp.y + vp.h - 34;
+  const g = c.createLinearGradient(x, 0, x + w, 0);
+  for (let i = 0; i <= 10; i++) g.addColorStop(i / 10, falseColor(max * i / 10, max));
+  c.save();
+  c.fillStyle = 'rgba(10,16,32,0.72)';
+  c.fillRect(x - 8, y - 16, w + 16, h + 30);
+  c.fillStyle = g; c.fillRect(x, y, w, h);
+  c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  c.fillStyle = '#cfe0ff'; c.font = '10px monospace'; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  c.fillText('조도 (lux, 근사)', x, y - 4);
+  c.fillText('0', x, y + h + 11);
+  c.fillText(String(Math.round(max / 2)), x + w / 2 - 8, y + h + 11);
+  c.fillText(String(max) + '+', x + w - 22, y + h + 11);
+  c.restore();
+}
+// ---------- 측정면 (Sensor Grid) ----------
+// 사각 영역 위에 격자 측정점을 만들어 조도를 읽는다. 보통 바닥에서 750mm 작업면.
+function sensorGrid(S) {
+  const pts = [];
+  const sp = Math.max(50, S.spacing || 500);
+  const nx = Math.max(1, Math.round((S.x1 - S.x0) / sp));
+  const ny = Math.max(1, Math.round((S.y1 - S.y0) / sp));
+  for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++)
+    pts.push({ x: S.x0 + (S.x1 - S.x0) * i / nx, y: S.y0 + (S.y1 - S.y0) * j / ny, z: S.z });
+  return pts;
+}
+function sensorMeasure(S) {
+  const pts = sensorGrid(S);
+  const vals = pts.map(p => illuminanceAt(p.x, p.y, p.z, 0, 0, 1)); // 작업면은 위를 향한다
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const avg = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
+  S.pts = pts; S.vals = vals;
+  S.stats = { min, max, avg, u0: avg > 0 ? min / avg : 0, n: vals.length }; // 균제도 U0 = min/avg
+  return S.stats;
+}
+function cmdAddSensorPlane() {
+  const sel = selectedEntities().filter(e => e.type === 'LWPOLYLINE' && e.closed && (e.points || []).length >= 3);
+  if (!sel.length) { logLine('  측정면: 측정할 사각 영역(닫힌 폴리라인)을 선택한 뒤 실행하세요.', 'warn'); return; }
+  const z = bimAskNum('측정면 높이 (mm) — 작업면은 보통 750:', settings.bim.sensorZ || 750); if (z == null) return;
+  const sp = bimAskNum('격자 간격 (mm):', settings.bim.sensorSp || 500); if (sp == null) return;
+  settings.bim.sensorZ = z; settings.bim.sensorSp = sp; saveSettings();
+  pushUndo();
+  for (const e of sel) {
+    const bb = entityBBox(e); if (!bb) continue;
+    state.sensors.push({ id: 'S' + (state.nextSensorId++), x0: bb.xmin, y0: bb.ymin, x1: bb.xmax, y1: bb.ymax, z, spacing: sp });
+  }
+  logLine('  ✔ 측정면 ' + sel.length + '개 — 높이 ' + z + 'mm · 격자 ' + sp + 'mm. 3d + lighting 에서 조도가 표시됩니다.', 'ok');
+  renderSensorList(); draw(); boolRefresh();
+}
+function cmdClearSensorPlanes() {
+  if (!state.sensors.length) { logLine('  측정면이 없습니다.', 'warn'); return; }
+  pushUndo();
+  const n = state.sensors.length; state.sensors.length = 0;
+  logLine('  ✔ 측정면 ' + n + '개 삭제', 'ok');
+  renderSensorList(); draw(); boolRefresh();
+}
+function sensorCSV() {
+  if (!state.sensors.length) return '';
+  let out = 'plane,x_mm,y_mm,z_mm,illuminance_lux\n';
+  for (const S of state.sensors) {
+    if (!S.vals) sensorMeasure(S);
+    S.pts.forEach((p, i) => {
+      out += S.id + ',' + Math.round(p.x) + ',' + Math.round(p.y) + ',' + Math.round(p.z) + ',' + S.vals[i].toFixed(1) + '\n';
+    });
+  }
+  out += '\n# 이 값은 시각화용 근사치이며, 법규·인증용 조도 계산(Radiance, DIALux 등)을 대체하지 않습니다.\n';
+  out += '# IES 배광 데이터 없이 균등 배광을 가정했습니다.\n';
+  return out;
+}
+function cmdSensorCSV() {
+  if (!state.sensors.length) { logLine('  측정면이 없습니다 — addsensorplane 으로 먼저 만드세요.', 'warn'); return; }
+  if (!is3DActive()) { logLine('  조도 계산은 3D 작업 뷰에서 합니다 — 먼저 3d 로 여세요.', 'warn'); return; }
+  saveBlob(new Blob([sensorCSV()], { type: 'text/csv;charset=utf-8' }), (currentFileName || 'webcad') + '_조도.csv');
+  logLine('  ✔ 조도 CSV 내보내기', 'ok');
+}
+// 측정면 패널 — 통계(최소/평균/최대/균제도)와 정확도 고지
+function renderSensorList() {
+  const el = document.getElementById('sensorList');
+  if (!el) return;
+  if (!state.sensors.length) {
+    el.innerHTML = '<div class="empty" style="font-size:11.5px;opacity:.6;padding:4px 2px;">측정면이 없습니다. 사각 영역을 선택하고 <b>addsensorplane</b>.</div>';
+    return;
+  }
+  const on = is3DActive() && typeof v3 !== 'undefined' && v3 && (v3.lighting || rt.on);
+  let h = '';
+  for (const S of state.sensors) {
+    let st = S.stats;
+    if (on) st = sensorMeasure(S);
+    const w = Math.round((S.x1 - S.x0) / 100) / 10, d = Math.round((S.y1 - S.y0) / 100) / 10;
+    h += '<div class="layer"><div class="lrow1"><span class="nm">' + S.id + ' · ' + w + '×' + d + 'm · z=' + S.z + '</span></div>';
+    h += st
+      ? '<div class="lrow2" style="font-size:10.5px;opacity:.75;font-variant-numeric:tabular-nums;">'
+        + '최소 ' + st.min.toFixed(0) + ' · 평균 ' + st.avg.toFixed(0) + ' · 최대 ' + st.max.toFixed(0) + ' lx<br>'
+        + '균제도 U0 = ' + st.u0.toFixed(2) + ' · 측정점 ' + st.n + '개</div>'
+      : '<div class="lrow2" style="font-size:10.5px;opacity:.6;">3d + lighting 에서 계산됩니다</div>';
+    h += '</div>';
+  }
+  h += '<div style="font-size:10px;opacity:.55;line-height:1.5;margin-top:6px;">'
+    + '이 조도 값은 시각화용 근사치이며, 법규·인증용 조도 계산(Radiance, DIALux 등)을 대체하지 않습니다. '
+    + 'IES 배광 없이 균등 배광을 가정합니다.</div>';
+  el.innerHTML = h;
+}
+// 3D에 측정점과 조도 숫자를 그린다
+function drawSensors(c, vp) {
+  if (!state.sensors.length) return;
+  const dpr = devicePixelRatio || 1;
+  c.save();
+  c.font = (9 * dpr) + 'px monospace';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  for (const S of state.sensors) {
+    if (!S.vals) sensorMeasure(S);
+    S.pts.forEach((p, i) => {
+      const q = proj3D(p.x, p.y, p.z);
+      if (q[0] < vp.x || q[0] > vp.x + vp.w || q[1] < vp.y || q[1] > vp.y + vp.h) return;
+      const E = S.vals[i];
+      c.fillStyle = falseColor(E, v3.fcMax || FC_MAX_DEF);
+      c.beginPath(); c.arc(q[0], q[1], 2.5 * dpr, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = 'rgba(8,12,24,.85)'; c.lineWidth = 2.5 * dpr;
+      const s = String(Math.round(E));
+      c.strokeText(s, q[0], q[1] - 9 * dpr);
+      c.fillStyle = '#e8f0ff';
+      c.fillText(s, q[0], q[1] - 9 * dpr);
+    });
+  }
+  c.restore();
+}
+function cmdFalseColor() {
+  if (!v3 || !is3DActive()) { logLine('  False Color: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 로 여세요.', 'warn'); return; }
+  v3.falseColor = !v3.falseColor;
+  if (v3.falseColor && !v3.lighting) { v3.lighting = true; logLine('  (조도 표시를 위해 조명 보기를 함께 켰습니다)', 'info'); }
+  v3._litCache = new Map(); v3._litSig = null;
+  const mx = v3.fcMax || FC_MAX_DEF;
+  logLine(v3.falseColor
+    ? '  ▷ False Color ON — 표면 조도를 색으로 (0=파랑 · ' + Math.round(mx / 2) + '=초록 · ' + mx + '+=빨강 lux). 시각화용 근사치입니다.'
+    : '  ▷ False Color OFF', 'info');
+  renderSensorList(); render3D();
+}
+function cmdFcMax() {
+  if (!v3) { logLine('  3D 작업 뷰에서 사용합니다.', 'warn'); return; }
+  const m = bimAskNum('False Color 최대값 (lux) — 주거 500, 사무 1000:', v3.fcMax || FC_MAX_DEF);
+  if (m == null) return;
+  v3.fcMax = Math.max(10, m);
+  v3._litCache = new Map(); v3._litSig = null;
+  logLine('  ✔ False Color 스케일 0 ~ ' + v3.fcMax + ' lux', 'ok');
+  renderSensorList(); render3D();
+}
+
 function cmdLighting() {
   if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
     logLine('  조명 보기: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 명령으로 여세요.', 'warn'); return;
@@ -6759,6 +6960,7 @@ function cmdLighting() {
   const n = v3.lighting ? lightSources().length : 0;
   if (v3.lighting && !n) logLine('  ▷ 조명 보기 ON — 그런데 배치된 조명 기구가 없습니다. light 명령으로 먼저 조명을 세우세요.', 'warn');
   else logLine(v3.lighting ? `  ▷ 조명 보기 ON — 야간 화면, 광원 ${n}개가 주변을 밝힙니다 (다시 입력하면 OFF)` : '  ▷ 조명 보기 OFF — 기본 셰이딩으로 복귀', 'info');
+  if (!v3.lighting) v3.falseColor = false;   // 조명이 꺼지면 조도 표시도 의미가 없다
   render3D();
 }
 // 선택한 개체를 광원으로 지정한다. 개체 자체는 아무것도 바뀌지 않는다 —
@@ -7669,6 +7871,11 @@ const INSTANT_CMDS = {
   railing: cmdRailingTag,
   setaslight: cmdSetAsLight,
   raytrace: cmdRaytrace,
+  falsecolor: cmdFalseColor,
+  fcmax: cmdFcMax,
+  addsensorplane: cmdAddSensorPlane,
+  clearsensorplanes: cmdClearSensorPlanes,
+  sensorcsv: cmdSensorCSV,
   unsetlight: cmdUnsetLight,
   lighting: cmdLighting,
   extrudecrv: cmdExtrudeCrv,
@@ -8034,6 +8241,11 @@ const TOOL_KO = {
   railing: '난간(RAILING)',
   setaslight: '광원으로 지정(SETASLIGHT)',
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
+  falsecolor: '조도 색표시(FALSECOLOR)',
+  fcmax: '조도 스케일(FCMAX)',
+  addsensorplane: '측정면 추가(ADDSENSORPLANE)',
+  clearsensorplanes: '측정면 삭제(CLEARSENSORPLANES)',
+  sensorcsv: '조도 CSV(SENSORCSV)',
   unsetlight: '광원 해제(UNSETLIGHT)',
   lighting: '조명 보기(LIGHTING)',
 };
@@ -8091,6 +8303,11 @@ const CMD_ALIASES = {
   setaslight: 'setaslight', light: 'setaslight', lamp: 'setaslight', 조명: 'setaslight', 광원지정: 'setaslight', 광원: 'setaslight',
   unsetlight: 'unsetlight', 광원해제: 'unsetlight',
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
+  falsecolor: 'falsecolor', fc: 'falsecolor', 조도: 'falsecolor', 조도표시: 'falsecolor',
+  fcmax: 'fcmax', 조도스케일: 'fcmax',
+  addsensorplane: 'addsensorplane', sensor: 'addsensorplane', 측정면: 'addsensorplane',
+  clearsensorplanes: 'clearsensorplanes', 측정면삭제: 'clearsensorplanes',
+  sensorcsv: 'sensorcsv', 조도csv: 'sensorcsv',
   lighting: 'lighting', night: 'lighting', 야간: 'lighting', 조명보기: 'lighting', 조명켜기: 'lighting',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv', extrude: 'extrudecrv', ext: 'extrudecrv', 돌출: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
@@ -8658,6 +8875,7 @@ function renderLightList() {
   // 광원이 바뀌는 모든 경로(지정·해제·on/off·솔로·특성 편집)가 이 함수를 거친다 →
   // Raytraced 갱신을 여기 한 곳에만 걸면 빠짐이 없다. 형상이 그대로면 BVH는 다시 만들지 않는다.
   if (rt.on) rtLightsChanged();
+  for (const S of state.sensors) { S.vals = null; S.stats = null; }  // 광원이 바뀌면 조도를 다시 잰다
   const list = document.getElementById('lightList');
   if (!list) return;
   list.innerHTML = '';
@@ -8766,6 +8984,10 @@ document.getElementById('btnAllVis').addEventListener('click', () => { state.lay
 document.getElementById('blkScale').addEventListener('change', e => { insertScale = parseFloat(e.target.value) || 1; });
 document.getElementById('blkRot').addEventListener('change', e => { insertRot = parseFloat(e.target.value) || 0; });
 document.getElementById('btnSetAsLight')?.addEventListener('click', cmdSetAsLight);
+document.getElementById('btnFalseColor')?.addEventListener('click', cmdFalseColor);
+document.getElementById('btnFcMax')?.addEventListener('click', cmdFcMax);
+document.getElementById('btnAddSensor')?.addEventListener('click', cmdAddSensorPlane);
+document.getElementById('btnSensorCSV')?.addEventListener('click', cmdSensorCSV);
 document.getElementById('btnSoloOff')?.addEventListener('click', () => { soloLightId = null; renderLightList(); draw(); boolRefresh(); });
 document.getElementById('btnAddLayer').addEventListener('click', () => {
   let i = state.layers.length, name;
@@ -9636,7 +9858,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -9853,11 +10075,12 @@ function buildDXFText() {
       if (polyHasZ(e)) x.zs = e.zs; // 표면 위 곡선의 정점별 높이
       if (Object.keys(x).length) wcx.ext.push([sig, x]);
     }
+    if (state.sensors.length) { wcx.sensors = state.sensors.map(S => ({ id:S.id, x0:S.x0, y0:S.y0, x1:S.x1, y1:S.y1, z:S.z, spacing:S.spacing })); wcx.nextSensorId = state.nextSensorId; }
     if (state.lights.length) { // _missing 은 실행 중 표시라 저장하지 않는다
       wcx.lights = state.lights.map(L => { const c = Object.assign({}, L); delete c._missing; return c; });
       wcx.nextLightId = state.nextLightId;
     }
-    if (wcx.ext.length || wcx.mesh.length || wcx.img.length || wcx.lights) {
+    if (wcx.ext.length || wcx.mesh.length || wcx.img.length || wcx.lights || wcx.sensors) {
       const js = JSON.stringify(wcx);
       for (let i = 0; i < js.length; i += 200) g(999, 'WCX' + js.slice(i, i + 200));
     }
@@ -10481,6 +10704,7 @@ function applyWcxExt(text) {
       if (x.z2 != null) e.z2 = x.z2;
       if (Array.isArray(x.zs) && e.points && x.zs.length === e.points.length) e.zs = x.zs.slice(); // 표면 위 곡선
     }
+    if (Array.isArray(data.sensors)) { state.sensors = data.sensors; state.nextSensorId = data.nextSensorId || (state.sensors.length + 1); }
     // 광원 컬렉션 복원
     if (Array.isArray(data.lights)) {
       state.lights = data.lights.map(L => Object.assign(lightDefaults(), L));
@@ -10906,6 +11130,8 @@ function applyDoc(d) {
   state.nextId = Math.max(d.nextId || 1, state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
   // 광원 컬렉션. 개체를 못 찾는 광원은 조용히 지우지 않고 경고로 남긴다 (§1.2)
+  state.sensors = Array.isArray(d.sensors) ? d.sensors : [];
+  state.nextSensorId = d.nextSensorId || (state.sensors.length + 1);
   state.lights = Array.isArray(d.lights) ? d.lights.map(L => Object.assign(lightDefaults(), L)) : [];
   state.nextLightId = Math.max(d.nextLightId || 1, state.lights.reduce((m, L) => Math.max(m, +String(L.id).replace(/\D/g, '') || 0), 0) + 1);
   soloLightId = null;
@@ -11000,7 +11226,7 @@ function newDrawing() {
   state.blocks = {}; insertName = null;
   undoStack.length = 0; redoStack.length = 0;
   state.view = { x: 0, y: 0, scale: 4 };
-  renderLayers(); renderLightList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
+  renderLayers(); renderLightList(); renderSensorList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
   logLine('새 도면을 시작했습니다. 명령행에 명령을 입력하거나 도구를 선택하세요.', 'info');
 }
 
@@ -11039,7 +11265,7 @@ function restoreLocal(d) {
   setFileName(d.fileName || null, d.fileLoc === 'pc' ? null : (d.fileLoc || null)); // 핸들은 복원 불가 → 'pc' 표시는 내림
   state.selection.clear();
   undoStack.length = 0; redoStack.length = 0;
-  renderLayers(); renderLightList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
+  renderLayers(); renderLightList(); renderSensorList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
   docs[curDoc] = captureDoc(); renderDocTabs();
 }
 // 변경 시 자동 저장(디바운스) + 백그라운드 전환/종료 시 즉시 저장
@@ -11114,7 +11340,8 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
+  cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
@@ -11140,7 +11367,7 @@ window.WEBCAD_AI_BRIDGE = {
   runBoolean, isBoolable, bimSolids,
   is3D: is3DActive,
   refresh: () => {
-    renderLayers(); renderLightList(); renderProps(); draw(); updateStat();
+    renderLayers(); renderLightList(); renderSensorList(); renderProps(); draw(); updateStat();
     if (is3DActive() && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); }
   },
 };
@@ -11155,12 +11382,14 @@ window.WEBCAD_API = {
     data: { v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer,
             blocks: state.blocks, nextId: state.nextId, view: state.view, views: state.views,
             levels: state.levels, curLv: state.curLv,
-            lights: state.lights, nextLightId: state.nextLightId },
+            lights: state.lights, nextLightId: state.nextLightId,
+            sensors: state.sensors, nextSensorId: state.nextSensorId },
   }),
   // 클라우드 도면 로드
   setDoc: (name, d) => {
     applyDoc({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId,
                lights: d.lights, nextLightId: d.nextLightId,
+               sensors: d.sensors, nextSensorId: d.nextSensorId,
                blocks: d.blocks, view: d.view, views: d.views, levels: d.levels, curLv: d.curLv,
                fileName: name || null, fileLoc: 'cloud' });
     renderDocTabs(); draw();
