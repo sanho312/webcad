@@ -880,6 +880,46 @@ function tests(){
     reset();
   }
 
+  // ---------- 광원 속성 패널 (Phase 3) ----------
+  group('광원 속성 — 슬라이더 실시간 · 다중 일괄 · undo 오염 방지');
+  {
+    setEnts([
+      { type:'LWPOLYLINE', closed:true, layer:'0', points:[[0,0],[240,0],[240,240],[0,240]], bim:{kind:'column',h:80,base:2550} },
+      { type:'LWPOLYLINE', closed:true, layer:'0', points:[[2000,0],[2240,0],[2240,240],[2000,240]], bim:{kind:'column',h:80,base:2550} },
+    ]);
+    S0.selection.clear(); S0.entities.forEach(e => S0.selection.add(e.id));
+    C.INSTANT_CMDS['setaslight']();
+    eqi(S0.lights.length, 2, '광원 2개 지정');
+    C.renderProps();
+    const D = document.getElementById('app').contentWindow.document;
+    const sl = k => D.querySelector(`input[type=range][data-ls="${k}"]`);
+    const num = k => D.querySelector(`input[data-lk="${k}"]`);
+    ok(!!sl('intensity') && !!sl('colorTemp'), '★ 다중 선택 패널에도 광원 슬라이더가 있다 (§3.1 일괄 편집)');
+    eqi(sl('intensity').min, '2', '  세기 슬라이더는 로그 스케일 (100lm = 10^2)');
+    eqi(sl('intensity').max, '4.301', '  최대 20,000lm = 10^4.301');
+    eqi(sl('colorTemp').min, '1800', '  색온도 1800K~');
+    eqi(sl('colorTemp').max, '10000', '  ~10000K');
+    ok(/linear-gradient/.test(sl('colorTemp').style.background), '  색온도 슬라이더에 색 그라데이션');
+    eqi(D.querySelectorAll('[data-lpre]').length, 4, '  프리셋 4종 (§3.1은 3~5개)');
+
+    // ★ 드래그가 실행취소 기록을 오염시키면 안 된다
+    const u0 = C.undoStack.length;
+    const ct = sl('colorTemp');
+    ct.dispatchEvent(new PointerEvent('pointerdown', { bubbles:true }));
+    for (let k = 3000; k <= 4000; k += 50) { ct.value = String(k); ct.dispatchEvent(new Event('input', { bubbles:true })); }
+    eqi(C.undoStack.length - u0, 1, '★ 드래그 21스텝에도 undo는 1개만 (스냅샷은 도면 전체 JSON이라 매번 쌓으면 기록이 뒤덮인다)');
+    ok(S0.lights.every(L => L.colorTemp === 4000), '  드래그가 선택된 광원 전부에 일괄 반영');
+    eqi(num('colorTemp').value, '4000', '  숫자 입력도 동기화');
+    ok(D.querySelector('input[data-ls="colorTemp"]') === ct, '  드래그 중 패널을 다시 그리지 않는다 (슬라이더가 사라지면 안 됨)');
+    ct.dispatchEvent(new Event('change', { bubbles:true }));
+
+    // 프리셋 일괄
+    C.renderProps();
+    D.querySelectorAll('[data-lpre]')[0].click();
+    ok(S0.lights.every(L => L.intensity === 800 && L.colorTemp === 3000), '프리셋 "다운라이트" → 800lm/3000K 일괄');
+    reset();
+  }
+
   // ---------- 실제 광원 (조명 보기) ----------
   group('lighting — 지정한 광원이 3D를 실제로 밝힘 (야간 보기)');
   {
@@ -895,6 +935,14 @@ function tests(){
     const at = x => C.litFace(x, 0, 0, 0, 0, 1, false);
     ok(at(0) > at(2000) && at(2000) > at(4000) && at(4000) > at(8000), '가까울수록 밝다 (거리 제곱 감쇠)');
     ok(at(0) < 1.5, '  광원 바로 아래도 상한에 붙지 않음 (계조 유지)');
+
+    // 조명 캐시 서명에 광원 색이 빠지면, 색온도를 바꿔도 캐시가 살아남아 옛 색이 그대로 남는다
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:8000, power:1, cr:1, cg:0.7, cb:0.4 }];
+    const sigWarm = C.litCacheSig();
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:8000, power:1, cr:0.8, cg:0.9, cb:1 }];
+    const sigCool = C.litCacheSig();
+    ok(sigWarm !== sigCool, '★ 광원 색만 바뀌어도 조명 캐시가 무효화된다 (색온도가 화면에 반영되려면 필수)');
+    if (V3) V3._lights = [{ x:0, y:0, z:2850, range:5000, power:1 }];
 
     // 톤매핑 — 밝기 합이 상한을 넘어도 하드 클립되지 않아야 한다.
     // (예전엔 min(1.5)로 잘라, 방 안 전 구간이 1.5로 같아지며 감쇠·그림자 계조가 사라졌다)

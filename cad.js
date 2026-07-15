@@ -6344,7 +6344,9 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
 // 캐시 키가 바뀌는 경우(형상·광원 변경)에만 재계산 → 반복 렌더가 사실상 공짜가 된다.
 function litCacheSig() {
   let h = '';
-  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft},${g.bounce};`;
+  // 색(cr/cg/cb)까지 넣어야 한다 — 빠뜨리면 색온도를 바꿔도 캐시가 살아남아 옛 색이 그대로 남는다
+  for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft},${g.bounce},`
+    + `${(g.cr || 0).toFixed(3)},${(g.cg || 0).toFixed(3)},${(g.cb || 0).toFixed(3)};`;
   h += 'B' + ((v3._bounce || []).length) + ';'; // 2차 광원이 바뀌면 캐시 무효
   h += '#';
   for (const s of (v3.solids || [])) { // 형상이 바뀌면(이동·높이·개수) 키가 바뀐다
@@ -6642,6 +6644,19 @@ function rtCameraChanged() {
     if (!rt.on || !rt.tracer) return;
     rt.tracer.renderScale = 1; rt.tracer.updateCamera();
   }, 220);
+}
+// 슬라이더 드래그 중: 1/4 해상도로 떨어뜨려 첫 반영을 100ms 안에 (§6).
+// 픽셀 수가 1/16이라 첫 샘플이 즉시 나온다. 손을 떼면 rtFullRes()가 풀 해상도로 되돌린다.
+function rtPreview() {
+  if (!rt.on || !rt.tracer) return;
+  rt.tracer.renderScale = 0.25;
+  clearTimeout(rt._lightSettle);
+  rt._lightSettle = setTimeout(rtFullRes, 260); // 드래그가 끝나지 않아도 손이 멈추면 복귀
+}
+function rtFullRes() {
+  clearTimeout(rt._lightSettle);
+  if (!rt.on || !rt.tracer) return;
+  if (rt.tracer.renderScale !== 1) { rt.tracer.renderScale = 1; rt.tracer.reset(); }
 }
 // 광원 속성(세기·색온도)만 바뀐 경우: BVH 재빌드 없이 머티리얼만 갱신 + 누적 리셋 (§2.3)
 function rtLightsChanged() {
@@ -8771,12 +8786,127 @@ document.getElementById('btnDelLayer').addEventListener('click', () => {
 });
 
 // 속성 패널
+// 광원 편집기 마크업 — 단일 선택과 다중 선택이 같은 코드를 쓴다.
+// (다중 선택 패널에 이게 없으면 "등기구 6개를 골라 색온도를 한 번에 드래그"가 불가능하다 — §3.1/§5-4)
+function lightPropRows(LT, multi) {
+  let rows = '';
+  const kc = lightColorRGB(LT);
+  // 색온도 슬라이더 바탕에 실제 색 그라데이션을 깔아, 숫자를 몰라도 따뜻함/차가움이 보이게 한다
+  const kGrad = [1800, 2200, 2700, 3000, 4000, 5000, 6500, 8000, 10000]
+    .map(k => { const c = kelvinToRGB(k); return `rgb(${c[0]},${c[1]},${c[2]}) ${Math.round((k - 1800) / 8200 * 100)}%`; }).join(',');
+  const SL = 'flex:1;min-width:0;';
+  const NUM = 'width:62px;flex:none;';
+  rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">광원</label>
+    <label style="display:flex;align-items:center;gap:5px;font-weight:590;">
+      <input type="checkbox" data-lon ${LT.enabled ? 'checked' : ''}>켜짐</label>
+    ${multi ? `<span style="font-size:11px;opacity:.6;">${multi}개 일괄</span>` : ''}</div>`;
+  // 세기: 100~20,000 lm 로그 스케일 (낮은 쪽 분해능을 살리려면 선형으로는 안 된다)
+  rows += `<div class="row"><label>세기</label>
+    <input type="range" data-ls="intensity" min="2" max="4.301" step="0.001" value="${Math.log10(Math.max(100, LT.intensity))}" style="${SL}">
+    <input type="number" step="10" min="100" max="20000" data-lk="intensity" value="${Math.round(LT.intensity)}" style="${NUM}">
+    <span style="font-size:11px;opacity:.6;">lm</span></div>`;
+  rows += `<div class="row"><label>색온도</label>
+    <input type="range" data-ls="colorTemp" min="1800" max="10000" step="50" value="${LT.colorTemp}"
+      style="${SL}background:linear-gradient(90deg,${kGrad});border-radius:980px;height:14px;">
+    <input type="number" step="50" min="1800" max="10000" data-lk="colorTemp" value="${LT.colorTemp}" style="${NUM}">
+    <span style="font-size:11px;opacity:.6;">K</span></div>`;
+  rows += `<div class="row"><label>색</label><span style="flex:1;height:14px;border-radius:4px;background:rgb(${kc[0]},${kc[1]},${kc[2]});"></span>
+    <button class="miniBtn" id="pLightCustom">${LT.color ? '색온도로' : '커스텀 색'}</button></div>`;
+  if (LT.color) rows += `<div class="row"><label></label><input type="color" id="pLightColor" value="${rgbHex('rgb(' + LT.color.join(',') + ')')}"></div>`;
+  rows += `<div class="row"><label>타입</label><select data-ltype style="flex:1;">` +
+    LIGHT_TYPES.map(t => `<option value="${t}" ${LT.type === t ? 'selected' : ''}>${LIGHT_TYPE_KO[t]}</option>`).join('') + `</select></div>`;
+  if (LT.type === 'spot') {
+    rows += `<div class="row"><label>스팟 각도</label>
+      <input type="range" data-ls="spotAngleDeg" min="5" max="120" step="1" value="${LT.spotAngleDeg}" style="${SL}">
+      <input type="number" step="1" min="5" max="120" data-lk="spotAngleDeg" value="${LT.spotAngleDeg}" style="${NUM}">
+      <span style="font-size:11px;opacity:.6;">°</span></div>`;
+    rows += `<div class="row"><label>페넘브라</label>
+      <input type="range" data-ls="spotPenumbra" min="0" max="1" step="0.01" value="${LT.spotPenumbra}" style="${SL}">
+      <input type="number" step="0.05" min="0" max="1" data-lk="spotPenumbra" value="${LT.spotPenumbra}" style="${NUM}"></div>`;
+  }
+  rows += `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;">` +
+    LIGHT_PRESETS.map((p, i) => `<button class="miniBtn" data-lpre="${i}" title="${p.intensity}lm / ${p.colorTemp}K">${p.n}</button>`).join('') + `</div>`;
+  rows += `<details style="margin-top:6px;"><summary style="font-size:11px;opacity:.6;cursor:pointer;">고급 (소프트웨어 렌더러 전용 — Raytraced에는 쓰이지 않음)</summary>`;
+  for (const [k, lab] of [['range', '빛 도달거리'], ['soft', '그림자 부드러움(0=선명)'], ['bounce', '간접광 세기(0=끔)'], ['spacing', '발광 지점 간격(선·폴리라인)']])
+    rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-lk="${k}" value="${LT[k] != null ? LT[k] : 0}"></div>`;
+  rows += `</details>`;
+  rows += `<button class="miniBtn" id="pLightClr" style="margin-top:4px;">광원 해제</button>`;
+  return rows;
+}
+// 광원 속성 핸들러 — 단일·다중 선택 패널이 같은 코드를 쓴다.
+// 선택된 광원 전부에 일괄 적용된다 (여러 등기구를 한 번에 조절).
+function wireLightProps(body) {
+  if (!body.querySelector('[data-lon],[data-lk],[data-ls]')) return;
+  const selLights = () => selectedEntities().map(lightOfEnt).filter(Boolean);
+  // 드래그 중 실시간 반영 — undo를 쌓지 않고 패널도 다시 그리지 않는다.
+  //  · pushUndo는 스냅샷(도면 전체 JSON)이라 input마다 부르면 실행취소 기록이 드래그
+  //    부스러기 수백 개로 뒤덮이고 느려진다 → 드래그 시작에 딱 한 번만.
+  //  · renderProps()는 패널을 통째로 새로 만들어서, 드래그 중인 슬라이더가 사라진다.
+  //  · 형상은 바뀌지 않으므로 bimSolids() 재빌드도 생략한다.
+  const lightsLive = (fn) => {
+    const Ls = selLights(); if (!Ls.length) return;
+    Ls.forEach(fn);
+    renderLightList();                                   // 광원 패널 + Raytraced 갱신
+    if (is3DActive() && typeof v3 !== 'undefined' && v3) render3D(); else draw();
+  };
+  const applyLights = (fn, refresh) => {
+    const Ls = selLights(); if (!Ls.length) return;
+    pushUndo(); Ls.forEach(fn);
+    renderLightList(); if (refresh) renderProps(); propRefresh();
+  };
+  // 슬라이더 ↔ 숫자 입력 동기화
+  const syncNum = (k, v) => { const n = body.querySelector(`input[data-lk="${k}"]`); if (n) n.value = v; };
+  const syncSl = (k, v) => {
+    const sl = body.querySelector(`input[data-ls="${k}"]`); if (!sl) return;
+    sl.value = (k === 'intensity') ? Math.log10(Math.max(100, v)) : v;
+  };
+  let lightDragging = false;
+  const endDrag = () => { if (!lightDragging) return; lightDragging = false; rtFullRes(); renderProps(); };
+  body.querySelectorAll('input[type=range][data-ls]').forEach(sl => {
+    const k = sl.dataset.ls;
+    const readVal = () => k === 'intensity' ? Math.round(Math.pow(10, +sl.value))
+      : (k === 'spotPenumbra' ? Math.round(+sl.value * 100) / 100 : Math.round(+sl.value));
+    sl.addEventListener('pointerdown', () => { if (!lightDragging) { pushUndo(); lightDragging = true; } });
+    sl.addEventListener('input', () => {
+      const v = readVal();
+      syncNum(k, v);
+      rtPreview();                                        // 조작 중 저해상도 → 100ms 안에 첫 반영
+      lightsLive(L => { L[k] = v; if (k === 'colorTemp') L.color = null; });
+    });
+    sl.addEventListener('change', endDrag);
+    sl.addEventListener('pointerup', endDrag);
+    sl.addEventListener('lostpointercapture', endDrag);   // 패널 밖에서 손을 뗀 경우
+  });
+  body.querySelectorAll('input[data-lk]').forEach(inp => inp.addEventListener('change', () => {
+    const v = parseFloat(inp.value);
+    if (!isFinite(v)) return;
+    syncSl(inp.dataset.lk, v);
+    applyLights(L => { L[inp.dataset.lk] = v; if (inp.dataset.lk === 'colorTemp') L.color = null; },
+      inp.dataset.lk === 'colorTemp');
+  }));
+  body.querySelector('input[data-lon]')?.addEventListener('change', ev => applyLights(L => { L.enabled = ev.target.checked; }));
+  body.querySelector('select[data-ltype]')?.addEventListener('change', ev => applyLights(L => { L.type = ev.target.value; }, true));
+  body.querySelectorAll('[data-lpre]').forEach(b => b.addEventListener('click', () => {
+    const p = LIGHT_PRESETS[+b.dataset.lpre];
+    applyLights(L => { L.intensity = p.intensity; L.colorTemp = p.colorTemp; L.color = null; }, true);
+  }));
+  document.getElementById('pLightCustom')?.addEventListener('click', () => {
+    const on = !!(LT && LT.color);
+    applyLights(L => { L.color = on ? null : lightColorRGB(L); }, true); // 색온도 ↔ 커스텀 색은 배타
+  });
+  document.getElementById('pLightColor')?.addEventListener('input', ev => {
+    const [r, g2, b2] = hexToRgb(ev.target.value);
+    applyLights(L => { L.color = [r, g2, b2]; });
+  });
+  document.getElementById('pLightClr')?.addEventListener('click', cmdUnsetLight);
+}
 function renderProps() {
   const body = document.getElementById('propsBody');
   const byId = new Map(state.entities.map(e => [e.id, e])); // 대량 선택 시 find 반복은 O(n²) — 맵으로 1패스
   const sel = [...state.selection].map(id => byId.get(id)).filter(Boolean);
   if (!sel.length) { body.innerHTML = '<div class="empty">선택된 도형이 없습니다.</div>'; return; }
   if (sel.length > 1) {
+    const mLights = sel.map(lightOfEnt).filter(Boolean);
     body.innerHTML =
       `<div class="row"><label>선택</label><span>${sel.length}개 도형</span></div>
        <div class="row"><label>레이어</label><select id="mLayer"><option value="">— 변경 —</option>${state.layers.map(l => `<option>${escapeHtml(l.name)}</option>`).join('')}</select></div>
@@ -8789,8 +8919,11 @@ function renderProps() {
        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
          <button class="miniBtn" id="pBimWall">벽 지정</button><button class="miniBtn" id="pBimSlab">슬래브</button>
          <button class="miniBtn" id="pBimCol">기둥</button><button class="miniBtn" id="pBimClr">BIM 해제</button>
-       </div>
-       <button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
+       </div>`
+       // 선택 안에 광원이 있으면 공통 속성을 일괄 편집할 수 있게 같은 편집기를 붙인다 (§3.1)
+       + (mLights.length ? lightPropRows(mLights[0], mLights.length) : '')
+       + `<button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
+    wireLightProps(body);   // 다중 선택에서도 광원 슬라이더가 동작하게 (단일과 같은 코드)
     const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); propRefresh(); };
     document.getElementById('pFront').addEventListener('click', () => reorderSel(true));
     document.getElementById('pBack').addEventListener('click', () => reorderSel(false));
@@ -8858,30 +8991,7 @@ function renderProps() {
   // 광원 특성 — BIM 정체와 무관하게 덧붙는다 (기둥이면서 광원일 수 있다)
   // 광원 속성 — 사용자 대면 단위는 루멘(lm)·켈빈(K). BIM 정체와 무관하게 덧붙는다.
   const LT = lightOfEnt(e);
-  if (LT) {
-    const kc = lightColorRGB(LT);
-    rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">광원</label>
-      <label style="display:flex;align-items:center;gap:5px;font-weight:590;">
-        <input type="checkbox" data-lon ${LT.enabled ? 'checked' : ''}>켜짐</label></div>`;
-    rows += `<div class="row"><label>세기</label><input type="number" step="50" min="0" data-lk="intensity" value="${LT.intensity}"><span style="font-size:11px;opacity:.6;">lm</span></div>`;
-    rows += `<div class="row"><label>색온도</label><input type="number" step="100" min="1800" max="10000" data-lk="colorTemp" value="${LT.colorTemp}"><span style="font-size:11px;opacity:.6;">K</span></div>`;
-    rows += `<div class="row"><label>색</label><span style="flex:1;height:14px;border-radius:4px;background:rgb(${kc[0]},${kc[1]},${kc[2]});"></span>
-      <button class="miniBtn" id="pLightCustom">${LT.color ? '색온도로' : '커스텀 색'}</button></div>`;
-    if (LT.color) rows += `<div class="row"><label></label><input type="color" id="pLightColor" value="${rgbHex('rgb(' + LT.color.join(',') + ')')}"></div>`;
-    rows += `<div class="row"><label>타입</label><select data-ltype style="flex:1;">` +
-      LIGHT_TYPES.map(t => `<option value="${t}" ${LT.type === t ? 'selected' : ''}>${LIGHT_TYPE_KO[t]}</option>`).join('') + `</select></div>`;
-    if (LT.type === 'spot') {
-      rows += `<div class="row"><label>스팟 각도</label><input type="number" step="1" min="5" max="120" data-lk="spotAngleDeg" value="${LT.spotAngleDeg}"><span style="font-size:11px;opacity:.6;">°</span></div>`;
-      rows += `<div class="row"><label>페넘브라</label><input type="number" step="0.05" min="0" max="1" data-lk="spotPenumbra" value="${LT.spotPenumbra}"></div>`;
-    }
-    rows += `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;">` +
-      LIGHT_PRESETS.map((p, i) => `<button class="miniBtn" data-lpre="${i}" title="${p.intensity}lm / ${p.colorTemp}K">${p.n}</button>`).join('') + `</div>`;
-    rows += `<details style="margin-top:6px;"><summary style="font-size:11px;opacity:.6;cursor:pointer;">고급 (현재 렌더러 전용 — Phase 2에서 물리 기반으로 대체)</summary>`;
-    for (const [k, lab] of [['range', '빛 도달거리'], ['soft', '그림자 부드러움(0=선명)'], ['bounce', '간접광 세기(0=끔)'], ['spacing', '발광 지점 간격(선·폴리라인)']])
-      rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-lk="${k}" value="${LT[k] != null ? LT[k] : 0}"></div>`;
-    rows += `</details>`;
-    rows += `<button class="miniBtn" id="pLightClr" style="margin-top:4px;">광원 해제</button>`;
-  }
+  if (LT) rows += lightPropRows(LT, 0);
   if (e.bim) {
     const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
     rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">BIM</label><span style="font-weight:590;">${kindKo}</span></div>`;
@@ -8905,34 +9015,7 @@ function renderProps() {
     if (!isFinite(v)) return;
     pushUndo(); e.bim[inp.dataset.bk] = v; propRefresh();
   }));
-  // 광원 속성 — 선택된 광원 전부에 일괄 적용 (여러 등기구를 한 번에 조절)
-  const selLights = () => selectedEntities().map(lightOfEnt).filter(Boolean);
-  const applyLights = (fn, refresh) => {
-    const Ls = selLights(); if (!Ls.length) return;
-    pushUndo(); Ls.forEach(fn);
-    renderLightList(); if (refresh) renderProps(); propRefresh();
-  };
-  body.querySelectorAll('input[data-lk]').forEach(inp => inp.addEventListener('change', () => {
-    const v = parseFloat(inp.value);
-    if (!isFinite(v)) return;
-    applyLights(L => { L[inp.dataset.lk] = v; if (inp.dataset.lk === 'colorTemp') L.color = null; },
-      inp.dataset.lk === 'colorTemp');
-  }));
-  body.querySelector('input[data-lon]')?.addEventListener('change', ev => applyLights(L => { L.enabled = ev.target.checked; }));
-  body.querySelector('select[data-ltype]')?.addEventListener('change', ev => applyLights(L => { L.type = ev.target.value; }, true));
-  body.querySelectorAll('[data-lpre]').forEach(b => b.addEventListener('click', () => {
-    const p = LIGHT_PRESETS[+b.dataset.lpre];
-    applyLights(L => { L.intensity = p.intensity; L.colorTemp = p.colorTemp; L.color = null; }, true);
-  }));
-  document.getElementById('pLightCustom')?.addEventListener('click', () => {
-    const on = !!(LT && LT.color);
-    applyLights(L => { L.color = on ? null : lightColorRGB(L); }, true); // 색온도 ↔ 커스텀 색은 배타
-  });
-  document.getElementById('pLightColor')?.addEventListener('input', ev => {
-    const [r, g2, b2] = hexToRgb(ev.target.value);
-    applyLights(L => { L.color = [r, g2, b2]; });
-  });
-  document.getElementById('pLightClr')?.addEventListener('click', cmdUnsetLight);
+  wireLightProps(body);
   document.getElementById('pBimClr1')?.addEventListener('click', cmdBimClear);
   document.getElementById('pBimWall1')?.addEventListener('click', cmdWallTag);
   document.getElementById('pBimSlab1')?.addEventListener('click', cmdSlabTag);
@@ -11031,7 +11114,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, get rt() { return rt; }, lightSources, litFace,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
