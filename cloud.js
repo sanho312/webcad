@@ -123,6 +123,21 @@
     }
   }
 
+  // 도면 열기 — cloudId·실시간 세션 상태가 이 모듈에만 있으므로 로비도 반드시 이 함수를 거쳐야 한다.
+  // 밖에서 직접 열면 cloudId가 갱신되지 않아 다음 "클라우드에 저장"이 같은 도면을 새로 하나 더 만든다.
+  async function openDrawing(id, canEdit, mine) {
+    const { data: row, error } = await sb.from('drawings').select('name,data').eq('id', id).single();
+    if (error) throw error;
+    API.setDoc(row.name, row.data);
+    if (API.zoomFit) API.zoomFit();           // 기기 화면 크기에 맞게 전체보기
+    cloudId = id; lastSavedRev = API.getRev();
+    API.log(`  ☁ 도면 열기: "${row.name}"${mine ? '' : ' (공유받음)'}`, 'ok');
+    usage('cloud_open');
+    joinRealtime(id, !!canEdit);              // 실시간 세션 참가
+    if (!canEdit) API.log('  👁 읽기 전용 — 상대의 변경이 실시간으로 보이지만 내 수정은 전송/저장되지 않습니다.', 'info');
+    return row.name;
+  }
+
   async function openDrawingList() {
     dlg('☁ 내 도면', '<div class="cdMuted">불러오는 중…</div>', async (o) => {
       try {
@@ -143,17 +158,8 @@
         body.querySelectorAll('.cdCard').forEach(card => {
           const id = card.dataset.id, mine = card.dataset.mine === 'true';
           card.querySelector('[data-open]').addEventListener('click', async () => {
-            try {
-              const { data: row, error: e2 } = await sb.from('drawings').select('name,data').eq('id', id).single();
-              if (e2) throw e2;
-              API.setDoc(row.name, row.data);
-              if (API.zoomFit) API.zoomFit(); // 기기 화면 크기에 맞게 전체보기
-              cloudId = id; lastSavedRev = API.getRev();
-              closeDlg(); API.log(`  ☁ 도면 열기: "${row.name}"${mine ? '' : ' (공유받음)'}`, 'ok');
-              usage('cloud_open');
-              joinRealtime(id, card.dataset.canedit === 'true'); // 실시간 세션 참가
-              if (card.dataset.canedit !== 'true') API.log('  👁 읽기 전용 — 상대의 변경이 실시간으로 보이지만 내 수정은 전송/저장되지 않습니다.', 'info');
-            } catch (e) { dErr(koErr(e)); }
+            try { await openDrawing(id, card.dataset.canedit === 'true', mine); closeDlg(); }
+            catch (e) { dErr(koErr(e)); }
           });
           card.querySelector('[data-ren]')?.addEventListener('click', async () => {
             const nn = prompt('새 이름:', card.dataset.name); if (!nn) return;
@@ -202,29 +208,31 @@
   }
 
   // ---------- ③ 공유 ----------
-  async function openShare() {
-    if (!cloudId) { API.log('  공유는 클라우드에 저장된 도면에서 사용할 수 있습니다. 먼저 "클라우드에 저장"하세요.', 'warn'); return; }
+  // idArg 없이 부르면(파일 메뉴) 현재 열린 도면, 있으면(로비) 그 도면을 공유한다
+  async function openShare(idArg) {
+    const id = (typeof idArg === 'string' && idArg) ? idArg : cloudId;
+    if (!id) { API.log('  공유는 클라우드에 저장된 도면에서 사용할 수 있습니다. 먼저 "클라우드에 저장"하세요.', 'warn'); return; }
     dlg('👥 도면 공유', `
       <div class="cdRow"><input class="cdIn" id="shUser" placeholder="공유할 상대의 아이디">
         <label style="font-size:12.5px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="shEdit">편집 허용</label>
         <button class="cdBtn pri" id="shAdd">공유</button></div>
       <div class="cdList" id="shList"></div>`, async (o) => {
       async function refresh() {
-        const { data, error } = await sb.rpc('list_shares', { p_id: cloudId });
+        const { data, error } = await sb.rpc('list_shares', { p_id: id });
         if (error) return dErr(koErr(error));
         o.querySelector('#shList').innerHTML = data.length
           ? data.map(s => `<div class="cdItem"><span class="grow">👤 ${esc(s.username)} — ${s.can_edit ? '편집 가능' : '읽기 전용'}</span>
               <button class="cdBtn danger" data-un="${esc(s.username)}">해제</button></div>`).join('')
           : '<div class="cdMuted">아직 공유한 사람이 없습니다.</div>';
         o.querySelectorAll('[data-un]').forEach(b => b.addEventListener('click', async () => {
-          await sb.rpc('unshare_drawing', { p_id: cloudId, p_username: b.dataset.un }); refresh();
+          await sb.rpc('unshare_drawing', { p_id: id, p_username: b.dataset.un }); refresh();
         }));
       }
       o.querySelector('#shAdd').addEventListener('click', async () => {
         dErr('');
         const un = o.querySelector('#shUser').value.trim();
         if (!un) return dErr('아이디를 입력하세요.');
-        const { error } = await sb.rpc('share_drawing', { p_id: cloudId, p_username: un, p_can_edit: o.querySelector('#shEdit').checked });
+        const { error } = await sb.rpc('share_drawing', { p_id: id, p_username: un, p_can_edit: o.querySelector('#shEdit').checked });
         if (error) return dErr(koErr(error));
         o.querySelector('#shUser').value = ''; usage('share'); refresh();
       });
@@ -481,6 +489,32 @@
     addMenuItem('optMenu', '💬 피드백 보내기…', openFeedback);
   }
 
+  // ---------- 로비(lobby.js)용 공개 API ----------
+  // 도면 목록·열기·이름변경·삭제·공유를 로비에서도 쓰지만, cloudId 같은 상태가
+  // 이 모듈에 있으므로 로비가 supabase를 직접 부르지 않고 여기를 거치게 한다.
+  window.WEBCAD_CLOUD = {
+    ready: () => !!(sb && user),
+    list: async () => {
+      const { data, error } = await sb.rpc('list_drawings');
+      if (error) throw error;
+      return data || [];
+    },
+    open: openDrawing,
+    rename: async (id, name) => {
+      const { error } = await sb.from('drawings').update({ name }).eq('id', id);
+      if (error) throw error;
+      if (cloudId === id) API.setName(name);
+    },
+    remove: async (id) => {
+      const { error } = await sb.from('drawings').delete().eq('id', id);
+      if (error) throw error;
+      if (cloudId === id) cloudId = null;
+    },
+    share: openShare,
+    plan: () => plan,
+    err: koErr,
+  };
+
   // ---------- 초기화 (로그인 준비 후) ----------
   let built = false;
   window.addEventListener('webcad-auth', async (ev) => {
@@ -490,6 +524,9 @@
     if (!user) return;
     if (!built) { built = true; buildMenus(); }
     usage('session');
-    pullSettings(); loadPlan(); showAnnouncements();
+    pullSettings();
+    await loadPlan();                 // 플랜을 읽고 나서 알려야 로비가 옛 값('free')을 그리지 않는다
+    window.dispatchEvent(new CustomEvent('webcad-cloud-ready'));
+    showAnnouncements();              // 공지는 로비를 막지 않게 기다리지 않는다
   });
 })();
