@@ -398,6 +398,9 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <div class="menuWrap">
       <button class="tbtn" id="btnOpts">⚙ 옵션 ▾</button>
       <div id="optMenu" class="dropdown">
+        <button class="menuItem" id="miSetAsLight">💡 광원으로 지정 (setaslight)</button>
+        <button class="menuItem" id="miUnsetLight">🚫 광원 해제 (unsetlight)</button>
+        <div class="menuSep"></div>
         <button class="menuItem" id="moPlot">🖨 인쇄 / 플롯 (PDF)…</button>
         <div class="menuSep"></div>
         <button class="menuItem" id="moShortcut">⌨ 명령 단축키…</button>
@@ -764,6 +767,17 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         </div>
       </div>
 
+      <div class="section" data-sec="lights">
+        <h3>광원</h3>
+        <div class="body">
+          <div id="lightList"></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+            <button class="miniBtn" id="btnSetAsLight" title="선택한 개체를 광원으로 지정 (setaslight)">+ 광원으로 지정</button>
+            <button class="miniBtn" id="btnSoloOff" title="솔로 해제 — 모든 광원 켜기">솔로 해제</button>
+          </div>
+        </div>
+      </div>
+
       <div class="section" data-sec="props" style="flex:1;overflow:auto;">
         <h3>속성 / 선택</h3>
         <div class="body" id="propsBody">
@@ -817,7 +831,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260715z"></script>
+<script src="cad.js?v=20260716a"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>

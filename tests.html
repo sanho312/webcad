@@ -59,7 +59,22 @@ function tests(){
   const C = T;                    // __CADTEST__
   const S0 = C.state;
   const reset = () => C.reset();
-  const setEnts = (arr) => { reset(); S0.entities = arr.map((e,i)=>({id:i+1,...e})); S0.nextId=arr.length+1; };
+  // 픽스처의 light:{...} 는 새 모델(state.lights 컬렉션 + e.lightId)로 변환해 넣는다.
+  // 광원 속성은 개체가 아니라 컬렉션에 사는 것이 실제 구조이므로, 여기서 한 번에 옮긴다.
+  const setEnts = (arr) => {
+    reset();
+    S0.lights.length = 0; S0.nextLightId = 1;
+    S0.entities = arr.map((e,i)=>({id:i+1,...e}));
+    S0.nextId = arr.length+1;
+    S0.entities.forEach(e => {
+      if (!e.light) return;
+      const over = e.light; delete e.light;
+      const L = Object.assign({ id: 'L'+(S0.nextLightId++), objectId: e.id, name: 'test',
+        type:'emissive', enabled:true, intensity:800, colorTemp:3000, color:null,
+        range:3000, soft:400, bounce:0.5, spacing:3000 }, over);
+      S0.lights.push(L); e.lightId = L.id;
+    });
+  };
 
   group('기하 — 교차/투영/각도');
   { const r=C.segSeg([0,0],[10,0],[5,-5],[5,5]); pt([r.x,r.y],5,0,'선분 교차 (5,0)'); }
@@ -744,9 +759,14 @@ function tests(){
                points:[[0,0],[600,0],[600,600],[0,600]], bim:{kind:'column', h:600, base:2400} }]);
     let e = S0.entities[0];
     S0.selection.clear(); S0.selection.add(e.id);
-    C.INSTANT_CMDS['light']();
+    C.INSTANT_CMDS['setaslight']();
     e = S0.entities[0];
-    ok(!!e.light, '광원 지정됨 (e.light 추가)');
+    ok(!!e.lightId && !!C.lightOfEnt(e), '광원 지정됨 (e.lightId 참조 + state.lights 컬렉션)');
+    eqi(S0.lights.length, 1, '  광원 속성은 개체가 아니라 컬렉션에 산다');
+    eqi(C.lightOfEnt(e).objectId, e.id, '  광원이 개체를 가리킨다');
+    eqi(C.lightOfEnt(e).intensity, 800, '  기본 800lm');
+    eqi(C.lightOfEnt(e).colorTemp, 3000, '  기본 3000K');
+    eqi(C.lightOfEnt(e).type, 'emissive', '  기본 타입 = 발광면(개체 그대로)');
     eqi(e.bim.kind, 'column', '  BIM 정체 그대로 — 여전히 기둥(정육면체)');
     eq(e.bim.h, 600, '  높이 그대로');
     eqi(e.color, '#3388ff', '  색 그대로 (발광색으로 덮어쓰지 않는다)');
@@ -760,10 +780,10 @@ function tests(){
     eq(em[0].y, 300, '  y = 형상 한가운데');
     eq(em[0].z, 2700, '  z = base+h/2 = 형상 한가운데');
 
-    // 다시 light = 해제, 형상은 그대로
-    C.INSTANT_CMDS['light']();
+    // unsetlight = 해제, 형상은 그대로
+    C.INSTANT_CMDS['unsetlight']();
     e = S0.entities[0];
-    ok(!e.light, '다시 light → 광원 해제');
+    ok(!e.lightId && S0.lights.length === 0, 'unsetlight → 광원 해제');
     eqi(e.bim.kind, 'column', '  해제해도 형상은 그대로');
 
     // 원 = 중심 점광원 (bim 없는 순수 곡선)
@@ -792,14 +812,23 @@ function tests(){
 
     // 저장/복원 (WCX) — light가 실려야 저장했다 열 때 광원이 남는다
     setEnts([{ type:'LWPOLYLINE', closed:true, layer:'0', points:[[0,0],[600,0],[600,600],[0,600]],
-               bim:{kind:'column', h:600, base:0}, light:{power:2, range:5000} }]);
+               bim:{kind:'column', h:600, base:0}, light:{intensity:2400, colorTemp:4000} }]);
     const dxf = C.buildDXFText();
-    ok(/"light"/.test(dxf), 'WCX 저장에 light 포함 — 없으면 저장했다 열 때 광원이 사라진다');
-    ok(/"power":2/.test(dxf) && /"range":5000/.test(dxf), '  밝기·도달거리 설정도 함께 저장');
+    ok(/"lights"/.test(dxf), 'WCX 저장에 lights 컬렉션 포함 — 없으면 저장했다 열 때 광원이 사라진다');
+    ok(/"lightId"/.test(dxf), '  개체의 광원 참조(lightId)도 저장');
+    ok(/"intensity":2400/.test(dxf) && /"colorTemp":4000/.test(dxf), '  세기(lm)·색온도(K)도 함께 저장');
 
     // 명령어
-    eqi(C.CMD_ALIASES['light'], 'light', "'light' 명령 등록");
-    eqi(C.CMD_ALIASES['조명'], 'light', "  한글 별칭 '조명'");
+    eqi(C.CMD_ALIASES['setaslight'], 'setaslight', "'setaslight' 명령 등록");
+    eqi(C.CMD_ALIASES['unsetlight'], 'unsetlight', "'unsetlight' 명령 등록");
+    eqi(C.CMD_ALIASES['light'], 'setaslight', "  옛 'light' → setaslight 로 이어짐");
+    eqi(C.CMD_ALIASES['광원지정'], 'setaslight', "  한글 별칭 '광원지정'");
+    // 켈빈 → RGB
+    const k22 = C.kelvinToRGB(2200), k80 = C.kelvinToRGB(8000);
+    ok(k22[0] > k22[2], '색온도 2200K는 붉다 (R>B)');
+    ok(k80[2] >= k80[0], '  8000K는 푸르다 (B≥R)');
+    eq(C.lmToPower(800), 1, '  800lm = 내부 밝기 1 (단위 환산은 한 곳에)');
+    eq(C.lmToPower(1600), 2, '  1600lm = 2');
     reset();
   }
 
@@ -914,7 +943,7 @@ function tests(){
     // 바닥 + 조명(x=0) + 벽(x=2000) → 벽 뒤는 그림자, 벽을 지우면 밝아져야 (대조군)
     setEnts([
       { type:'LWPOLYLINE', closed:true, points:[[-12000,-6000],[12000,-6000],[12000,6000],[-12000,6000]], layer:'0', bim:{kind:'slab', t:100, top:0} },
-      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', zo:2850, light:{spacing:99999, range:8000, power:1.2} },
+      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', zo:2850, light:{spacing:99999, range:8000, intensity:960, color:[255,255,255]} },
       { type:'LINE', x1:2000, y1:-4000, x2:2000, y2:4000, layer:'0', bim:{kind:'wall', h:2500, t:200, base:0} },
     ]);
     if (V3) {
@@ -929,12 +958,15 @@ function tests(){
         points:[[-500,-500],[500,-500],[500,500],[-500,500]], bim:{kind:'column', h:400, base:2600} });
       V3.solids = C.bimSolids();
       const withCube = C.shadowOccluders().length;
-      S0.entities[S0.entities.length-1].light = {};   // 같은 정육면체를 광원으로 지정
+      const cube = S0.entities[S0.entities.length-1];   // 같은 정육면체를 광원으로 지정
+      S0.lights.push({ id:'LX', objectId:cube.id, name:'cube', type:'emissive', enabled:true,
+        intensity:800, colorTemp:3000, color:null, range:3000, soft:400, bounce:0.5 });
+      cube.lightId = 'LX';
       V3.solids = C.bimSolids();
       const asLight = C.shadowOccluders().length;
       ok(withCube > before, '  정육면체를 넣으면 가림 삼각형이 늘어난다 (대조군)');
       eqi(asLight, before, '  그 정육면체를 광원으로 지정하면 가림에서 빠진다 (자기 빛을 안 막음)');
-      S0.entities.pop(); V3.solids = C.bimSolids();
+      S0.entities.pop(); S0.lights.pop(); V3.solids = C.bimSolids();
       const at = x => C.litFace(x, 0, 0, 0, 0, 1, false);
       ok(at(1000) > 0.8, '조명과 벽 사이(벽 앞) 바닥은 밝다');
       ok(at(4000) < 0.3, '벽 뒤 바닥은 그림자 (환경광만)');
@@ -952,7 +984,7 @@ function tests(){
     // 램프를 넓이가 있는 광원으로 보고 여러 점을 샘플 → 보이는 비율이 곧 빛의 세기.
     setEnts([
       { type:'LWPOLYLINE', closed:true, points:[[-12000,-6000],[12000,-6000],[12000,6000],[-12000,6000]], layer:'0', bim:{kind:'slab', t:100, top:0} },
-      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', zo:2850, light:{spacing:99999, range:20000, power:1.2} },
+      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', zo:2850, light:{spacing:99999, range:20000, intensity:960, color:[255,255,255]} },
       { type:'LINE', x1:2000, y1:-5000, x2:2000, y2:5000, layer:'0', bim:{kind:'wall', h:1500, t:200, base:0} },
     ]);
     if (V3) {
@@ -984,7 +1016,7 @@ function tests(){
     setEnts([
       { type:'LWPOLYLINE', closed:true, points:[[-8000,-5000],[8000,-5000],[8000,5000],[-8000,5000]], layer:'0', bim:{kind:'slab', t:100, top:0} },
       { type:'LWPOLYLINE', closed:true, points:[[-8000,-5000],[8000,-5000],[8000,5000],[-8000,5000]], layer:'0', bim:{kind:'wall', h:3000, t:200, base:0} },
-      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', zo:2650, light:{spacing:99999, range:8000, power:1.2, soft:400} },
+      { type:'LINE', x1:0, y1:-1, x2:0, y2:1, layer:'0', zo:2650, light:{spacing:99999, range:8000, intensity:960, soft:400, color:[255,255,255]} },
       { type:'LINE', x1:2000, y1:-4000, x2:2000, y2:4000, layer:'0', bim:{kind:'wall', h:2000, t:200, base:0} },
     ]);
     if (V3) {
@@ -1023,7 +1055,7 @@ function tests(){
     const bleed = (wallColor, bounce) => {
       setEnts([
         { type:'LWPOLYLINE', closed:true, points:[[-6000,-4000],[6000,-4000],[6000,4000],[-6000,4000]], layer:'0', color:'#9a9a9a', bim:{kind:'slab', t:100, top:0} },
-        { type:'LINE', x1:-3000, y1:0, x2:-3000, y2:1, layer:'0', zo:2375, light:{spacing:99999, range:9000, power:1.2, soft:300, bounce} },
+        { type:'LINE', x1:-3000, y1:0, x2:-3000, y2:1, layer:'0', zo:2375, light:{spacing:99999, range:9000, intensity:960, soft:300, bounce, color:[255,255,255]} },
         { type:'LINE', x1:2000, y1:-4000, x2:2000, y2:4000, layer:'0', color:wallColor, bim:{kind:'wall', h:2500, t:200, base:0} },
       ]);
       V3.lighting = true; V3._fast = false;

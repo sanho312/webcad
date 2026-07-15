@@ -17,7 +17,9 @@ const statEl = document.getElementById('stat');
 
 // ---------- 상태 ----------
 const state = {
-  entities: [],          // {id,type,layer,color, ...geom}
+  entities: [],          // {id,type,layer,color, ...geom}  · 광원이면 lightId 참조를 가진다
+  lights: [],            // LightSource[] — 개체와 분리된 광원 속성 컬렉션 (objectId로 연결)
+  nextLightId: 1,
   layers: [],            // {name,color,visible}
   currentLayer: '0',
   currentColor: null,    // null = 레이어색(ByLayer), 아니면 '#rrggbb'
@@ -101,6 +103,7 @@ function snapshot() {
   return JSON.stringify({
     entities: liveEnts(), layers: state.layers,
     currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks,
+    lights: state.lights, nextLightId: state.nextLightId, // 광원 지정/해제도 undo 대상
   });
 }
 let apiRev = 0; // 변경 카운터 (클라우드 자동저장의 dirty 판단용)
@@ -110,8 +113,10 @@ function restore(snap) {
   const d = JSON.parse(snap);
   state.entities = d.entities; state.layers = d.layers;
   state.currentLayer = d.currentLayer; state.nextId = d.nextId; state.blocks = d.blocks || {};
+  state.lights = d.lights || []; state.nextLightId = d.nextLightId || 1;
   state.selection.clear();
-  renderLayers(); if (typeof refreshBlockList === 'function') refreshBlockList(); draw(); updateStat();
+  renderLayers(); renderLightList();
+  if (typeof refreshBlockList === 'function') refreshBlockList(); draw(); updateStat();
   if (typeof autosave === 'function') autosave();
 }
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
@@ -2612,7 +2617,7 @@ function bimSolids() {
   // 광원으로 지정한 개체는 빛이 '형상 안'에 있다 — 모든 면의 법선이 광원을 등지므로
   // 단면 조명으로는 새까맣게 나온다. 양면으로 표시해 안에서 밝혀지게 한다(색은 그대로).
   const litIds = new Set();
-  for (const e of state.entities) if (e.light) litIds.add(e.id);
+  for (const e of state.entities) if (e.lightId) litIds.add(e.id);
   if (litIds.size) for (const s of solids) if (litIds.has(s.eid)) s.lit = 1;
   return solids;
 }
@@ -3120,6 +3125,20 @@ function renderScene(isActive) {
   }
   const light = document.documentElement.classList.contains('light');
   zRasterFaces(c, faces, v3.vp, light);                // 항상 정확한 Z-버퍼 은면 제거 (회전·호버·정지 모두)
+  // 광원 기즈모 — 어느 개체가 광원인지 일반 뷰에서도 알아볼 수 있게 (꺼진 광원은 흐리게)
+  for (const g of lightGizmos()) {
+    const p = proj3D(g.x, g.y, g.z);
+    if (p[0] < v3.vp.x || p[0] > v3.vp.x + v3.vp.w || p[1] < v3.vp.y || p[1] > v3.vp.y + v3.vp.h) continue;
+    c.save();
+    c.globalAlpha = g.on ? 0.95 : 0.35;
+    const r = 7 * (devicePixelRatio || 1);
+    c.beginPath(); c.arc(p[0], p[1], r, 0, Math.PI * 2);
+    c.fillStyle = g.on ? '#ffe9a8' : '#8a8f98'; c.fill();
+    c.lineWidth = Math.max(1, r * 0.22); c.strokeStyle = 'rgba(20,20,30,0.75)'; c.stroke();
+    c.beginPath(); c.moveTo(p[0] - r * 0.45, p[1] + r * 0.75); c.lineTo(p[0] + r * 0.45, p[1] + r * 0.75); c.stroke(); // 전구 소켓
+    if (state.selection.has(g.eid)) { c.beginPath(); c.arc(p[0], p[1], r * 1.7, 0, Math.PI * 2); c.strokeStyle = '#0A84FF'; c.stroke(); }
+    c.restore();
+  }
   // extrudesrf(면 밀당): 선택된 면(윗면·아랫면·옆면)만 강조 — 객체 전체가 아니라 그 면임을 명확히
   if (typeof extrudePend !== 'undefined' && extrudePend && extrudePend.srf && v3.srfHi && v3.srfHi.size) {
     const dpr = devicePixelRatio || 1, fb = !!extrudePend.fromBottom, sd = extrudePend.side;
@@ -5900,7 +5919,60 @@ function railingSolids(e) {
   return out;
 }
 
-// ---------- 광원 (light) ----------
+// ============================================================
+//  광원 (LightSource) — Phase 1: 지정 인프라
+//  개체와 광원 정보를 분리한다: 개체에는 lightId 참조만, 속성은 state.lights 컬렉션에.
+//  개체 자체는 형태·색·BIM 정체 무엇도 바뀌지 않는다.
+// ============================================================
+const LIGHT_TYPES = ['emissive', 'point', 'spot', 'area'];
+const LIGHT_TYPE_KO = { emissive: '발광면(개체 그대로)', point: '점광원', spot: '스팟', area: '면광원' };
+// 사용자 대면 단위는 루멘(lm)·켈빈(K)으로 통일한다. 렌더러 내부 단위로의 환산은 이 아래 두 함수에만 둔다.
+const LM_REF = 800;            // 다운라이트 기본값. 이 값이 내부 밝기 1이 되도록 맞춘다.
+function lmToPower(lm) { return (lm == null ? LM_REF : lm) / LM_REF; }
+// 색온도(K) → RGB. Planckian locus 근사 (Tanner Helland).
+function kelvinToRGB(K) {
+  const t = Math.max(1000, Math.min(40000, K || 3000)) / 100;
+  const cl = v => Math.max(0, Math.min(255, v));
+  let r, g, b;
+  if (t <= 66) { r = 255; g = 99.4708025861 * Math.log(t) - 161.1195681661; }
+  else { r = 329.698727446 * Math.pow(t - 60, -0.1332047592); g = 288.1221695283 * Math.pow(t - 60, -0.0755148492); }
+  if (t >= 66) b = 255;
+  else if (t <= 19) b = 0;
+  else b = 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  return [Math.round(cl(r)), Math.round(cl(g)), Math.round(cl(b))];
+}
+function lightColorRGB(L) { return (L && L.color) ? L.color : kelvinToRGB(L ? L.colorTemp : 3000); }
+function lightDefaults() {
+  return { type: 'emissive', enabled: true, intensity: LM_REF, colorTemp: 3000, color: null,
+    spotAngleDeg: 60, spotPenumbra: 0.2,
+    // 아래 셋은 현재 소프트웨어 렌더러용 힌트 — Phase 2(패스트레이싱)에서 물리 기반으로 대체된다
+    range: LIGHT_RANGE_DEF, soft: 400, bounce: 0.5 };
+}
+const LIGHT_PRESETS = [
+  { n: '다운라이트', intensity: 800, colorTemp: 3000 },
+  { n: '형광등', intensity: 3300, colorTemp: 4000 },
+  { n: '간접등', intensity: 1500, colorTemp: 2700 },
+  { n: '주광색 LED', intensity: 2000, colorTemp: 6500 },
+];
+function lightById(id) { for (const L of state.lights) if (L.id === id) return L; return null; }
+function lightOfEnt(e) { return (e && e.lightId) ? lightById(e.lightId) : null; }
+function entById(id) { for (const e of state.entities) if (e.id === id) return e; return null; }
+const LIGHTABLE = ['LINE', 'LWPOLYLINE', 'CIRCLE', 'MESH'];
+function lightableEnt(e) { return !!e && LIGHTABLE.includes(e.type); }
+// 개체가 지워지면 연결된 광원도 사라진다. undo는 state.lights를 통째로 스냅샷하므로 함께 복원된다.
+// 단 '파일을 열 때부터 개체가 없던 광원'(_missing)은 지우지 않는다 — 조용히 없애면 사용자가
+// 도면이 손상된 사실을 모른 채 저장해 영영 잃는다. 경고만 남기고 목록에 보이게 둔다.
+function pruneLights() {
+  if (!state.lights.length) return;
+  const ids = new Set(state.entities.map(e => e.id));
+  for (let i = state.lights.length - 1; i >= 0; i--) {
+    const L = state.lights[i];
+    if (!ids.has(L.objectId) && !L._missing) state.lights.splice(i, 1);
+  }
+}
+let soloLightId = null; // 이 광원만 켜서 등기구 하나의 기여를 본다 (표시 상태이므로 저장하지 않는다)
+
+// ---------- 발광 지점 ----------
 // light는 형상을 만들지 않는다 — 선택한 개체 자체가 발광원이 된다.
 // 그래서 조명 기구는 사용자가 원하는 대로 직접 모델링하고, 빛이 나올 자리만 지정하면 된다.
 // 발광 높이는 묻지 않고 개체가 놓인 z를 그대로 쓴다. z 규약은 3D 밑그림(렌더러)과 동일하게
@@ -5937,27 +6009,41 @@ function bimZSpan(b) {
 //  · 입체(정육면체 등) = 그 입체 한가운데 → "정육면체 광원체"
 //  · 메시 = 형상 한가운데
 //  · 순수 곡선 = 원이면 중심, 선·폴리라인이면 간격마다(선형 광원)
-function lightEmitters(e) {
+function lightEmitters(e, L) {
   const out = [];
-  if (e.type === 'MESH') {
-    if (!e.tris || !e.tris.length) return out;
-    const bb = meshBBox(e);
-    let zm = 1e18, zM = -1e18;
-    for (const t of e.tris) for (const p of t) { if (p[2] < zm) zm = p[2]; if (p[2] > zM) zM = p[2]; }
-    out.push({ x: (bb.xmin + bb.xmax) / 2, y: (bb.ymin + bb.ymax) / 2, z: (zm + zM) / 2 });
-    return out;
-  }
-  const zs = bimZSpan(e.bim);
-  if (zs) { // 입체로 그려지는 개체 — 형상 한가운데서 빛난다
-    const bb = entityBBox(e);
-    if (!bb) return out;
-    out.push({ x: (bb.xmin + bb.xmax) / 2, y: (bb.ymin + bb.ymax) / 2, z: (zs[0] + zs[1]) / 2 });
-    return out;
-  }
+  const center = () => { // 개체의 3D 바운딩 중심
+    if (e.type === 'MESH') {
+      if (!e.tris || !e.tris.length) return null;
+      const bb = meshBBox(e);
+      let zm = 1e18, zM = -1e18;
+      for (const t of e.tris) for (const p of t) { if (p[2] < zm) zm = p[2]; if (p[2] > zM) zM = p[2]; }
+      return { x: (bb.xmin + bb.xmax) / 2, y: (bb.ymin + bb.ymax) / 2, z: (zm + zM) / 2 };
+    }
+    const bb = entityBBox(e); if (!bb) return null;
+    const zs = bimZSpan(e.bim);
+    const zb = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
+    return { x: (bb.xmin + bb.xmax) / 2, y: (bb.ymin + bb.ymax) / 2, z: zs ? (zs[0] + zs[1]) / 2 : zb };
+  };
+  // point/spot/area = 개체의 바운딩 중심에 놓이는 추상 광원 (emissive가 비쌀 때의 대안)
+  if (L && L.type && L.type !== 'emissive') { const c = center(); if (c) out.push(c); return out; }
+  // emissive = 개체의 지오메트리 자체가 발광면
+  if (e.type === 'MESH' || bimZSpan(e.bim)) { const c = center(); if (c) out.push(c); return out; }
   const zb = (state.levels[e.lv || 0] || { elev: 0 }).elev + (e.zo || 0);
   if (e.type === 'CIRCLE') { out.push({ x: e.cx, y: e.cy, z: zb }); return out; }
   const P = lightPath(e, zb); if (!P) return out;
-  for (const st of pathStations(P, Math.max(100, (e.light && e.light.spacing) || 3000))) out.push({ x: st.x, y: st.y, z: st.z });
+  for (const st of pathStations(P, Math.max(100, (L && L.spacing) || 3000))) out.push({ x: st.x, y: st.y, z: st.z });
+  return out;
+}
+// 모든 광원의 기즈모 위치 (꺼진 것 포함) — 뷰포트 전구 아이콘용
+function lightGizmos() {
+  const out = [];
+  const byId = new Map(state.entities.map(e => [e.id, e]));
+  for (const L of state.lights) {
+    const e = byId.get(L.objectId); if (!e) continue;
+    const lay = getLayer(e.layer); if (lay && !lay.visible) continue;
+    const p = lightEmitters(e, L)[0]; if (!p) continue;
+    out.push({ x: p.x, y: p.y, z: p.z, on: L.enabled && (!soloLightId || soloLightId === L.id), id: L.id, eid: e.id });
+  }
   return out;
 }
 // ---------- 실제 광원 (지정한 개체 → 3D 셰이딩) ----------
@@ -5982,19 +6068,26 @@ function toneMap(v) {
 }
 function lightSources() {
   const out = [];
-  for (const e of state.entities) {
-    if (!e.light) continue; // 광원 지정은 bim과 무관한 별도 속성 — 개체의 원래 정체(기둥·벽·면)를 건드리지 않는다
-    const l = getLayer(e.layer); if (l && !l.visible) continue;
-    const b = e.light;
-    for (const p of lightEmitters(e)) {
-      const rng = Math.max(100, b.range || LIGHT_RANGE_DEF);
+  if (!state.lights.length) return out;
+  const byId = new Map(state.entities.map(e => [e.id, e]));
+  for (const L of state.lights) {
+    if (!L.enabled) continue;
+    if (soloLightId && L.id !== soloLightId) continue; // 솔로: 이 광원만
+    const e = byId.get(L.objectId); if (!e) continue;  // 개체가 없는 광원(고아)은 조용히 건너뛴다
+    const lay = getLayer(e.layer); if (lay && !lay.visible) continue;
+    const c = lightColorRGB(L);
+    const mx = Math.max(c[0], c[1], c[2]) || 1;        // 밝기는 intensity가 담당 → 색은 '비율'만
+    const power = lmToPower(L.intensity);
+    const rng = Math.max(100, L.range || LIGHT_RANGE_DEF);
+    for (const p of lightEmitters(e, L)) {
       out.push({
         x: p.x, y: p.y, z: p.z,            // 개체가 놓인 자리에서 그대로 빛난다
         range: rng,                        // 밝기가 절반이 되는 거리
         far2: (rng * 6) * (rng * 6),       // 이보다 멀면 기여가 환경광 수준 → 계산 생략
-        power: b.power != null ? b.power : 1,
-        soft: b.soft != null ? Math.max(0, b.soft) : 400, // 광원 크기 = 그림자 부드러움(0이면 하드 섀도우)
-        bounce: b.bounce != null ? Math.max(0, b.bounce) : 0.5, // 간접광(반사) 세기, 0=끔
+        power,
+        soft: L.soft != null ? Math.max(0, L.soft) : 400, // 광원 크기 = 그림자 부드러움(0이면 하드 섀도우)
+        bounce: L.bounce != null ? Math.max(0, L.bounce) : 0.5, // 간접광(반사) 세기, 0=끔
+        cr: c[0] / mx, cg: c[1] / mx, cb: c[2] / mx,      // 색온도 → 채널별 비율
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
     }
@@ -6012,7 +6105,7 @@ function shadowOccluders() {
   // 광원으로 지정한 개체는 가림에서 뺀다 — 안 그러면 자기 형상이 자기 빛을 통째로 막아 캄캄해진다.
   // (box는 MESH가 아니라 LWPOLYLINE+bim이라 솔리드로 그려지므로 여기서도 걸러야 한다)
   const litIds = new Set();
-  for (const e of state.entities) if (e.light) litIds.add(e.id);
+  for (const e of state.entities) if (e.lightId) litIds.add(e.id);
   for (const s of (v3.solids || [])) {
     if (s.glass || s.glow) continue; // 유리는 빛을 막지 않는다
     if (litIds.has(s.eid)) continue; // 광원 지정 개체
@@ -6032,7 +6125,7 @@ function shadowOccluders() {
   }
   for (const e of state.entities) {
     if (e.type !== 'MESH' || !e.tris) continue;
-    if (e.light) continue; // 광원으로 지정한 형상은 자기 빛을 스스로 막지 않는다
+    if (e.lightId) continue; // 광원으로 지정한 형상은 자기 빛을 스스로 막지 않는다
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     col = rgbTriplet(bimSolidColor(e, '#b9b2a6'));
     for (const t of e.tris) push(t[0], t[1], t[2]);
@@ -6142,7 +6235,9 @@ function bounceLights() {
       const p = g.power * atten * cos * str * (8 / BOUNCE_DIRS.length);
       if (p < 0.004) continue; // 너무 약한 2차 광원은 버린다 (상한을 아껴 쓰기)
       const rng = Math.max(500, g.range * 0.5); // 반사광은 멀리 못 간다
-      const c = h.col || [180, 180, 180];
+      // 반사광은 '반사면의 색 × 쏜 광원의 색' — 색온도가 반사광까지 일관되게 따라간다
+      const sc = h.col || [180, 180, 180];
+      const c = (g.cr == null) ? sc : [sc[0] * g.cr, sc[1] * g.cg, sc[2] * g.cb];
       const mx = Math.max(c[0], c[1], c[2]) || 1; // 밝기는 power가 담당 → 색은 '비율'만 남긴다
       out.push({
         x: g.x + D[0] * h.t + hnx * 20, y: g.y + D[1] * h.t + hny * 20, z: g.z + D[2] * h.t + hnz * 20,
@@ -6189,8 +6284,9 @@ function visFraction(ox, oy, oz, g, dx, dy, dz, d) {
 // twoSided: 메시는 삼각형 winding을 신뢰할 수 없어 양면 모두 빛을 받게 한다(기존 메시 셰이딩도 abs를 씀).
 function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
   const L = v3 && v3._lights;
-  if (!L || !L.length) return NIGHT_AMBIENT;
-  let s = NIGHT_AMBIENT;
+  if (!L || !L.length) { LIT_RGB[0] = LIT_RGB[1] = LIT_RGB[2] = NIGHT_AMBIENT; LIT_RGB[3] = 0; return NIGHT_AMBIENT; }
+  // 직접광도 채널별로 쌓는다 — 광원의 색온도(K)가 화면에 나타나려면 스칼라 하나로는 안 된다
+  let sr = NIGHT_AMBIENT, sg = NIGHT_AMBIENT, sb = NIGHT_AMBIENT;
   for (const g of L) {
     const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
     const d2 = dx * dx + dy * dy + dz * dz;
@@ -6206,7 +6302,9 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
       if (vis <= 0) continue; // 완전히 그늘
     }
     const k = d / g.range;
-    s += dot * g.power * LIT_GAIN / (1 + k * k) * vis;
+    const q = dot * g.power * LIT_GAIN / (1 + k * k) * vis;
+    if (g.cr == null) { sr += q; sg += q; sb += q; }             // 색 없는 광원(테스트 등) = 백색
+    else { sr += q * g.cr; sg += q * g.cg; sb += q * g.cb; }
   }
   // 간접광(2차 광원) — 그림자 검사 없이 코사인·감쇠만. 그림자 안·천장이 반사광으로 은은히 밝아진다.
   // 반사광은 '반사면의 색'을 띠므로 채널별로 따로 쌓는다 → 색번짐(빨간 벽 → 붉은 바닥).
@@ -6228,10 +6326,11 @@ function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
   }
   // 채널별 밝기 = 공통(환경광+직접광) + 그 채널의 반사광
   const cl = toneMap; // 하드 클립이 아니라 무릎 위를 압축 — 밝은 곳도 계조가 남는다
-  LIT_RGB[0] = cl(s + tr); LIT_RGB[1] = cl(s + tg); LIT_RGB[2] = cl(s + tb);
-  // 색조가 사실상 없으면(간접광 OFF·회색 반사) 예전처럼 스칼라 하나로 처리하도록 알린다
-  LIT_RGB[3] = (Math.abs(tr - tg) > 0.02 || Math.abs(tg - tb) > 0.02 || Math.abs(tr - tb) > 0.02) ? 1 : 0;
-  return cl(s + (tr + tg + tb) / 3);
+  const r = cl(sr + tr), g2 = cl(sg + tg), b = cl(sb + tb);
+  LIT_RGB[0] = r; LIT_RGB[1] = g2; LIT_RGB[2] = b;
+  // 색조가 사실상 없으면(백색광 + 간접광 OFF·회색 반사) 예전처럼 스칼라 하나로 처리하도록 알린다
+  LIT_RGB[3] = (Math.abs(r - g2) > 0.02 || Math.abs(g2 - b) > 0.02 || Math.abs(r - b) > 0.02) ? 1 : 0;
+  return (r + g2 + b) / 3;
 }
 // 조명 보기 전용: 넓은 상/하면을 잘게 나눠 빛의 계조가 '면 위에' 나타나게 한다.
 // 이 렌더러는 평면 셰이딩(면 1개 = 밝기 1개)이라, 나누지 않으면 40m 슬래브가 중심점의 밝기로
@@ -6344,24 +6443,40 @@ function cmdLighting() {
   else logLine(v3.lighting ? `  ▷ 조명 보기 ON — 야간 화면, 광원 ${n}개가 주변을 밝힙니다 (다시 입력하면 OFF)` : '  ▷ 조명 보기 OFF — 기본 셰이딩으로 복귀', 'info');
   render3D();
 }
-// 선택한 개체에 '광원' 특성만 얹는다. 개체 자체는 아무것도 바뀌지 않는다 —
+// 선택한 개체를 광원으로 지정한다. 개체 자체는 아무것도 바뀌지 않는다 —
 // 형태·색·BIM 정체(기둥·벽·면) 모두 그대로. 정육면체를 지정하면 정육면체 광원체가 된다.
-// 그래서 e.bim이 아니라 별도 속성 e.light를 쓴다 (bim을 덮어쓰면 형상이 통째로 사라진다).
+// 광원 속성은 개체가 아니라 state.lights 컬렉션에 두고, 개체엔 lightId 참조만 남긴다.
 // 높이는 묻지 않는다: 개체가 놓인 자리에서 그대로 빛난다.
-function cmdLightTag() {
-  const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE' || e.type === 'MESH');
-  if (!sel.length) { logLine('  광원: 빛을 낼 개체(솔리드·면·메시 또는 선·폴리라인·원)를 선택한 뒤 실행하세요.', 'warn'); return; }
+function defaultLightName(e) {
+  const kind = e.type === 'MESH' ? '메시' : (e.bim ? (LIGHT_NAME_KO[e.bim.kind] || e.bim.kind) : e.type.toLowerCase());
+  return `${kind} #${e.id}`;
+}
+const LIGHT_NAME_KO = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간' };
+function cmdSetAsLight() {
+  const sel = selectedEntities().filter(lightableEnt);
+  if (!sel.length) { logLine('  광원으로 지정: 빛을 낼 개체(솔리드·면·메시 또는 선·폴리라인·원)를 선택한 뒤 실행하세요.', 'warn'); return; }
+  const fresh = sel.filter(e => !lightOfEnt(e));
+  if (!fresh.length) { logLine(`  이미 광원입니다 (해제는 unsetlight)`, 'warn'); return; }
   pushUndo();
-  if (sel.every(e => e.light)) { // 모두 이미 광원 → 해제 (형상은 그대로 남는다)
-    for (const e of sel) delete e.light;
-    logLine(`  ✔ 광원 해제 ${sel.length}개 — 개체는 그대로 남습니다`, 'ok');
-  } else {
-    for (const e of sel) if (!e.light) e.light = {};
-    const n = sel.reduce((a, e) => a + lightEmitters(e).length, 0);
-    logLine(`  ✔ 광원 지정 ${sel.length}개 — 발광 지점 ${n}개 · 개체의 형태·색은 그대로입니다`
-      + ' — 3d 후 lighting 을 켜면 빛납니다 (다시 light = 해제)', 'ok');
+  for (const e of fresh) {
+    const L = Object.assign({ id: 'L' + (state.nextLightId++), objectId: e.id, name: defaultLightName(e) }, lightDefaults());
+    state.lights.push(L); e.lightId = L.id;
   }
-  renderProps(); draw(); boolRefresh();
+  logLine(`  ✔ 광원으로 지정 ${fresh.length}개 — 개체의 형태·색은 그대로입니다`
+    + ` · ${LM_REF}lm / 3000K · 3d 후 lighting 으로 확인 (해제: unsetlight)`, 'ok');
+  renderLightList(); renderProps(); draw(); boolRefresh();
+}
+function cmdUnsetLight() {
+  const sel = selectedEntities().filter(e => lightOfEnt(e));
+  if (!sel.length) { logLine('  광원 해제: 광원으로 지정된 개체를 선택한 뒤 실행하세요.', 'warn'); return; }
+  pushUndo();
+  for (const e of sel) {
+    const i = state.lights.findIndex(L => L.id === e.lightId);
+    if (i >= 0) state.lights.splice(i, 1);
+    delete e.lightId;
+  }
+  logLine(`  ✔ 광원 해제 ${sel.length}개 — 개체는 그대로 남습니다`, 'ok');
+  renderLightList(); renderProps(); draw(); boolRefresh();
 }
 function cmdRailingTag() {
   const sel = selectedEntities().filter(e => e.type === 'LINE' || e.type === 'LWPOLYLINE' || e.type === 'CIRCLE');
@@ -7234,7 +7349,8 @@ const INSTANT_CMDS = {
   column: cmdColumnTag,
   stair: cmdStairTag,
   railing: cmdRailingTag,
-  light: cmdLightTag,
+  setaslight: cmdSetAsLight,
+  unsetlight: cmdUnsetLight,
   lighting: cmdLighting,
   extrudecrv: cmdExtrudeCrv,
   extrudesrf: cmdExtrudeSrf,
@@ -7597,7 +7713,8 @@ const TOOL_KO = {
   align: '정렬(ALIGN)', xline: '무한 구성선(XLINE)', breakpt: '점에서 끊기(BREAKPT)',
   door: '문(DOOR)', window: '창(WINDOW)', section: '단면(SECTION)', elevation: '입면(ELEVATION)',
   railing: '난간(RAILING)',
-  light: '광원 지정(LIGHT)',
+  setaslight: '광원으로 지정(SETASLIGHT)',
+  unsetlight: '광원 해제(UNSETLIGHT)',
   lighting: '조명 보기(LIGHTING)',
 };
 
@@ -7651,7 +7768,8 @@ const CMD_ALIASES = {
   roof: 'roof',
   stair: 'stair', '계단': 'stair',
   railing: 'railing', handrail: 'railing', 난간: 'railing', 손스침: 'railing',
-  light: 'light', lamp: 'light', 조명: 'light', 가로등: 'light', bollard: 'light',
+  setaslight: 'setaslight', light: 'setaslight', lamp: 'setaslight', 조명: 'setaslight', 광원지정: 'setaslight', 광원: 'setaslight',
+  unsetlight: 'unsetlight', 광원해제: 'unsetlight',
   lighting: 'lighting', night: 'lighting', 야간: 'lighting', 조명보기: 'lighting', 조명켜기: 'lighting',
   extrudecrv: 'extrudecrv', extcrv: 'extrudecrv', extrude: 'extrudecrv', ext: 'extrudecrv', 돌출: 'extrudecrv',
   extrudesrf: 'extrudesrf', extsrf: 'extrudesrf',
@@ -8214,6 +8332,49 @@ function openColorPop(anchor, current, onPick) {
 }
 
 // 레이어 목록 렌더
+// 광원 목록 패널 — 행 클릭=개체 선택, 체크박스=on/off, 솔로=이 광원만 (등기구 하나씩 검토)
+function renderLightList() {
+  const list = document.getElementById('lightList');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!state.lights.length) {
+    list.innerHTML = '<div class="empty" style="font-size:11.5px;opacity:.6;padding:4px 2px;">광원이 없습니다. 개체를 선택하고 <b>setaslight</b>.</div>';
+    return;
+  }
+  const byId = new Map(state.entities.map(e => [e.id, e]));
+  for (const L of state.lights) {
+    const e = byId.get(L.objectId);
+    const c = lightColorRGB(L);
+    const solo = soloLightId === L.id;
+    const dim = !L.enabled || (soloLightId && !solo);
+    const div = document.createElement('div');
+    div.className = 'layer' + (e && state.selection.has(e.id) ? ' active' : '');
+    div.style.opacity = dim ? '0.45' : '1';
+    div.innerHTML =
+      `<div class="lrow1">
+        <input type="checkbox" ${L.enabled ? 'checked' : ''} title="켜짐/꺼짐" style="margin:0 2px 0 0;">
+        <span class="sw" style="background:rgb(${c[0]},${c[1]},${c[2]})"></span>
+        <span class="nm">${escapeHtml(L.name || L.id)}${e ? '' : ' ⚠'}</span>
+        <span class="eye" title="이 광원만 보기(솔로)" style="${solo ? 'color:var(--warn);' : ''}">${solo ? '◉' : '○'}</span>
+       </div>
+       <div class="lrow2" style="font-size:10.5px;opacity:.65;">${L.intensity}lm · ${L.colorTemp}K · ${LIGHT_TYPE_KO[L.type] || L.type}</div>`;
+    div.querySelector('input').addEventListener('click', ev => {
+      ev.stopPropagation();
+      pushUndo(); L.enabled = ev.target.checked; renderLightList(); renderProps(); draw(); boolRefresh();
+    });
+    div.querySelector('.eye').addEventListener('click', ev => {
+      ev.stopPropagation();
+      soloLightId = solo ? null : L.id;   // 표시 상태이므로 undo 대상이 아니다
+      renderLightList(); draw(); boolRefresh();
+    });
+    div.addEventListener('click', () => {
+      if (!e) { logLine(`  ⚠ "${L.name}" — 연결된 개체를 찾을 수 없습니다`, 'warn'); return; }
+      state.selection.clear(); state.selection.add(e.id);
+      renderLightList(); renderProps(); draw();
+    });
+    list.appendChild(div);
+  }
+}
 function renderLayers() {
   const list = document.getElementById('layerList');
   list.innerHTML = '';
@@ -8280,6 +8441,8 @@ function renderLayers() {
 document.getElementById('btnAllVis').addEventListener('click', () => { state.layers.forEach(l => { l.visible = true; l.locked = false; }); renderLayers(); draw(); });
 document.getElementById('blkScale').addEventListener('change', e => { insertScale = parseFloat(e.target.value) || 1; });
 document.getElementById('blkRot').addEventListener('change', e => { insertRot = parseFloat(e.target.value) || 0; });
+document.getElementById('btnSetAsLight')?.addEventListener('click', cmdSetAsLight);
+document.getElementById('btnSoloOff')?.addEventListener('click', () => { soloLightId = null; renderLightList(); draw(); boolRefresh(); });
 document.getElementById('btnAddLayer').addEventListener('click', () => {
   let i = state.layers.length, name;
   do { name = 'Layer' + i++; } while (getLayer(name));
@@ -8384,15 +8547,31 @@ function renderProps() {
     roof: [['eave', '처마 높이(z)'], ['rise', '상승 높이']],
   };
   // 광원 특성 — BIM 정체와 무관하게 덧붙는다 (기둥이면서 광원일 수 있다)
-  const LIGHT_FIELDS = [['range', '빛 도달거리'], ['power', '밝기(1=기본)'],
-    ['soft', '그림자 부드러움(광원 크기, 0=선명)'], ['bounce', '간접광 세기(0=끔)'],
-    ['spacing', '발광 지점 간격(선·폴리라인)']];
-  const LIGHT_DEF = { range: LIGHT_RANGE_DEF, power: 1, soft: 400, bounce: 0.5, spacing: 3000 };
-  if (e.light) {
-    rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">광원</label><span style="font-weight:590;">발광체</span></div>`;
-    for (const [k, lab] of LIGHT_FIELDS)
-      rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-lk="${k}" value="${e.light[k] != null ? e.light[k] : LIGHT_DEF[k]}"></div>`;
-    rows += `<button class="miniBtn" id="pLightClr" style="margin-top:2px;">광원 해제</button>`;
+  // 광원 속성 — 사용자 대면 단위는 루멘(lm)·켈빈(K). BIM 정체와 무관하게 덧붙는다.
+  const LT = lightOfEnt(e);
+  if (LT) {
+    const kc = lightColorRGB(LT);
+    rows += `<div class="row" style="margin-top:8px;"><label style="color:var(--accent-text);">광원</label>
+      <label style="display:flex;align-items:center;gap:5px;font-weight:590;">
+        <input type="checkbox" data-lon ${LT.enabled ? 'checked' : ''}>켜짐</label></div>`;
+    rows += `<div class="row"><label>세기</label><input type="number" step="50" min="0" data-lk="intensity" value="${LT.intensity}"><span style="font-size:11px;opacity:.6;">lm</span></div>`;
+    rows += `<div class="row"><label>색온도</label><input type="number" step="100" min="1800" max="10000" data-lk="colorTemp" value="${LT.colorTemp}"><span style="font-size:11px;opacity:.6;">K</span></div>`;
+    rows += `<div class="row"><label>색</label><span style="flex:1;height:14px;border-radius:4px;background:rgb(${kc[0]},${kc[1]},${kc[2]});"></span>
+      <button class="miniBtn" id="pLightCustom">${LT.color ? '색온도로' : '커스텀 색'}</button></div>`;
+    if (LT.color) rows += `<div class="row"><label></label><input type="color" id="pLightColor" value="${rgbHex('rgb(' + LT.color.join(',') + ')')}"></div>`;
+    rows += `<div class="row"><label>타입</label><select data-ltype style="flex:1;">` +
+      LIGHT_TYPES.map(t => `<option value="${t}" ${LT.type === t ? 'selected' : ''}>${LIGHT_TYPE_KO[t]}</option>`).join('') + `</select></div>`;
+    if (LT.type === 'spot') {
+      rows += `<div class="row"><label>스팟 각도</label><input type="number" step="1" min="5" max="120" data-lk="spotAngleDeg" value="${LT.spotAngleDeg}"><span style="font-size:11px;opacity:.6;">°</span></div>`;
+      rows += `<div class="row"><label>페넘브라</label><input type="number" step="0.05" min="0" max="1" data-lk="spotPenumbra" value="${LT.spotPenumbra}"></div>`;
+    }
+    rows += `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;">` +
+      LIGHT_PRESETS.map((p, i) => `<button class="miniBtn" data-lpre="${i}" title="${p.intensity}lm / ${p.colorTemp}K">${p.n}</button>`).join('') + `</div>`;
+    rows += `<details style="margin-top:6px;"><summary style="font-size:11px;opacity:.6;cursor:pointer;">고급 (현재 렌더러 전용 — Phase 2에서 물리 기반으로 대체)</summary>`;
+    for (const [k, lab] of [['range', '빛 도달거리'], ['soft', '그림자 부드러움(0=선명)'], ['bounce', '간접광 세기(0=끔)'], ['spacing', '발광 지점 간격(선·폴리라인)']])
+      rows += `<div class="row"><label>${lab}</label><input type="number" step="any" data-lk="${k}" value="${LT[k] != null ? LT[k] : 0}"></div>`;
+    rows += `</details>`;
+    rows += `<button class="miniBtn" id="pLightClr" style="margin-top:4px;">광원 해제</button>`;
   }
   if (e.bim) {
     const kindKo = { wall: '벽', slab: '슬래브', column: '기둥', stair: '계단', roof: '지붕', railing: '난간', opening: (e.bim.ot === 'door' ? '문' : '창') }[e.bim.kind];
@@ -8417,17 +8596,34 @@ function renderProps() {
     if (!isFinite(v)) return;
     pushUndo(); e.bim[inp.dataset.bk] = v; propRefresh();
   }));
+  // 광원 속성 — 선택된 광원 전부에 일괄 적용 (여러 등기구를 한 번에 조절)
+  const selLights = () => selectedEntities().map(lightOfEnt).filter(Boolean);
+  const applyLights = (fn, refresh) => {
+    const Ls = selLights(); if (!Ls.length) return;
+    pushUndo(); Ls.forEach(fn);
+    renderLightList(); if (refresh) renderProps(); propRefresh();
+  };
   body.querySelectorAll('input[data-lk]').forEach(inp => inp.addEventListener('change', () => {
     const v = parseFloat(inp.value);
     if (!isFinite(v)) return;
-    pushUndo(); (e.light = e.light || {})[inp.dataset.lk] = v; propRefresh();
+    applyLights(L => { L[inp.dataset.lk] = v; if (inp.dataset.lk === 'colorTemp') L.color = null; },
+      inp.dataset.lk === 'colorTemp');
   }));
-  document.getElementById('pLightClr')?.addEventListener('click', () => {
-    pushUndo();
-    for (const s of selectedEntities()) delete s.light;
-    logLine('  ✔ 광원 해제 — 개체는 그대로 남습니다', 'ok');
-    renderProps(); draw(); boolRefresh();
+  body.querySelector('input[data-lon]')?.addEventListener('change', ev => applyLights(L => { L.enabled = ev.target.checked; }));
+  body.querySelector('select[data-ltype]')?.addEventListener('change', ev => applyLights(L => { L.type = ev.target.value; }, true));
+  body.querySelectorAll('[data-lpre]').forEach(b => b.addEventListener('click', () => {
+    const p = LIGHT_PRESETS[+b.dataset.lpre];
+    applyLights(L => { L.intensity = p.intensity; L.colorTemp = p.colorTemp; L.color = null; }, true);
+  }));
+  document.getElementById('pLightCustom')?.addEventListener('click', () => {
+    const on = !!(LT && LT.color);
+    applyLights(L => { L.color = on ? null : lightColorRGB(L); }, true); // 색온도 ↔ 커스텀 색은 배타
   });
+  document.getElementById('pLightColor')?.addEventListener('input', ev => {
+    const [r, g2, b2] = hexToRgb(ev.target.value);
+    applyLights(L => { L.color = [r, g2, b2]; });
+  });
+  document.getElementById('pLightClr')?.addEventListener('click', cmdUnsetLight);
   document.getElementById('pBimClr1')?.addEventListener('click', cmdBimClear);
   document.getElementById('pBimWall1')?.addEventListener('click', cmdWallTag);
   document.getElementById('pBimSlab1')?.addEventListener('click', cmdSlabTag);
@@ -8482,7 +8678,11 @@ function deleteSelection() {
 }
 
 function typeKo(t) { return ({ LINE: '선', LWPOLYLINE: '폴리라인', CIRCLE: '원', ARC: '호', TEXT: '문자', HATCH: '해치', INSERT: '블록', IMAGE: '밑그림 이미지' })[t] || t; }
-function updateStat() { statEl.textContent = `도형 ${state.entities.length}개 · 레이어 ${state.layers.length}개`; }
+function updateStat() {
+  pruneLights(); // 개체가 지워지면 연결된 광원도 사라진다 (undo는 state.lights를 통째로 복원)
+  statEl.textContent = `도형 ${state.entities.length}개 · 레이어 ${state.layers.length}개`
+    + (state.lights.length ? ` · 광원 ${state.lights.length}개` : '');
+}
 
 // ============================================================
 //  뷰 조작
@@ -8588,6 +8788,8 @@ window.addEventListener('keydown', (ev) => {
   menu.addEventListener('pointerdown', (e) => e.stopPropagation()); // 항목 클릭 전에 닫히지 않게
   menu.addEventListener('click', (e) => e.stopPropagation());
   const close = () => toggle(false);
+  document.getElementById('miSetAsLight')?.addEventListener('click', () => { close(); cmdSetAsLight(); });
+  document.getElementById('miUnsetLight')?.addEventListener('click', () => { close(); cmdUnsetLight(); });
   document.getElementById('miNew').addEventListener('click', () => { close(); doNew(); });
   document.getElementById('miOpen').addEventListener('click', () => { close(); openFile(); });
   document.getElementById('miSave').addEventListener('click', () => { close(); saveDXF(); });
@@ -8965,7 +9167,8 @@ const CMD_HELP = [
     ['extrudecrv', '곡선 돌출(라이노)', '곡선 선택 후 높이 지정 — 기울어진 3D 뷰에선 마우스로 높이 끌기(클릭=확정)나 명령창 숫자 입력, 평면에선 수치 입력. 닫힌 곡선=솔리드, 열린 곡선=면'],
     ['extrudesrf', '면 두께(라이노)', '3D에서 실행 후 돌출할 면(두께0 면·닫힌 곡선)을 클릭 → 마우스로 두께 끌기/수치. 면을 솔리드로'],
     ['lighting', '조명 보기(야간)', '3D 뷰를 야간으로 바꾸고 배치한 조명 기구가 실제로 주변을 밝힘(부드러운 그림자 + 간접광 포함) — 다시 입력하면 OFF. 밝기·도달거리·그림자 부드러움·간접광 세기는 특성창에서 조절'],
-    ['light', '광원 지정', '선택한 개체에 광원 특성만 얹는다 — 형태·색·BIM 정체(기둥·벽·면)는 하나도 바뀌지 않는다. 정육면체를 지정하면 정육면체 광원체가 됨. 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다(선형 광원). 다시 light = 해제. 3d 후 lighting 으로 켬. 밝기·도달거리·그림자 부드러움·간접광은 특성창에서 조절(부드러운 그림자·간접광 기본 ON)'],
+    ['setaslight', '광원으로 지정', '선택한 개체를 광원으로 지정 — 형태·색·BIM 정체는 하나도 바뀌지 않고 광원 속성만 붙는다(정육면체 → 정육면체 광원체). 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다. 기본 800lm / 3000K. 세기(lm)·색온도(K)는 특성창에서, on/off·솔로는 사이드바 [광원] 패널에서. 3d 후 lighting 으로 확인'],
+    ['unsetlight', '광원 해제', '광원 지정을 푼다 — 개체는 그대로 남는다'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
@@ -9040,7 +9243,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'light', ko: '광원 지정', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -9249,7 +9452,7 @@ function buildDXFText() {
       const sig = entSig(e); if (!sig) continue;
       const x = {};
       if (e.bim) x.bim = e.bim;
-      if (e.light) x.light = e.light; // 광원 지정 — 넣지 않으면 저장했다 열 때 광원이 사라진다
+      if (e.lightId) x.lightId = e.lightId; // 광원 참조 (속성 본체는 wcx.lights)
       if (e.grp) x.grp = e.grp;
       if (e.zo) x.zo = e.zo;
       if (e.z1 != null) x.z1 = e.z1;
@@ -9257,7 +9460,11 @@ function buildDXFText() {
       if (polyHasZ(e)) x.zs = e.zs; // 표면 위 곡선의 정점별 높이
       if (Object.keys(x).length) wcx.ext.push([sig, x]);
     }
-    if (wcx.ext.length || wcx.mesh.length || wcx.img.length) {
+    if (state.lights.length) { // _missing 은 실행 중 표시라 저장하지 않는다
+      wcx.lights = state.lights.map(L => { const c = Object.assign({}, L); delete c._missing; return c; });
+      wcx.nextLightId = state.nextLightId;
+    }
+    if (wcx.ext.length || wcx.mesh.length || wcx.img.length || wcx.lights) {
       const js = JSON.stringify(wcx);
       for (let i = 0; i < js.length; i += 200) g(999, 'WCX' + js.slice(i, i + 200));
     }
@@ -9867,18 +10074,40 @@ function applyWcxExt(text) {
   if (data && Array.isArray(data.ext)) {
     const map = new Map();
     for (const [sig, x] of data.ext) { if (!map.has(sig)) map.set(sig, []); map.get(sig).push(x); }
+    const legacyLights = []; // 구버전(e.light) 파일 → 새 LightSource 모델로 옮긴다
     for (const e of state.entities) {
       const sig = entSig(e); if (!sig) continue;
       const q = map.get(sig); if (!q || !q.length) continue;
       const x = q.shift();
       if (x.bim) e.bim = JSON.parse(JSON.stringify(x.bim));
-      if (x.light) e.light = JSON.parse(JSON.stringify(x.light));
+      if (x.lightId) e.lightId = x.lightId;
+      else if (x.light) legacyLights.push([e, x.light]); // 구버전(e.light) → 아래에서 LightSource로 변환
       if (x.grp) e.grp = x.grp;
       if (x.zo != null) e.zo = x.zo;
       if (x.z1 != null) e.z1 = x.z1;
       if (x.z2 != null) e.z2 = x.z2;
       if (Array.isArray(x.zs) && e.points && x.zs.length === e.points.length) e.zs = x.zs.slice(); // 표면 위 곡선
     }
+    // 광원 컬렉션 복원
+    if (Array.isArray(data.lights)) {
+      state.lights = data.lights.map(L => Object.assign(lightDefaults(), L));
+      state.nextLightId = data.nextLightId || (state.lights.length + 1);
+      // 개체가 사라진 광원은 조용히 지우지 않고 경고로 남긴다 (§1.2).
+      // _missing 을 달아야 pruneLights가 이 광원을 지우지 않는다 — 안 달면 경고 직후 사라진다.
+      const ids = new Set(state.entities.map(e => e.id));
+      const orphan = state.lights.filter(L => !ids.has(L.objectId));
+      orphan.forEach(L => { L._missing = 1; });
+      if (orphan.length) logLine(`  ⚠ 광원 ${orphan.length}개가 가리키는 개체를 찾지 못했습니다: ${orphan.map(o => o.name || o.id).join(', ')}`, 'warn');
+    }
+    // 구버전 e.light → LightSource 승격 (사용자가 이미 저장해 둔 도면이 깨지지 않게)
+    for (const [e, old] of legacyLights) {
+      const L = Object.assign(lightDefaults(), { id: 'L' + (state.nextLightId++), objectId: e.id, name: defaultLightName(e) },
+        { range: old.range, soft: old.soft, bounce: old.bounce, spacing: old.spacing });
+      if (old.power != null) L.intensity = Math.round(old.power * LM_REF); // 옛 power(1=기본) → 루멘
+      for (const k of Object.keys(L)) if (L[k] === undefined) delete L[k];
+      state.lights.push(L); e.lightId = L.id;
+    }
+    if (legacyLights.length) logLine(`  광원 ${legacyLights.length}개를 새 형식으로 옮겼습니다 (세기는 루멘으로 환산)`, 'info');
   }
   // 3) 이미지 복원 — DXF 엔티티가 아니라 WCX에만 있으므로 정의로부터 새로 만든다.
   //    (id는 여기서 직접 부여: loadDXF가 nextId를 max(id)+1로 계산하므로 겹치면 안 된다)
@@ -10283,6 +10512,16 @@ function applyDoc(d) {
   // 새로 만든 도형이 기존 도형과 같은 id를 갖게 되어 선택·삭제·검볼이 엉뚱한 객체를 잡는다.
   state.nextId = Math.max(d.nextId || 1, state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
+  // 광원 컬렉션. 개체를 못 찾는 광원은 조용히 지우지 않고 경고로 남긴다 (§1.2)
+  state.lights = Array.isArray(d.lights) ? d.lights.map(L => Object.assign(lightDefaults(), L)) : [];
+  state.nextLightId = Math.max(d.nextLightId || 1, state.lights.reduce((m, L) => Math.max(m, +String(L.id).replace(/\D/g, '') || 0), 0) + 1);
+  soloLightId = null;
+  if (state.lights.length) {
+    const ids = new Set(state.entities.map(e => e.id));
+    const orphan = state.lights.filter(L => !ids.has(L.objectId));
+    orphan.forEach(L => { L._missing = 1; }); // 조용히 지우지 말고 경고 목록에 남긴다
+    if (orphan.length) logLine(`  ⚠ 광원 ${orphan.length}개가 가리키는 개체를 찾지 못했습니다: ${orphan.map(o => o.name || o.id).join(', ')}`, 'warn');
+  }
   state.views = d.views || {};
   state.levels = (d.levels && d.levels.length) ? d.levels : [{ name: '1F', elev: 0 }];
   state.curLv = Math.min(d.curLv || 0, state.levels.length - 1);
@@ -10368,7 +10607,7 @@ function newDrawing() {
   state.blocks = {}; insertName = null;
   undoStack.length = 0; redoStack.length = 0;
   state.view = { x: 0, y: 0, scale: 4 };
-  renderLayers(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
+  renderLayers(); renderLightList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
   logLine('새 도면을 시작했습니다. 명령행에 명령을 입력하거나 도구를 선택하세요.', 'info');
 }
 
@@ -10407,7 +10646,7 @@ function restoreLocal(d) {
   setFileName(d.fileName || null, d.fileLoc === 'pc' ? null : (d.fileLoc || null)); // 핸들은 복원 불가 → 'pc' 표시는 내림
   state.selection.clear();
   undoStack.length = 0; redoStack.length = 0;
-  renderLayers(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
+  renderLayers(); renderLightList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
   docs[curDoc] = captureDoc(); renderDocTabs();
 }
 // 변경 시 자동 저장(디바운스) + 백그라운드 전환/종료 시 즉시 저장
@@ -10482,7 +10721,8 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, cmdLightTag, cmdLighting, lightSources, litFace, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, lightSources, litFace,
+  kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
   proj3D, unproj3D, snap3D, srfSurfaceSnap,
   renderProps, propRefresh, pick3DAt, findFaceAt, bimSolidColor,
@@ -10507,7 +10747,7 @@ window.WEBCAD_AI_BRIDGE = {
   runBoolean, isBoolable, bimSolids,
   is3D: is3DActive,
   refresh: () => {
-    renderLayers(); renderProps(); draw(); updateStat();
+    renderLayers(); renderLightList(); renderProps(); draw(); updateStat();
     if (is3DActive() && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); }
   },
 };
@@ -10521,11 +10761,13 @@ window.WEBCAD_API = {
     name: currentFileName,
     data: { v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer,
             blocks: state.blocks, nextId: state.nextId, view: state.view, views: state.views,
-            levels: state.levels, curLv: state.curLv },
+            levels: state.levels, curLv: state.curLv,
+            lights: state.lights, nextLightId: state.nextLightId },
   }),
   // 클라우드 도면 로드
   setDoc: (name, d) => {
     applyDoc({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId,
+               lights: d.lights, nextLightId: d.nextLightId,
                blocks: d.blocks, view: d.view, views: d.views, levels: d.levels, curLv: d.curLv,
                fileName: name || null, fileLoc: 'cloud' });
     renderDocTabs(); draw();
