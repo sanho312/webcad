@@ -6547,6 +6547,64 @@ const RT_MM = 0.001;
 //   (램프 자체는 1326 cd/m² 라 어느 노출에서도 하얗게 포화 — 광원을 직접 보는 것이므로 정상)
 function rtRadiance(lm, areaM2) { return lm / (Math.max(1e-4, areaM2) * Math.PI); }
 const RT_EXPOSURE = 0.05;
+
+// ---------- 발광 메시 vs 해석적 광원 (노이즈의 근원) ----------
+// 광원을 발광 메시로만 두면 패스트레이서는 그 면을 '우연히 맞혀야만' 빛을 찾는다.
+// 작은 광원일수록 확률이 낮아 파이어플라이(흰 점)가 생기고, 밝기까지 과소평가된다.
+// 해석적 광원(PointLight/SpotLight)을 두면 매 샘플마다 광원을 직접 조준(NEE)하므로 노이즈가 사라진다.
+// 격리 harness 실측 (같은 장면·같은 20 spp, 바닥 영역):
+//   발광 메시만        평균 3.5  · 상대노이즈(sd/평균) 5.92   ← 노이즈뿐 아니라 밝기도 틀림
+//   PointLight(NEE)   평균 16.0 · 상대노이즈 0.43            ← 13.8배 개선
+// 칸델라 = lm/(4π) 는 illuminanceAt 과 같은 '균등 배광' 모델이라, 이걸 쓰면
+// 레이트레이싱 화면과 조도 분석 숫자가 같은 물리 모델을 공유하게 된다 (§4.3의 전제와 일치).
+//
+// 표시용 발광 radiance 상한. 광원을 직접 보면 밝게 빛나 보여야 하므로 남겨두되,
+// 에너지는 해석적 광원이 낸다. RT_EXPOSURE 기준으로 이 값이면 하얗게 포화한다.
+const RT_EMITTER_LOOK = 40;
+// 발광 메시가 실제로 낼 radiance 와 그때 나가는 루멘.
+//  · 작고 밝은 광원 → 물리 radiance 가 상한을 훌쩍 넘음 → 상한으로 깎임 → 메시 몫 루멘은 미미
+//  · 크고 어두운 면광원 → 물리 radiance 가 상한 아래 → 그대로 → 메시 몫이 전부 (= 지금 동작 유지)
+// 해석적 광원에는 '전체 루멘 − 메시 몫'만 준다. 그래서 이중계산이 원리적으로 생기지 않고,
+// 면적이 큰 발광체는 남는 몫이 0 이 되어 기존 동작이 그대로 보존된다.
+function rtEmitterLook(L, areaM2) {
+  const physR = rtRadiance(L.intensity, areaM2);
+  const lookR = Math.min(RT_EMITTER_LOOK, physR);
+  return { lookR, meshLm: lookR * Math.PI * areaM2 };
+}
+// 해석적 광원을 씬에 추가한다. meshLm: eid → 발광 메시가 이미 낸 루멘.
+// 순수 곡선 광원(선·원)은 삼각형이 없어 발광 메시가 아예 없었다 — 여기서 처음으로 실제 빛을 낸다.
+function rtAddLights(T, scene, meshLm) {
+  const byId = new Map(state.entities.map(e => [e.id, e]));
+  for (const L of state.lights) {
+    if (!L.enabled) continue;
+    if (soloLightId && L.id !== soloLightId) continue;
+    const e = byId.get(L.objectId); if (!e) continue;
+    const lay = getLayer(e.layer); if (lay && !lay.visible) continue;
+    const rest = Math.max(0, (L.intensity || 0) - (meshLm.get(e.id) || 0));
+    if (rest < 1e-3) continue;                    // 메시만으로 충분한 큰 발광면
+    const pts = lightEmitters(e, L); if (!pts.length) continue;
+    const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
+    const col = new T.Color(c[0] / mx, c[1] / mx, c[2] / mx);
+    // 스팟도 lm/(4π) 를 쓴다 — 원뿔로 몰아주면 조도 분석(균등 배광)과 어긋난다. §4.3 전제 유지.
+    const cd = rest / pts.length / (4 * Math.PI);
+    for (const p of pts) {
+      let lt;
+      if (L.type === 'spot') {
+        lt = new T.SpotLight(col, cd);
+        lt.angle = Math.max(0.02, (L.spotAngleDeg || 60) * Math.PI / 360);   // 전각 → 반각
+        lt.penumbra = Math.min(1, Math.max(0, L.spotPenumbra == null ? 0.3 : L.spotPenumbra));
+        lt.target.position.set(p.x * RT_MM, p.y * RT_MM, (p.z - 1000) * RT_MM); // 아래를 비춘다
+        lt.target.userData.rtLight = true;
+        scene.add(lt.target);
+      } else {
+        lt = new T.PointLight(col, cd);
+      }
+      lt.position.set(p.x * RT_MM, p.y * RT_MM, p.z * RT_MM);
+      lt.userData.rtLight = true;
+      scene.add(lt);
+    }
+  }
+}
 function rtBuildScene(T) {
   const scene = new T.Scene();
   scene.background = new T.Color(0x000000);   // 실내 조명 검토 기본 = 완전한 어둠 (§2.2)
@@ -6555,6 +6613,7 @@ function rtBuildScene(T) {
   const litIds = new Map();                    // eid → LightSource
   for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) litIds.set(L.objectId, L);
   let triCount = 0;
+  const meshLm = new Map();                    // eid → 발광 메시가 내는 루멘 (해석적 광원에서 뺄 몫)
   for (const [eid, o] of byEnt) {
     if (!o.tris.length) continue;
     triCount += o.tris.length;
@@ -6568,14 +6627,16 @@ function rtBuildScene(T) {
     let mat;
     if (L) {
       const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
-      // 루멘 → 발광 radiance: 세기를 발광면 면적(m²)으로 나눈다 (§2.2)
       const areaM2 = Math.max(1e-4, o.area * RT_MM * RT_MM);
-      mat = rtStdMat(T, '#000000', [c[0] / mx, c[1] / mx, c[2] / mx], rtRadiance(L.intensity, areaM2));
+      const { lookR, meshLm: lm } = rtEmitterLook(L, areaM2);
+      meshLm.set(eid, lm);
+      mat = rtStdMat(T, '#000000', [c[0] / mx, c[1] / mx, c[2] / mx], lookR);
     } else mat = rtStdMat(T, o.color);
     const mesh = new T.Mesh(geo, mat);
     mesh.userData.eid = eid;
     scene.add(mesh);
   }
+  rtAddLights(T, scene, meshLm);   // 나머지 루멘은 해석적 광원이 낸다 (노이즈 제거)
   rt.triCount = triCount;
   return scene;
 }
@@ -6683,15 +6744,18 @@ function rtLightsChanged() {
   const byEnt = rtTrisByEntity();
   const lit = new Map();
   for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) lit.set(L.objectId, L);
+  const meshLm = new Map();
   rt.scene.traverse(o => {
     if (!o.isMesh) return;
     const L = lit.get(o.userData.eid), info = byEnt.get(o.userData.eid);
     if (L && info) {
       const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
       const areaM2 = Math.max(1e-4, info.area * RT_MM * RT_MM);
+      const { lookR, meshLm: lm } = rtEmitterLook(L, areaM2);
+      meshLm.set(o.userData.eid, lm);
       o.material.color.setRGB(0, 0, 0);
       o.material.emissive.setRGB(c[0] / mx, c[1] / mx, c[2] / mx);
-      o.material.emissiveIntensity = rtRadiance(L.intensity, areaM2);
+      o.material.emissiveIntensity = lookR;
     } else if (info) {
       const [r, g, b] = hexToRgb(info.color || '#b9b2a6');
       o.material.color.setRGB(r / 255, g / 255, b / 255);
@@ -6699,6 +6763,12 @@ function rtLightsChanged() {
     }
     o.material.needsUpdate = true;
   });
+  // 해석적 광원은 세기·색·타입이 바뀌면 값만 고칠 게 아니라 개수까지 달라질 수 있어(선형 광원의
+  // 간격, 솔로/끄기) 통째로 걷어내고 다시 만든다. 형상 재빌드(BVH)가 아니라서 여전히 싸다.
+  const stale = [];
+  rt.scene.traverse(o => { if (o.userData && o.userData.rtLight) stale.push(o); });
+  for (const o of stale) rt.scene.remove(o);
+  rtAddLights(T, rt.scene, meshLm);
   rt.tracer.updateMaterials();
   rt.tracer.updateLights();
 }
@@ -11423,7 +11493,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
