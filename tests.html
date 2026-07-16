@@ -1171,6 +1171,86 @@ function tests(){
     eqi((C.state.entities.find(e => e.id === 1) || {}).bim.h, 2000, '취소하면 원래 높이로 복원된다');
   }
 
+  group('명령 인자 — "명령 인자" 형태가 실제로 먹어야 한다');
+  {
+    // 회귀 방지: 디스패처가 입력 '전체'를 별칭 표에서 찾기만 해서, 인자를 받도록 만든 명령
+    // (cmdIes(arg)·cmdExposure(arg))이 명령창에선 인자를 못 받았다. 심지어 ies 도움말은
+    // "사용법: ies 해제" 라고 안내하는데 실제로 치면 '알 수 없는 명령' 이 났다 — 앱이 거짓말했다.
+    reset();
+    const seen = [];
+    const keep = C.INSTANT_CMDS.material;
+    C.INSTANT_CMDS.material = (a) => seen.push(a);
+    C.runCommandInput('material 벽돌');
+    eqi(seen[0], '벽돌', '★material 벽돌 → 인자 "벽돌" 이 전달된다');
+    C.runCommandInput('재질 wood');           // 별칭 + 영문 인자
+    eqi(seen[1], 'wood', '별칭(재질)에도 인자가 전달된다');
+    C.runCommandInput('material');            // 인자 없음 = undefined
+    eqi(seen[2], undefined, '인자 없는 호출은 그대로 인자 없음');
+    C.INSTANT_CMDS.material = keep;
+    // 인자는 원문에서 잘라야 한다 — 소문자화되면 파일명·대문자 인자가 깨진다
+    const seen2 = [];
+    const keep2 = C.INSTANT_CMDS.ies;
+    C.INSTANT_CMDS.ies = (a) => seen2.push(a);
+    C.runCommandInput('ies MyFile.IES');
+    eqi(seen2[0], 'MyFile.IES', '★인자는 원문 그대로 (대소문자 보존)');
+    C.INSTANT_CMDS.ies = keep2;
+  }
+
+  group('재질(PBR) — 세 렌더러가 같은 재질을 본다');
+  {
+    reset();
+    ok(Object.keys(C.MAT_PRESETS).length >= 12, '재질 프리셋이 갖춰져 있다');
+    for (const k of ['concrete', 'wood', 'brick', 'glass', 'metal']) ok(!!C.MAT_PRESETS[k], `프리셋 ${k} 존재`);
+    // 별칭
+    eqi(C.matKey('콘크리트'), 'concrete', '한글 별칭 → 콘크리트');
+    eqi(C.matKey('wood'), 'wood', '영문 키 그대로');
+    eqi(C.matKey('없는재질'), null, '모르는 재질은 null (조용히 엉뚱한 걸 붙이면 안 된다)');
+    // 표시색 우선순위: 개체색 > 재질색 > 폴백
+    eqi(C.matHex({ color: '#ff0000', mat: 'brick' }, '#111111'), '#ff0000', '개체색이 재질색을 이긴다');
+    eqi(C.matHex({ mat: 'brick' }, '#111111'), C.MAT_PRESETS.brick.color, '색 미지정이면 재질색');
+    eqi(C.matHex({}, '#111111'), '#111111', '재질도 색도 없으면 폴백');
+    // 작업 뷰도 재질색을 반영 (붙였는지 알 수 있어야 한다)
+    eqi(C.bimSolidColor({ mat: 'wood', layer: '0' }, '#b9b2a6'), C.MAT_PRESETS.wood.color, '작업 뷰 색도 재질색을 따른다');
+    eqi(C.bimSolidColor({ color: '#00ff00', mat: 'wood', layer: '0' }, '#b9b2a6'), '#00ff00', '개체색은 여전히 최우선');
+
+    // ★월드 스케일 박스 매핑 — 벽돌 한 장은 벽이 크든 작든 같은 크기여야 한다.
+    //   개체 크기에 비례하는 UV 였다면 큰 면과 작은 면의 UV 범위가 같아져 무늬 크기가 달라진다.
+    const small = [[[0, 0, 0], [1000, 0, 0], [1000, 1000, 0]]];      // 1m 바닥 삼각형
+    const big   = [[[0, 0, 0], [4000, 0, 0], [4000, 4000, 0]]];      // 4m
+    const us = C.matBoxUV(small, 500), ub = C.matBoxUV(big, 500);
+    eq(us[2], 2, '1000mm / 500mm 스케일 → UV 2.0');
+    eq(ub[2], 8, '★4000mm 는 UV 8.0 — 면이 4배면 무늬도 4배 반복 (크기 불변)');
+    // 벽면(Z를 보지 않는 면)은 다른 축으로 투영된다
+    const wallTri = [[[0, 0, 0], [0, 0, 3000], [0, 2000, 3000]]];    // X 를 보는 벽
+    const uw = C.matBoxUV(wallTri, 1000);
+    eq(uw[3], 3, 'X 벽은 YZ 로 투영 — 높이 3000 → V 3.0');
+
+    // ★재질을 바꾸면 씬 시그니처가 바뀌어야 한다 — 안 그러면 재빌드가 안 돼 화면이 그대로다
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'slab', top: 0, t: 100 } }]);
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    C.v3.quad = false; C.v3.act = 1;
+    C.v3.solids = C.bimSolids();
+    const sig0 = C.rtGeoSig();
+    C.state.entities[0].mat = 'brick';
+    const sig1 = C.rtGeoSig();
+    ok(sig0 !== sig1, '★재질을 붙이면 씬 시그니처가 바뀐다 (재빌드 트리거)');
+    C.state.entities[0].mat = 'wood';
+    ok(sig1 !== C.rtGeoSig(), '★다른 재질로 바꿔도 시그니처가 바뀐다');
+    delete C.state.entities[0].mat;
+    eqi(C.rtGeoSig(), sig0, '재질을 해제하면 원래 시그니처로');
+
+    // 절차적 질감은 결정론적이어야 한다 — 새로고침마다 무늬가 바뀌면 렌더 비교가 불가능
+    const a = C.matDrawTex('brick', '#9c5540', 'color').ctx.getImageData(0, 0, 8, 8).data;
+    const b = C.matDrawTex('brick', '#9c5540', 'color').ctx.getImageData(0, 0, 8, 8).data;
+    ok(Array.from(a).every((v, i) => v === b[i]), '★같은 재질은 항상 같은 무늬 (결정론적)');
+    // 질감이 실제로 무늬를 만드는가 (평평한 색이면 질감이 아니다)
+    const px = C.matDrawTex('brick', '#9c5540', 'color').ctx.getImageData(0, 0, 512, 512).data;
+    let mn = 255, mx = 0;
+    for (let i = 0; i < px.length; i += 4) { if (px[i] < mn) mn = px[i]; if (px[i] > mx) mx = px[i]; }
+    ok(mx - mn > 15, '★벽돌 질감이 실제 명암 대비를 만든다');
+  }
+
   group('렌더링 뷰 (Rendered) — 명령·노출 계약');
   {
     // 렌더링 뷰 본체(WebGL 픽셀·그림자·컬링)는 실브라우저에서 검증했다 — 여기서는

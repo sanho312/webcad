@@ -2560,6 +2560,10 @@ function drawMeshOverlay(e) {
 // BIM 솔리드 색: 명시 색 > 이름있는(비흰색) 레이어 색 > 기본 건축 색. 레이어 바꾸면 3D 색도 바뀜.
 function bimSolidColor(e, fallback) {
   if (e.color) return e.color;
+  // 재질을 붙였는데 작업 화면이 그대로면 붙었는지 알 수가 없다 → 색 미지정(ByLayer) 개체는 재질색.
+  // 질감·반사는 라이노처럼 렌더 표시(rendered/raytrace)의 몫이고, 여기선 색까지만 반영한다.
+  const P = matOf(e);
+  if (P) return P.color;
   const lc = (getLayer(e.layer) || {}).color;
   if (lc && lc.toLowerCase() !== '#ffffff') return lc;
   return fallback;
@@ -7076,6 +7080,272 @@ function rtSupported() {
   return _rtSup;
 }
 // 개체 색 → PBR. WebCAD 재질은 색(hex)뿐이라 합리적 기본값으로 매핑한다 (§2.2).
+// ═══════════ 재질 (PBR) — 세 렌더러가 공유하는 하나의 진실 ═══════════
+// 사용자 요구: "재료의 질감 등을 구현하여 렌더링을 확인할 수 있는 뷰".
+// 설계 원칙(이번 개편의 핵심 교훈): 같은 개념을 두 군데에 구현하면 반드시 어긋난다.
+//   → 재질 해석은 matOf/matBuild 한 쌍뿐이고, 렌더링 뷰(rview)와 레이트레이싱(rt)이 그걸 그대로 쓴다.
+// 라이노 규약: 재질은 '렌더 표시'의 것이다. 와이어/셰이딩(작업 표시)은 개체·레이어 색을 유지한다.
+//   단 색을 지정하지 않은 개체(ByLayer)는 작업 뷰에서도 재질 기본색을 쓴다 — 재질을 붙였는데
+//   작업 화면이 그대로면 붙었는지 알 수가 없으니까.
+const MAT_PRESETS = {
+  concrete: { ko: '콘크리트', color: '#9e9b96', rough: 0.92, metal: 0, tex: 'speckle', bump: 0.5, scale: 700 },
+  plaster:  { ko: '회벽',     color: '#ded9d1', rough: 0.95, metal: 0, tex: 'noise',   bump: 0.15, scale: 500 },
+  wood:     { ko: '목재',     color: '#a9723f', rough: 0.5,  metal: 0, tex: 'wood',    bump: 0.35, scale: 1400 },
+  brick:    { ko: '벽돌',     color: '#9c5540', rough: 0.9,  metal: 0, tex: 'brick',   bump: 1.0, scale: 900 },
+  stone:    { ko: '석재',     color: '#8f8d88', rough: 0.75, metal: 0, tex: 'speckle', bump: 0.7, scale: 1000 },
+  tile:     { ko: '타일',     color: '#c9ccc9', rough: 0.14, metal: 0, tex: 'tile',    bump: 0.6, scale: 600 },
+  metal:    { ko: '금속',     color: '#b8bcc2', rough: 0.28, metal: 1, tex: null,      bump: 0,   scale: 500 },
+  paint:    { ko: '페인트',   color: '#d8d4cc', rough: 0.42, metal: 0, tex: null,      bump: 0,   scale: 500 },
+  asphalt:  { ko: '아스팔트', color: '#3f4145', rough: 0.97, metal: 0, tex: 'speckle', bump: 0.5, scale: 500 },
+  grass:    { ko: '잔디',     color: '#5c7f3f', rough: 1.0,  metal: 0, tex: 'noise',   bump: 0.8, scale: 250 },
+  // 투과 재질 — MeshPhysicalMaterial. 레이트레이싱에서 굴절·투과가 물리적으로 계산된다.
+  glass:    { ko: '유리',     color: '#dfeef2', rough: 0.02, metal: 0, tex: null, bump: 0, scale: 500, transmission: 0.95, ior: 1.52, thickness: 12 },
+  water:    { ko: '물',       color: '#4f8fb0', rough: 0.03, metal: 0, tex: null, bump: 0, scale: 500, transmission: 0.85, ior: 1.33, thickness: 200 },
+};
+const MAT_ALIAS = { 콘크리트: 'concrete', 노출콘크리트: 'concrete', 회벽: 'plaster', 석고: 'plaster', 목재: 'wood', 나무: 'wood',
+  벽돌: 'brick', 석재: 'stone', 돌: 'stone', 타일: 'tile', 금속: 'metal', 철: 'metal', 페인트: 'paint', 도장: 'paint',
+  아스팔트: 'asphalt', 잔디: 'grass', 유리: 'glass', 물: 'water' };
+// 개체 → 재질 스펙 (없으면 null = 기존 기본 재질 동작 그대로)
+function matOf(e) {
+  if (!e || !e.mat) return null;
+  return MAT_PRESETS[e.mat] || null;
+}
+function matKey(arg) {
+  const a = String(arg || '').trim().toLowerCase();
+  if (!a) return null;
+  if (MAT_PRESETS[a]) return a;
+  const k = MAT_ALIAS[String(arg).trim()];
+  return k || null;
+}
+// ── 절차적 질감 ──
+// 외부 이미지에 의존하지 않는다: CDN 이 막히거나 오프라인이면 재질이 통째로 사라지고,
+// 그건 '가끔 다르게 보이는 렌더러'가 되어 신뢰를 잃는다. 캔버스로 그려서 항상 같게 만든다.
+const MAT_TEX_N = 512;
+const _matTexCache = new Map();
+function matDrawTex(kind, hex, out) { // out: 'color' | 'height'
+  const c = document.createElement('canvas'); c.width = c.height = MAT_TEX_N;
+  const g = c.getContext('2d'), N = MAT_TEX_N;
+  const [br, bg, bb] = hexToRgb(hex || '#b9b2a6');
+  const color = out === 'color';
+  // 결정론적 난수 — 새로고침마다 질감이 바뀌면 렌더 비교가 불가능해진다
+  let seed = 20260716;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const put = (v) => color ? `rgb(${Math.round(br * v)},${Math.round(bg * v)},${Math.round(bb * v)})`
+                           : `rgb(${Math.round(255 * v)},${Math.round(255 * v)},${Math.round(255 * v)})`;
+  g.fillStyle = put(color ? 1 : 0.5); g.fillRect(0, 0, N, N);
+  if (kind === 'speckle') {              // 콘크리트·석재·아스팔트: 미세 반점
+    for (let i = 0; i < 26000; i++) {
+      const x = rnd() * N, y = rnd() * N, r = 0.4 + rnd() * 1.8;
+      const v = color ? (0.82 + rnd() * 0.30) : (0.30 + rnd() * 0.42);
+      g.fillStyle = put(v); g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    }
+  } else if (kind === 'noise') {         // 회벽·잔디: 부드러운 얼룩
+    for (let i = 0; i < 1400; i++) {
+      const x = rnd() * N, y = rnd() * N, r = 3 + rnd() * 22;
+      const v = color ? (0.86 + rnd() * 0.24) : (0.34 + rnd() * 0.34);
+      g.globalAlpha = 0.30; g.fillStyle = put(v); g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    }
+    g.globalAlpha = 1;
+  } else if (kind === 'wood') {          // 목재: 나이테 + 결
+    for (let y = 0; y < N; y++) {
+      const w = Math.sin(y * 0.075 + Math.sin(y * 0.013) * 3.4) * 0.5 + 0.5;
+      const v = color ? (0.74 + w * 0.34) : (0.34 + w * 0.34);
+      g.fillStyle = put(v); g.fillRect(0, y, N, 1);
+    }
+    for (let i = 0; i < 2600; i++) {     // 결(길게 늘어난 스크래치)
+      const x = rnd() * N, y = rnd() * N, L = 8 + rnd() * 60;
+      g.strokeStyle = put(color ? (0.72 + rnd() * 0.2) : (0.3 + rnd() * 0.2));
+      g.lineWidth = 0.5 + rnd(); g.beginPath(); g.moveTo(x, y); g.lineTo(x + L, y + (rnd() - 0.5) * 2); g.stroke();
+    }
+  } else if (kind === 'brick') {         // 벽돌: 막힌줄눈(러닝 본드)
+    const rows = 8, bh = N / rows, bw = N / 4, mortar = Math.max(2, bh * 0.13);
+    g.fillStyle = put(color ? 0.92 : 0.12); g.fillRect(0, 0, N, N);   // 줄눈(움푹)
+    for (let r = 0; r < rows; r++) {
+      const off = (r % 2) ? bw / 2 : 0;
+      for (let i = -1; i < 5; i++) {
+        const x = i * bw + off + mortar / 2, y = r * bh + mortar / 2;
+        const v = color ? (0.80 + rnd() * 0.34) : (0.72 + rnd() * 0.2);
+        g.fillStyle = put(v); g.fillRect(x, y, bw - mortar, bh - mortar);
+      }
+    }
+  } else if (kind === 'tile') {          // 타일: 격자 + 그라우트
+    const n = 4, s = N / n, gr = Math.max(2, s * 0.05);
+    g.fillStyle = put(color ? 0.78 : 0.15); g.fillRect(0, 0, N, N);   // 그라우트
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const v = color ? (0.94 + rnd() * 0.10) : (0.85 + rnd() * 0.08);
+      g.fillStyle = put(v); g.fillRect(i * s + gr / 2, j * s + gr / 2, s - gr, s - gr);
+    }
+  }
+  return { canvas: c, ctx: g };
+}
+// 높이맵 → 노멀맵 (Sobel). bumpMap 은 패스트레이서가 안 읽는다 — 두 렌더러가 같이 읽는 건 normalMap.
+function matNormalFromHeight(hc, strength) {
+  const N = MAT_TEX_N;
+  const src = hc.ctx.getImageData(0, 0, N, N).data;
+  const out = document.createElement('canvas'); out.width = out.height = N;
+  const og = out.getContext('2d'), img = og.createImageData(N, N);
+  const H = (x, y) => src[((((y + N) % N) * N + ((x + N) % N)) << 2)] / 255;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const dx = (H(x + 1, y) - H(x - 1, y)) * strength * 6;
+    const dy = (H(x, y + 1) - H(x, y - 1)) * strength * 6;
+    let nx = -dx, ny = -dy, nz = 1;
+    const L = Math.hypot(nx, ny, nz) || 1; nx /= L; ny /= L; nz /= L;
+    const i = (y * N + x) << 2;
+    img.data[i] = (nx * 0.5 + 0.5) * 255; img.data[i + 1] = (ny * 0.5 + 0.5) * 255;
+    img.data[i + 2] = (nz * 0.5 + 0.5) * 255; img.data[i + 3] = 255;
+  }
+  og.putImageData(img, 0, 0);
+  return out;
+}
+// 재질 키+색 → three 텍스처 묶음 (캐시)
+function matTextures(T, key, hex) {
+  const P = MAT_PRESETS[key]; if (!P || !P.tex) return null;
+  const ck = key + '|' + hex;
+  let o = _matTexCache.get(ck);
+  if (o) return o;
+  const colc = matDrawTex(P.tex, hex, 'color');
+  const hgt = matDrawTex(P.tex, hex, 'height');
+  const map = new T.CanvasTexture(colc.canvas);
+  map.wrapS = map.wrapT = T.RepeatWrapping;
+  if (T.SRGBColorSpace) map.colorSpace = T.SRGBColorSpace;
+  let nrm = null;
+  if (P.bump > 0) {
+    nrm = new T.CanvasTexture(matNormalFromHeight(hgt, P.bump));
+    nrm.wrapS = nrm.wrapT = T.RepeatWrapping;
+  }
+  o = { map, normalMap: nrm };
+  _matTexCache.set(ck, o);
+  return o;
+}
+// 재질 → three 재질. rtBuildScene 과 rviewBuildScene 이 **이 함수 하나**를 쓴다.
+//   opts.emissive/emissiveIntensity: 발광체(광원 지정 개체)
+//   opts.fast: 렌더링 뷰용 — 투과를 근사 투명으로 낮춘다 (래스터에는 굴절이 없다)
+function matBuild(T, e, fallbackHex, opts) {
+  opts = opts || {};
+  const P = matOf(e);
+  const hex = matHex(e, fallbackHex);
+  const [r, g, b] = hexToRgb(hex);
+  const base = { color: new T.Color(r / 255, g / 255, b / 255) };
+  let m;
+  if (P && P.transmission) {
+    m = new T.MeshPhysicalMaterial(Object.assign(base, {
+      roughness: P.rough, metalness: P.metal,
+      transmission: opts.fast ? 0 : P.transmission,     // 래스터는 굴절을 못 한다 → opacity 근사
+      ior: P.ior || 1.5, thickness: (P.thickness || 10) * RT_MM,
+      transparent: !!opts.fast, opacity: opts.fast ? 0.32 : 1,
+      side: T.DoubleSide,
+    }));
+  } else {
+    m = new T.MeshStandardMaterial(Object.assign(base, {
+      roughness: P ? P.rough : 0.6, metalness: P ? P.metal : 0,
+    }));
+  }
+  if (P) {
+    const tx = matTextures(T, e.mat, hex);
+    if (tx) {
+      m.map = tx.map;
+      if (tx.normalMap) { m.normalMap = tx.normalMap; m.normalScale = new T.Vector2(1, 1); }
+    }
+  }
+  if (opts.emissive) { m.emissive = new T.Color(opts.emissive[0], opts.emissive[1], opts.emissive[2]); m.emissiveIntensity = opts.emissiveIntensity || 1; }
+  return m;
+}
+// 표시색 — 개체색 > 재질색 > 레이어색 > 기본. 재질을 붙였는데 화면이 그대로면 붙었는지 알 수 없다.
+function matHex(e, fallbackHex) {
+  if (e && e.color) return e.color;
+  const P = matOf(e);
+  if (P) return P.color;
+  return fallbackHex || '#b9b2a6';
+}
+// 월드 스케일 박스 매핑 UV — 삼각형의 지배 축으로 평면 투영.
+// 개체 크기에 비례하는 UV 는 건축에서 틀렸다: 벽돌 한 장은 벽이 크든 작든 같은 크기여야 한다.
+function matBoxUV(tris, scaleMM) {
+  const uv = new Float32Array(tris.length * 6);
+  const S = Math.max(1, scaleMM || 500);
+  let k = 0;
+  for (const t of tris) {
+    const ax = t[1][0] - t[0][0], ay = t[1][1] - t[0][1], az = t[1][2] - t[0][2];
+    const bx = t[2][0] - t[0][0], by = t[2][1] - t[0][1], bz = t[2][2] - t[0][2];
+    const nx = Math.abs(ay * bz - az * by), ny = Math.abs(az * bx - ax * bz), nz = Math.abs(ax * by - ay * bx);
+    let iu, iv;
+    if (nz >= nx && nz >= ny) { iu = 0; iv = 1; }        // 바닥·천장 → XY 평면
+    else if (nx >= ny) { iu = 1; iv = 2; }               // X 를 보는 벽 → YZ
+    else { iu = 0; iv = 2; }                             // Y 를 보는 벽 → XZ
+    for (const p of t) { uv[k++] = p[iu] / S; uv[k++] = p[iv] / S; }
+  }
+  return uv;
+}
+// 삼각형 목록 → BufferGeometry (위치·노멀·UV). 두 렌더러가 공유한다.
+function matGeo(T, tris, e) {
+  const pos = new Float32Array(tris.length * 9);
+  let k = 0;
+  for (const t of tris) for (const p of t) { pos[k++] = p[0] * RT_MM; pos[k++] = p[1] * RT_MM; pos[k++] = p[2] * RT_MM; }
+  const geo = new T.BufferGeometry();
+  geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+  const P = matOf(e);
+  if (P && P.tex) geo.setAttribute('uv', new T.BufferAttribute(matBoxUV(tris, P.scale), 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+// 속성 패널의 재질 드롭다운 — 단일/다중 선택이 같은 코드를 쓴다 (한쪽만 고치면 어긋난다)
+function matPropRow(cur) {
+  const opts = ['<option value="">— 기본 —</option>']
+    .concat(Object.keys(MAT_PRESETS).map(k =>
+      `<option value="${k}" ${cur === k ? 'selected' : ''}>${MAT_PRESETS[k].ko}</option>`)).join('');
+  return `<div class="row"><label>재질</label><select id="pMat" title="질감·거칠기·투과 — rendered/raytrace 에서 보입니다">${opts}</select></div>`;
+}
+function wireMatProp(body, sel) {
+  const el = body.querySelector('#pMat');
+  if (!el) return;
+  el.addEventListener('change', () => {
+    pushUndo();
+    for (const e of sel) { if (el.value) e.mat = el.value; else delete e.mat; }
+    const P = MAT_PRESETS[el.value];
+    logLine(P ? `  ✔ 재질 ${P.ko} — 개체 ${sel.length}개` : `  ▷ 재질 해제 — 개체 ${sel.length}개`, 'ok');
+    matRefresh();
+  });
+}
+// material / 재질 — 선택한 개체에 재질을 지정 (라이노: 개체 속성의 재질)
+function cmdMaterial(arg) {
+  const sel = [...state.selection].map(id => state.entities.find(e => e.id === id)).filter(Boolean);
+  const a = String(arg || '').trim();
+  const list = () => Object.keys(MAT_PRESETS).map(k => `${k}(${MAT_PRESETS[k].ko})`).join(' · ');
+  if (!sel.length) {
+    logLine('  재질을 지정할 개체를 먼저 선택하세요.', 'warn');
+    logLine('  사용법: material 콘크리트 · material wood · material 해제', 'info');
+    logLine('  재질: ' + list(), 'info');
+    return;
+  }
+  if (/^(해제|off|none|제거|clear)$/i.test(a)) {
+    pushUndo();
+    for (const e of sel) delete e.mat;
+    logLine(`  ▷ 재질 해제 — 개체 ${sel.length}개가 기본 재질로 돌아갑니다`, 'ok');
+    matRefresh();
+    return;
+  }
+  const key = matKey(a);
+  if (!key) {
+    if (a) logLine(`  ✗ 모르는 재질입니다: ${a}`, 'warn');
+    logLine('  재질: ' + list(), 'info');
+    logLine('  사용법: material 콘크리트 · material wood · material 해제', 'info');
+    return;
+  }
+  const P = MAT_PRESETS[key];
+  pushUndo();
+  for (const e of sel) e.mat = key;
+  const bits = [`거칠기 ${P.rough}`, P.metal ? '금속' : null, P.tex ? `질감 ${P.tex}(${P.scale}mm)` : null,
+    P.transmission ? `투과 ${Math.round(P.transmission * 100)}% · 굴절률 ${P.ior}` : null].filter(Boolean).join(' · ');
+  logLine(`  ✔ 재질 ${P.ko} — 개체 ${sel.length}개 · ${bits}`, 'ok');
+  logLine('     질감·반사는 rendered(렌더링 뷰)·raytrace 에서 보입니다.', 'info');
+  matRefresh();
+}
+// 재질이 바뀌면 세 렌더러를 모두 무효화한다 — 한 곳만 갱신하면 화면마다 다른 재질이 보인다
+function matRefresh() {
+  if (typeof rview !== 'undefined' && rview) rview.sig = '';
+  if (rt && rt.on) { rt.geoSig = ''; rtLightsChanged(); }
+  renderProps();
+  if (typeof v3 !== 'undefined' && v3 && is3DActive()) { v3.solids = bimSolids(); render3D(); } else draw();
+}
 function rtStdMat(T, hex, emissiveRGB, emissiveIntensity) {
   const [r, g, b] = hexToRgb(hex || '#b9b2a6');
   const m = new T.MeshStandardMaterial({
@@ -7121,6 +7391,7 @@ function triArea(t) {
 // 광원 세기·색온도만 바뀌면 이 값이 그대로라 재빌드를 건너뛴다 = 슬라이더 UX의 핵심.
 function rtGeoSig() {
   let h = state.entities.length + '|' + (v3.solids || []).length + '|';
+  for (const e of state.entities) if (e.mat) h += 'T' + e.id + ':' + e.mat + ';';   // 재질 변경 → 재빌드
   for (const s of (v3.solids || [])) h += s.eid + ',' + Math.round(s.z0) + ',' + Math.round(s.z1) + ',' + s.poly.length + ';';
   for (const e of state.entities) if (e.type === 'MESH') h += 'M' + e.id + ',' + (e.tris || []).length + ';';
   return h;
@@ -7445,17 +7716,14 @@ function rtBuildScene(T) {
   const byEnt = rtTrisByEntity();
   const litIds = new Map();                    // eid → LightSource
   for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) litIds.set(L.objectId, L);
+  const entById = new Map(state.entities.map(e => [e.id, e]));
   let triCount = 0;
   const meshLm = new Map();                    // eid → 발광 메시가 내는 루멘 (해석적 광원에서 뺄 몫)
   for (const [eid, o] of byEnt) {
     if (!o.tris.length) continue;
     triCount += o.tris.length;
-    const pos = new Float32Array(o.tris.length * 9);
-    let k = 0;
-    for (const t of o.tris) for (const p of t) { pos[k++] = p[0] * RT_MM; pos[k++] = p[1] * RT_MM; pos[k++] = p[2] * RT_MM; }
-    const geo = new T.BufferGeometry();
-    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
-    geo.computeVertexNormals();
+    const ent = entById.get(eid);
+    const geo = matGeo(T, o.tris, ent);          // 재질의 UV(월드 박스 매핑) 포함
     const L = litIds.get(eid);
     let mat;
     if (L) {
@@ -7463,8 +7731,9 @@ function rtBuildScene(T) {
       const areaM2 = Math.max(1e-4, o.area * RT_MM * RT_MM);
       const { lookR, meshLm: lm } = rtEmitterLook(L, areaM2);
       meshLm.set(eid, lm);
+      // 발광체는 재질을 타지 않는다 — 광원채는 '빛' 이지 '표면' 이 아니다 (rtEmitterLook 이 밝기의 진실)
       mat = rtStdMat(T, '#000000', [c[0] / mx, c[1] / mx, c[2] / mx], lookR);
-    } else mat = rtStdMat(T, o.color);
+    } else mat = matBuild(T, ent, o.color);      // ★렌더링 뷰와 같은 함수 = 두 화면의 재질이 어긋날 수 없다
     const mesh = new T.Mesh(geo, mat);
     mesh.userData.eid = eid;
     scene.add(mesh);
@@ -7523,14 +7792,11 @@ function rviewBuildScene(T) {
   const byEnt = rtTrisByEntity();
   const litIds = new Map();
   for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) litIds.set(L.objectId, L);
+  const entById = new Map(state.entities.map(e => [e.id, e]));
   for (const [eid, o] of byEnt) {
     if (!o.tris.length) continue;
-    const pos = new Float32Array(o.tris.length * 9);
-    let k = 0;
-    for (const t of o.tris) for (const p of t) { pos[k++] = p[0] * RT_MM; pos[k++] = p[1] * RT_MM; pos[k++] = p[2] * RT_MM; }
-    const geo = new T.BufferGeometry();
-    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
-    geo.computeVertexNormals();
+    const ent = entById.get(eid);
+    const geo = matGeo(T, o.tris, ent);
     const L = litIds.get(eid);
     let mat;
     if (L) { // 발광 개체 — 모양은 rt 와 같은 rtEmitterLook 로 (두 뷰의 광원채 밝기가 어긋나지 않게)
@@ -7539,7 +7805,7 @@ function rviewBuildScene(T) {
       const { lookR } = rtEmitterLook(L, areaM2);
       mat = new T.MeshStandardMaterial({ color: 0x000000, emissive: new T.Color(c[0] / mx, c[1] / mx, c[2] / mx), emissiveIntensity: lookR, roughness: 0.9 });
     } else {
-      mat = new T.MeshStandardMaterial({ color: new T.Color(o.color || '#b9b2a6'), roughness: 0.85, metalness: 0 });
+      mat = matBuild(T, ent, o.color, { fast: true });   // ★레이트레이싱과 같은 함수 (투과만 래스터 근사)
     }
     const mesh = new T.Mesh(geo, mat);
     mesh.castShadow = true; mesh.receiveShadow = true;
@@ -9145,6 +9411,7 @@ const INSTANT_CMDS = {
   setaslight: cmdSetAsLight,
   raytrace: cmdRaytrace,
   rendered: cmdRendered,
+  material: cmdMaterial,
   rtenv: cmdRtEnv,
   sun: cmdSun,
   ies: cmdIes,
@@ -9520,6 +9787,7 @@ const TOOL_KO = {
   setaslight: '광원으로 지정(SETASLIGHT)',
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
   rendered: '렌더링 뷰 — 실시간 태양·조명·그림자(RENDERED)',
+  material: '재질 지정 — 질감·거칠기·투과(MATERIAL)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
   ies: 'IES 배광 파일(IES)',
@@ -9587,6 +9855,7 @@ const CMD_ALIASES = {
   unsetlight: 'unsetlight', 광원해제: 'unsetlight',
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
   rendered: 'rendered', 렌더링: 'rendered', 렌더링뷰: 'rendered', 렌더뷰: 'rendered',
+  material: 'material', mat: 'material', 재질: 'material', 재료: 'material',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
   ies: 'ies', 배광: 'ies', iesfile: 'ies',
@@ -9694,7 +9963,23 @@ function runCommandInput(raw) {
     return;
   }
   if (tool) { setTool(tool); if (tool !== 'select') lastCommand = tool; }
-  else logLine(`  알 수 없는 명령: ${v}`, 'warn');
+  else if (!feedCmdArg(raw, v)) logLine(`  알 수 없는 명령: ${v}`, 'warn');
+}
+// '명령 인자' 형태 — material 벽돌 / ies 해제 / exposure 0.05
+// 여태 디스패처는 입력 '전체'를 별칭 표에서 찾기만 했다. 그래서 인자를 받도록 만든 명령
+// (cmdIes(arg)·cmdExposure(arg))도 명령창에선 인자를 못 받았고, 심지어 그 명령의 도움말이
+// "사용법: ies 해제" 라고 안내하는데 실제로 치면 '알 수 없는 명령' 이 났다 — 앱이 거짓말을 했다.
+// 인자는 원문(raw)에서 잘라 넘긴다: 파일명·한글 재질명이 소문자화되면 안 된다.
+function feedCmdArg(raw, v) {
+  const sp = v.search(/\s/);
+  if (sp <= 0) return false;
+  const head = v.slice(0, sp);
+  const t = settings.aliases[head] || CMD_ALIASES[head];
+  if (!t || !INSTANT_CMDS[t]) return false;
+  const arg = raw.trim().slice(sp).trim();
+  if (!['undo', 'redo', 'help'].includes(t)) lastCommand = t;
+  INSTANT_CMDS[t](arg);
+  return true;
 }
 
 // 직전 명령 반복(스페이스/Enter)
@@ -10508,6 +10793,7 @@ function renderProps() {
        <div class="row"><label>레이어</label><select id="mLayer"><option value="">— 변경 —</option>${state.layers.map(l => `<option>${escapeHtml(l.name)}</option>`).join('')}</select></div>
        <div class="row"><label>색상</label><input type="color" id="mColor" value="#ffffff"><button class="miniBtn" id="mColApply">적용</button><button class="miniBtn" id="mColClear">레이어색</button></div>
        <div class="row"><label>선종류</label><select id="mLt"><option value="">— 변경 —</option>${Object.keys(LINETYPES).map(k => `<option value="${k}">${LINETYPE_KO[k]}</option>`).join('')}</select></div>
+       ${matPropRow(sel.every(e => e.mat === sel[0].mat) ? sel[0].mat : '')}
        <div style="display:flex;gap:6px;margin-top:6px;">
          <button class="miniBtn" id="pFront">맨 앞</button><button class="miniBtn" id="pBack">맨 뒤</button>
          <button class="miniBtn" id="pSim">유사 선택</button>
@@ -10520,6 +10806,7 @@ function renderProps() {
        + (mLights.length ? lightPropRows(mLights[0], mLights.length) : '')
        + `<button class="miniBtn" id="pDel" style="margin-top:6px;">선택 삭제</button>`;
     wireLightProps(body);   // 다중 선택에서도 광원 슬라이더가 동작하게 (단일과 같은 코드)
+    wireMatProp(body, sel);   // 재질도 단일 선택과 같은 코드
     const apply = fn => { pushUndo(); sel.forEach(fn); renderProps(); propRefresh(); };
     document.getElementById('pFront').addEventListener('click', () => reorderSel(true));
     document.getElementById('pBack').addEventListener('click', () => reorderSel(false));
@@ -10540,6 +10827,7 @@ function renderProps() {
   rows += `<div class="row"><label>레이어</label><select id="pLayer">${
     state.layers.map(l => `<option ${l.name === e.layer ? 'selected' : ''}>${escapeHtml(l.name)}</option>`).join('')
   }</select></div>`;
+  rows += matPropRow(e.mat);
   const geomRows = {
     LINE: [['x1', 'x1'], ['y1', 'y1'], ['x2', 'x2'], ['y2', 'y2']],
     CIRCLE: [['cx', '중심X'], ['cy', '중심Y'], ['r', '반지름']],
@@ -10612,6 +10900,7 @@ function renderProps() {
     pushUndo(); e.bim[inp.dataset.bk] = v; propRefresh();
   }));
   wireLightProps(body);
+  wireMatProp(body, [e]);   // 재질 — 다중 선택과 같은 코드
   document.getElementById('pBimClr1')?.addEventListener('click', cmdBimClear);
   document.getElementById('pBimWall1')?.addEventListener('click', cmdWallTag);
   document.getElementById('pBimSlab1')?.addEventListener('click', cmdSlabTag);
@@ -12721,6 +13010,8 @@ window.__CADTEST__ = {
   bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, parseIES, iesCandelaAt, iesSummary, iesToTexture, iesFluxFactor, lightCandela, cmdIes, selectedLights, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
   vpIsPlan, vpPlanIndex, vpRect, vpRectCss, planCvRect, syncPlanCv, open3D, close3D, is3DActive, resize, worldToScreen, screenToWorld,
   rview, rviewFrame, rviewBuildScene, rviewSyncSun, rviewSig, cmdRendered,
+  MAT_PRESETS, MAT_ALIAS, matOf, matKey, matHex, matBoxUV, matGeo, matBuild, matTextures, matDrawTex, cmdMaterial, rtGeoSig, bimSolidColor,
+  runCommandInput, feedCmdArg,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
