@@ -145,12 +145,14 @@ function resize() {
 // 마우스 이벤트가 자동으로 갈라지는 게 핵심 — 평면 칸 클릭은 2D 핸들러가, 나머지는 3D 핸들러가 받는다.
 function syncPlanCv() {
   const i = vpPlanIndex();
+  const lbl = planVpLabel();
   if (!is3DActive()) { // 3D 미개방 = 오늘과 동일하게 #cv 가 화면 전체
     cv.style.position = ''; cv.style.left = cv.style.top = cv.style.width = cv.style.height = '';
-    cv.style.zIndex = ''; cv.style.display = '';
+    cv.style.zIndex = ''; cv.style.display = ''; cv.style.outline = '';
+    if (lbl) lbl.style.display = 'none';
     return;
   }
-  if (i < 0) { cv.style.display = 'none'; return; } // 평면 칸이 안 떠 있음 → 3D 가 화면 전체
+  if (i < 0) { cv.style.display = 'none'; if (lbl) lbl.style.display = 'none'; return; } // 평면 칸이 안 떠 있음 → 3D 가 화면 전체
   const r = vpRectCss(i);
   cv.style.display = ''; cv.style.position = 'absolute'; cv.style.zIndex = '19';
   cv.style.left = r.x + 'px'; cv.style.top = r.y + 'px';
@@ -162,7 +164,29 @@ function syncPlanCv() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   cv._w = r.w; cv._h = r.h;
+  // 뷰 이름표 + 활성 테두리 — 다른 칸은 3D 렌더러가 캔버스에 그리지만, 평면 칸은 #cv 가 위를
+  // 덮으므로 밑에 그려봤자 안 보인다 → DOM 라벨(z20) + outline 으로 올린다. (라이노처럼
+  // 어느 칸이 활성인지 한눈에 보여야 하고, 평면 칸도 예외가 아니어야 한다)
+  const active = v3.act === i;
+  if (lbl) {
+    lbl.style.display = ''; lbl.textContent = v3.views[i].name;
+    lbl.style.left = (r.x + 8) + 'px'; lbl.style.top = (r.y + 4) + 'px';
+    lbl.style.color = active ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
+  }
+  cv.style.outline = v3.quad ? (active ? '1.5px solid #0A84FF' : '1px solid rgba(120,140,180,.3)') : '';
+  cv.style.outlineOffset = '-1px';
   draw();
+}
+// 평면 칸의 뷰 이름표 (지연 생성) — pointer-events 없음, 표시 전용
+function planVpLabel() {
+  let el = document.getElementById('planVpLabel');
+  if (!el && typeof wrap !== 'undefined' && wrap) {
+    el = document.createElement('div');
+    el.id = 'planVpLabel';
+    el.style.cssText = 'position:absolute;z-index:20;font:600 12px -apple-system,system-ui,sans-serif;pointer-events:none;display:none;';
+    wrap.appendChild(el);
+  }
+  return el;
 }
 function worldToScreen(wx, wy) {
   return {
@@ -1554,6 +1578,13 @@ function scheduleDraw() {
   requestAnimationFrame(() => { drawQueued = false; draw(); });
 }
 
+// 라이노처럼 뷰포트를 클릭하면 그 뷰가 활성이 된다. 평면 칸은 #cv 가 이벤트를 받으므로
+// (3D 쪽 vpAt 전환 로직이 못 본다) 여기서 대칭으로 처리한다. 2D 편집 동작에는 관여하지 않는다.
+cv.addEventListener('pointerdown', () => {
+  if (typeof v3 === 'undefined' || !v3 || !is3DActive()) return;
+  const i = vpPlanIndex();
+  if (i >= 0 && v3.act !== i) { v3.act = i; saveV3Layout(); render3D(); }
+});
 cv.addEventListener('mousedown', (ev) => {
   lastInputWasTouch = false;
   if (ev.button === 1 || (ev.button === 0 && ev.altKey) || (ev.button === 0 && state.tool === 'pan')) {  // 중간버튼/Alt/손 도구 = 팬
@@ -2731,10 +2762,15 @@ function fit3D() {
   }
   for (const e of state.entities) {
     if (e.bim) continue;
-    if (!['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC'].includes(e.type)) continue;
-    try { const b = entityBBox(e); xmin = Math.min(xmin, b.xmin); xmax = Math.max(xmax, b.xmax); ymin = Math.min(ymin, b.ymin); ymax = Math.max(ymax, b.ymax); has++; } catch (_) { continue; }
+    // 전 타입을 entityBBox 로 — 예전엔 LINE/LWPOLYLINE/CIRCLE/ARC 화이트리스트라
+    // TEXT/HATCH/IMAGE/INSERT 가 3D 전체보기 범위에서 빠져 2D zoom 과 다른 extents 를 냈다.
+    // (평면 칸과 3D 칸의 전체보기가 서로 다른 곳을 보는 '호환성 문제'의 뿌리 중 하나)
+    // 부수 수정: 아래 MESH z 스캔은 화이트리스트 탓에 도달 불가능한 죽은 코드였다.
+    let b = null; try { b = entityBBox(e); } catch (_) {}
+    if (!b || !isFinite(b.xmin) || !isFinite(b.xmax)) continue;
+    xmin = Math.min(xmin, b.xmin); xmax = Math.max(xmax, b.xmax); ymin = Math.min(ymin, b.ymin); ymax = Math.max(ymax, b.ymax); has++;
     zmax = Math.max(zmax, e.zo || 0, e.z1 || 0, e.z2 || 0); // 공중에 띄운 도형·3D 선 높이 포함
-    if (e.type === 'MESH') for (const t of e.tris) for (const p of t) zmax = Math.max(zmax, p[2]);
+    if (e.type === 'MESH' && e.tris) for (const t of e.tris) for (const p of t) zmax = Math.max(zmax, p[2]);
   }
   v3.hasContent = has > 0;
   if (!has) { v3.cx = 0; v3.cy = 0; v3.cz = 0; v3.fit = 10000; return; } // 빈 모델: 10m 기준
@@ -2893,6 +2929,7 @@ function render3D() {
   // (undefined 로 두면 pick3DAt/findFaceAt 이 v3.faces 를 훑다가 터진다)
   v3.faces = v3.views[v3.act]._faces || []; v3.under = v3.views[v3.act]._under || []; v3.pick = v3.views[v3.act]._pick || [];
   syncPlanCv(); // 평면 칸 위치·크기 동기화 + 2D 엔진 재그림
+  rviewFrame(); // 렌더링 뷰가 켜져 있으면 그 뷰포트에 실시간 래스터를 겹친다
   if (v3.boxRect) { // 선택 박스 러버밴드 (드래그 중)
     const b = v3.boxRect, crossing = b.x1 < b.x0;
     c.save();
@@ -7111,7 +7148,11 @@ const RT_EXPOSURE = 0.05;         // 검은 환경 (인공조명만)
 const RT_EXPOSURE_DAY = 2.5e-5;   // 주광 (물리 하늘 + 태양)
 function rtExposure() {
   if (rt.exposure) return rt.exposure;                      // 사용자가 정한 값이 있으면 그것
-  return rt.env === 'day' ? RT_EXPOSURE_DAY : RT_EXPOSURE;
+  // rt.env 는 레이트레이싱에 들어가야 태양과 동기화된다(rtEnter→rtSetEnv). 렌더링 뷰처럼
+  // rt 밖에서 노출이 필요하면 태양에서 직접 파생한다 — 안 그러면 stale 'black' 탓에
+  // 주광 장면(수만 lux)에 실내 노출(0.05)이 걸려 화면이 하얗게 타버린다. (태양이 유일한 진실)
+  const env = rt.on ? rt.env : rtEnvWanted();
+  return env === 'day' ? RT_EXPOSURE_DAY : RT_EXPOSURE;
 }
 function rtApplyExposure() {
   if (rt.renderer) rt.renderer.toneMappingExposure = rtExposure();
@@ -7452,6 +7493,162 @@ function rtSyncCamera(T, cam) {
   cam.left = -hw; cam.right = hw; cam.top = hh; cam.bottom = -hh;
   cam.near = 0.01; cam.far = (D * 4) * RT_MM;
   cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+}
+// ═══════════ 렌더링 뷰 (Rendered) — 라이노의 Rendered 표시 모드 상당 ═══════════
+// 사용자 요구: "라이노에서의 perspective 뷰에서 rendering뷰로 전환하는 방식" + "렌더링 방식은 D5".
+// 역할 분담(중요 — D5의 '보이는 것만 그리기'를 올바른 곳에만 적용):
+//   · Rendered(여기) = three.js 실시간 래스터. 프러스텀 컬링(three 기본)·해상도 캡이 유효하다.
+//     즉시 열리고(BVH 없음) 궤도 회전을 실시간으로 따라온다.
+//   · Raytraced(rt)  = 최종 확인. 화면 밖 기하도 GI·반사·그림자에 기여하므로 컬링 금지.
+// 이 뷰는 '보기용' 프리뷰다. 태양 방향·시간·계절·탁도는 [태양] 패널 값을 그대로 따르지만,
+// 조도 수치의 진실은 조도 분석(illuminanceAt)과 Raytraced 가 담당한다.
+const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: null, sun: null, hemi: null, sig: '', err: null };
+// 뷰포트에 종속된 캔버스 — rt 의 inset:0 실수(4분할 전체를 덮음)를 반복하지 않는다.
+function rviewCanvas() {
+  if (rview.cv) return rview.cv;
+  const ov = document.getElementById('bim3d'); if (!ov) return null;
+  const c = document.createElement('canvas');
+  c.id = 'rvcv';
+  // pointer-events:none — 궤도/팬/선택 이벤트는 그대로 밑의 #b3cv 가 받는다 (조작 유지가 핵심)
+  c.style.cssText = 'position:absolute;z-index:17;pointer-events:none;display:none;';
+  ov.appendChild(c);
+  rview.cv = c;
+  return c;
+}
+function rviewSig() { return rtGeoSig() + '|' + litCacheSig(); }
+// 씬 구성 — rtBuildScene 과 같은 삼각형(rtTrisByEntity)에서 출발하되 실시간용 재질/광원.
+// three@0.155+ 물리 단위: DirectionalLight=lux, PointLight=cd → rt 와 같은 노출(rtExposure)을 그대로 쓴다.
+function rviewBuildScene(T) {
+  const scene = new T.Scene();
+  const byEnt = rtTrisByEntity();
+  const litIds = new Map();
+  for (const L of state.lights) if (L.enabled && (!soloLightId || soloLightId === L.id)) litIds.set(L.objectId, L);
+  for (const [eid, o] of byEnt) {
+    if (!o.tris.length) continue;
+    const pos = new Float32Array(o.tris.length * 9);
+    let k = 0;
+    for (const t of o.tris) for (const p of t) { pos[k++] = p[0] * RT_MM; pos[k++] = p[1] * RT_MM; pos[k++] = p[2] * RT_MM; }
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+    geo.computeVertexNormals();
+    const L = litIds.get(eid);
+    let mat;
+    if (L) { // 발광 개체 — 모양은 rt 와 같은 rtEmitterLook 로 (두 뷰의 광원채 밝기가 어긋나지 않게)
+      const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
+      const areaM2 = Math.max(1e-4, o.area * RT_MM * RT_MM);
+      const { lookR } = rtEmitterLook(L, areaM2);
+      mat = new T.MeshStandardMaterial({ color: 0x000000, emissive: new T.Color(c[0] / mx, c[1] / mx, c[2] / mx), emissiveIntensity: lookR, roughness: 0.9 });
+    } else {
+      mat = new T.MeshStandardMaterial({ color: new T.Color(o.color || '#b9b2a6'), roughness: 0.85, metalness: 0 });
+    }
+    const mesh = new T.Mesh(geo, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.userData.eid = eid;
+    scene.add(mesh);
+  }
+  // 인공 광원 — lightSources()(소프트웨어 뷰·조도 분석과 같은 원천)에서 위치/색/광속을 가져온다.
+  // PointLight 물리 단위 = cd → lm/4π. 그림자 맵은 비싸므로 광속 상위 4개까지만 그림자를 켠다.
+  const arts = lightSources().filter(g => !g.sun);
+  arts.sort((a, b) => (b.lm || 0) - (a.lm || 0));
+  arts.slice(0, 32).forEach((g, i) => {
+    const pl = new T.PointLight(new T.Color(g.cr, g.cg, g.cb), Math.max(0, (g.lm || 0) / (4 * Math.PI)));
+    pl.position.set(g.x * RT_MM, g.y * RT_MM, g.z * RT_MM);
+    pl.decay = 2; pl.distance = 0;
+    if (i < 4) { pl.castShadow = true; pl.shadow.mapSize.set(1024, 1024); pl.shadow.bias = -0.002; }
+    scene.add(pl);
+  });
+  // 태양·하늘 — 매 프레임 rviewSyncSun 이 [태양] 패널 값(시간·계절·탁도)을 반영한다
+  rview.sun = new T.DirectionalLight(0xffffff, 0);
+  rview.sun.castShadow = true;
+  rview.sun.shadow.mapSize.set(2048, 2048);
+  rview.sun.shadow.bias = -0.0015;
+  scene.add(rview.sun); scene.add(rview.sun.target);
+  rview.hemi = new T.HemisphereLight(0xbdd3ea, 0x4a4640, 0);
+  scene.add(rview.hemi);
+  return scene;
+}
+// 태양 방향·세기·하늘색을 현재 sunState 로 — sunLight()(소프트웨어 뷰와 같은 원천)를 재사용
+function rviewSyncSun(T) {
+  const sl = sunOn() ? sunLight() : null;
+  const S = sunState();
+  if (sl) {
+    const dx = sl.x - v3.cx, dy = sl.y - v3.cy, dz = sl.z - v3.cz;
+    const d = Math.hypot(dx, dy, dz) || 1;
+    const R = Math.max(10, v3.fit * 1.5) * RT_MM;               // 그림자 카메라가 모델을 덮는 거리
+    rview.sun.position.set(v3.cx * RT_MM + dx / d * R, v3.cy * RT_MM + dy / d * R, v3.cz * RT_MM + dz / d * R);
+    rview.sun.target.position.set(v3.cx * RT_MM, v3.cy * RT_MM, v3.cz * RT_MM);
+    rview.sun.color.setRGB(sl.cr, sl.cg, sl.cb);
+    rview.sun.intensity = sunDirectIlluminance(S);               // lux 그대로 (노출이 압축)
+    const sc = rview.sun.shadow.camera;
+    sc.left = -R; sc.right = R; sc.top = R; sc.bottom = -R; sc.near = 0.01; sc.far = R * 3;
+    sc.updateProjectionMatrix();
+    rview.hemi.intensity = Math.max(1500, sunDirectIlluminance(S) * 0.15); // 천공광 근사 (수평 조도의 대략적 비율)
+    rview.scene.background = new T.Color(0x8fa9c4);
+  } else {
+    rview.sun.intensity = 0;
+    rview.hemi.intensity = state.lights.length ? 2 : 40;         // 야간: 광원이 있으면 캄캄하게, 없으면 형태만 보이게
+    rview.scene.background = new T.Color(0x0a0c14);
+  }
+}
+// 매 프레임 — render3D 끝에서 불린다 (궤도·팬 중에도 render3D 가 돌므로 실시간으로 따라온다)
+function rviewFrame() {
+  if (!rview.on || !rt.mod) return;
+  const T = rt.mod.T;
+  const c = rviewCanvas(); if (!c) return;
+  // 이 모드가 붙은 뷰포트가 화면에 없으면(레이아웃 변경) 그리지 않는다
+  const visible = v3.quad ? (rview.vi >= 0 && rview.vi < 4) : (rview.vi === v3.act);
+  if (!visible || vpIsPlan(rview.vi)) { c.style.display = 'none'; return; }
+  const sig = rviewSig();
+  if (!rview.scene || sig !== rview.sig) { rview.scene = rviewBuildScene(T); rview.sig = sig; }
+  // 캔버스를 그 뷰포트 rect 에만 (해상도 캡: dpr 1.5 — D5식 '가벼움 우선')
+  const r = vpRect(rview.vi), rc = vpRectCss(rview.vi);
+  c.style.display = ''; c.style.left = rc.x + 'px'; c.style.top = rc.y + 'px';
+  c.style.width = rc.w + 'px'; c.style.height = rc.h + 'px';
+  const cap = Math.min(1, 1.5 / (devicePixelRatio || 1));
+  const nw = Math.max(2, Math.round(r.w * cap)), nh = Math.max(2, Math.round(r.h * cap));
+  if (c.width !== nw || c.height !== nh) { c.width = nw; c.height = nh; rview.renderer.setViewport(0, 0, nw, nh); }
+  // 카메라 = 그 뷰포트의 파라미터 (활성 뷰가 아니어도 자기 카메라로 그린다)
+  const keepVp = v3.vp, keepAct = v3.act;
+  saveVp(); loadVp(rview.vi); v3.vp = vpRect(rview.vi);
+  rtSyncCamera(T, rview.cam);
+  loadVp(keepAct); v3.vp = keepVp;
+  rviewSyncSun(T);
+  rview.renderer.toneMappingExposure = rtExposure();
+  rview.renderer.render(rview.scene, rview.cam);
+}
+// rendered / 렌더링 — 활성 3D 뷰포트를 렌더링 뷰로 토글
+async function cmdRendered() {
+  if (!is3DActive() || !v3) { logLine('  렌더링 뷰는 3D 화면에서 켭니다 — view3d 로 열어주세요.', 'warn'); return; }
+  if (rview.on) {
+    rview.on = false;
+    if (rview.cv) rview.cv.style.display = 'none';
+    logLine('  ▷ 렌더링 뷰 끔 — 작업 표시로 복귀', 'info');
+    render3D();
+    return;
+  }
+  if (vpIsPlan(v3.act)) { logLine('  평면 칸은 도면 표시 전용입니다 — 아이소 등 3D 뷰포트에서 켜주세요.', 'warn'); return; }
+  if (!rtSupported()) { logLine('  이 브라우저는 WebGL2 를 지원하지 않아 렌더링 뷰를 켤 수 없습니다.', 'warn'); return; }
+  try {
+    await rtLoad();                                   // three 모듈 공유 (레이트레이서와 동일 버전)
+    const T = rt.mod.T;
+    if (!rview.renderer) {
+      const c = rviewCanvas();
+      rview.renderer = new T.WebGLRenderer({ canvas: c, antialias: true });
+      rview.renderer.shadowMap.enabled = true;
+      rview.renderer.shadowMap.type = T.PCFSoftShadowMap;
+      rview.renderer.toneMapping = T.ACESFilmicToneMapping;
+      rview.cam = new T.OrthographicCamera();
+    }
+    rview.vi = v3.act;
+    rview.sig = '';                                   // 씬 강제 재빌드
+    rview.on = true;
+    logLine("  ✔ 렌더링 뷰 — '" + v3.views[rview.vi].name + "' 뷰포트. 태양·조명·그림자가 실시간으로 보입니다. 다시 rendered 로 끕니다.", 'ok');
+    logLine('     시간·계절·날씨(탁도)는 [태양] 패널에서 조절 — 최종 화질 확인은 raytrace.', 'info');
+    render3D();
+  } catch (err) {
+    rview.err = err;
+    logLine('  ✗ 렌더링 뷰를 켜지 못했습니다: ' + (err && err.message || err), 'warn');
+  }
 }
 function rtHud(msg) {
   if (!rt.hud) return;
@@ -8947,6 +9144,7 @@ const INSTANT_CMDS = {
   railing: cmdRailingTag,
   setaslight: cmdSetAsLight,
   raytrace: cmdRaytrace,
+  rendered: cmdRendered,
   rtenv: cmdRtEnv,
   sun: cmdSun,
   ies: cmdIes,
@@ -9321,6 +9519,7 @@ const TOOL_KO = {
   railing: '난간(RAILING)',
   setaslight: '광원으로 지정(SETASLIGHT)',
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
+  rendered: '렌더링 뷰 — 실시간 태양·조명·그림자(RENDERED)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
   ies: 'IES 배광 파일(IES)',
@@ -9387,6 +9586,7 @@ const CMD_ALIASES = {
   setaslight: 'setaslight', light: 'setaslight', lamp: 'setaslight', 조명: 'setaslight', 광원지정: 'setaslight', 광원: 'setaslight',
   unsetlight: 'unsetlight', 광원해제: 'unsetlight',
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
+  rendered: 'rendered', 렌더링: 'rendered', 렌더링뷰: 'rendered', 렌더뷰: 'rendered',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
   ies: 'ies', 배광: 'ies', iesfile: 'ies',
@@ -12520,6 +12720,7 @@ window.__CADTEST__ = {
   // BIM (단면/솔리드 수치 검증용)
   bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, parseIES, iesCandelaAt, iesSummary, iesToTexture, iesFluxFactor, lightCandela, cmdIes, selectedLights, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
   vpIsPlan, vpPlanIndex, vpRect, vpRectCss, planCvRect, syncPlanCv, open3D, close3D, is3DActive, resize, worldToScreen, screenToWorld,
+  rview, rviewFrame, rviewBuildScene, rviewSyncSun, rviewSig, cmdRendered,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,

@@ -1171,6 +1171,25 @@ function tests(){
     eqi((C.state.entities.find(e => e.id === 1) || {}).bim.h, 2000, '취소하면 원래 높이로 복원된다');
   }
 
+  group('렌더링 뷰 (Rendered) — 명령·노출 계약');
+  {
+    // 렌더링 뷰 본체(WebGL 픽셀·그림자·컬링)는 실브라우저에서 검증했다 — 여기서는
+    // 네트워크(three CDN) 없이 검증 가능한 계약만 못박는다.
+    ok(typeof C.INSTANT_CMDS.rendered === 'function', 'rendered 명령이 등록돼 있다');
+    eqi(C.CMD_ALIASES['렌더링'], 'rendered', '렌더링 → rendered 별칭');
+    eqi(C.CMD_ALIASES['렌더'], 'raytrace', "'렌더' 는 여전히 raytrace (기존 습관 보존)");
+    ok(C.rview && C.rview.on === false, 'rview 초기 상태 = 꺼짐');
+    // ★노출은 rt 밖에서도 태양에서 파생된다 — rt.env 가 stale 'black' 이어도
+    //   주광 장면에 실내 노출(0.05)이 걸려 하얗게 타는 회귀 방지 (rt.on=false 전제)
+    const S = C.sunState();
+    const keep = S.enabled;
+    S.enabled = false;
+    eq(C.rtExposure(), C.RT_EXPOSURE, '태양 OFF → 실내 노출');
+    S.enabled = true;
+    eq(C.rtExposure(), C.RT_EXPOSURE_DAY, '★태양 ON → rt 를 안 열어도 주광 노출 (태양이 유일한 진실)');
+    S.enabled = keep;
+  }
+
   group('평면 뷰포트는 2D 엔진이 그린다 (평면 이중구현 제거)');
   {
     // 배경: 평면이 두 벌이었다 — 2D 편집기(draw())와 3D의 '평면' 뷰포트.
