@@ -921,6 +921,52 @@ function tests(){
   }
 
   // ---------- 조도 분석 (Phase 4) ----------
+  group('태양 — 위치·일사·물리 하늘');
+  {
+    const S = () => Object.assign(C.sunDefaults(), { mo: 6, d: 21 });
+    // 남중고도 = 90 - |위도 - 적위|.  하지 적위 +23.44°, 동지 -23.44°
+    const noon = (s) => { const n = C.sunNoonMinutes(s); return C.solarPosition(Object.assign({}, s, { h: Math.floor(n/60), mi: Math.round(n%60) })); };
+    eq(noon(S()).alt, 90 - Math.abs(37.5665 - 23.44), '서울 하지 남중고도 = 75.87°', 0.1);
+    eq(noon(Object.assign(S(), { mo: 12, d: 21 })).alt, 90 - Math.abs(37.5665 + 23.44), '서울 동지 남중고도 = 28.99°', 0.1);
+    eq(C.solarPosition(S()).decl, 23.44, '하지 적위 = +23.44°', 0.1);
+    eq(C.solarPosition(Object.assign(S(), { mo: 12, d: 21 })).decl, -23.44, '동지 적위 = -23.44°', 0.1);
+    ok('북반구 남중 방위 = 정남(180°)', Math.abs(noon(S()).az - 180) < 1);
+    const syd = Object.assign(S(), { lat: -33.8688, lon: 151.2093, tz: 600 });
+    eq(noon(syd).alt, 90 - Math.abs(-33.8688 - 23.44), '시드니 하지 남중고도 = 32.69°', 0.1);
+    ok('남반구 남중 방위 = 정북', Math.min(Math.abs(noon(syd).az), Math.abs(noon(syd).az - 360)) < 1);
+    // 태양 방향벡터 (기본 진북 = +Y, 동 = +X, 위 = +Z)
+    const d = C.sunDirection(Object.assign(S(), { h: Math.floor(C.sunNoonMinutes(S())/60), mi: Math.round(C.sunNoonMinutes(S())%60) }));
+    ok('남중이면 태양이 남쪽(y<0)', d.y < 0);
+    ok('남중이면 동서 성분 없음', Math.abs(d.x) < 0.02);
+    ok('낮이면 태양이 하늘 위(z>0)', d.z > 0);
+    // 직달 조도 — 교과서: 맑은 날 정오 직달 ≈ 100,000 lx
+    const clear = Object.assign(S(), { turbidity: 2 });
+    const cn = C.sunNoonMinutes(clear);
+    const dni = C.sunDirectIlluminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60) }));
+    ok('맑은 날 남중 직달조도 ≈ 100,000 lx', dni > 90000 && dni < 105000);
+    ok('탁해지면 직달조도가 준다', C.sunDirectIlluminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60), turbidity: 6 })) < dni);
+    ok('해가 지면 직달조도 0', C.sunDirectIlluminance(Object.assign(S(), { h: 2, mi: 0 })) === 0);
+    // 태양 원반 휘도 ≈ 직달조도 / 입체각 (알려진 값 1.6e9 자릿수)
+    const L = C.sunDiskLuminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60) }));
+    ok('태양 원반 휘도 ≈ 1e9 cd/m² 자릿수', L > 5e8 && L < 3e9);
+    // 대기질량: 천정에서 1, 낮을수록 커진다
+    eq(C.sunAirMass(90), 1, '천정 대기질량 = 1', 0.01);
+    ok('고도가 낮으면 대기질량이 커진다', C.sunAirMass(10) > 4);
+    // 물리 하늘: 천정은 파랗다
+    const zen = C.skyRadiance(0, Math.PI/4, Math.PI/4, 3);
+    ok('천정 하늘은 파랑 > 빨강', zen[2] > zen[0]);
+    ok('하늘 휘도가 양수', zen[1] > 0);
+    // 탁도 제한 — Preetham 은 맑은 하늘 모델이라 흐림은 표현 못 한다
+    eq(C.skyTurbidity({ turbidity: 1 }), 2, '탁도 하한 2로 제한');
+    eq(C.skyTurbidity({ turbidity: 20 }), 6, '탁도 상한 6으로 제한');
+    // 진북을 돌리면 방위가 그만큼 돌아간다
+    const b0 = C.sunDirection(Object.assign(S(), { h: 15, mi: 0, north: 0 }));
+    const b90 = C.sunDirection(Object.assign(S(), { h: 15, mi: 0, north: 90 }));
+    ok('진북을 90° 돌리면 태양 방향도 90° 돈다', Math.abs(b0.alt - b90.alt) < 1e-6 && Math.abs(b0.x - b90.x) > 0.1);
+    // 노출 — 주광과 실내는 자동으로 달라야 한다
+    ok('주광 노출이 실내보다 훨씬 작다', C.RT_EXPOSURE_DAY < 1e-3);
+  }
+
   group('조도 분석 — 조도(lux)·False Color·측정면·CSV');
   {
     if (!C.v3) C.INSTANT_CMDS['view3d']();

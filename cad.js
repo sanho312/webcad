@@ -22,6 +22,7 @@ const state = {
   nextLightId: 1,
   sensors: [],           // 조도 측정면 (격자 측정점) — Phase 4
   nextSensorId: 1,
+  sun: null,             // 태양 — sunDefaults() 로 초기화. 건축에서 빛의 주인공.
   layers: [],            // {name,color,visible}
   currentLayer: '0',
   currentColor: null,    // null = 레이어색(ByLayer), 아니면 '#rrggbb'
@@ -107,6 +108,7 @@ function snapshot() {
     currentLayer: state.currentLayer, nextId: state.nextId, blocks: state.blocks,
     lights: state.lights, nextLightId: state.nextLightId, // 광원 지정/해제도 undo 대상
     sensors: state.sensors, nextSensorId: state.nextSensorId,
+    sun: state.sun,          // 태양 설정도 undo 대상
   });
 }
 let apiRev = 0; // 변경 카운터 (클라우드 자동저장의 dirty 판단용)
@@ -118,6 +120,7 @@ function restore(snap) {
   state.currentLayer = d.currentLayer; state.nextId = d.nextId; state.blocks = d.blocks || {};
   state.lights = d.lights || []; state.nextLightId = d.nextLightId || 1;
   state.sensors = d.sensors || []; state.nextSensorId = d.nextSensorId || 1;
+  state.sun = d.sun || null;
   state.selection.clear();
   renderLayers(); renderLightList(); renderSensorList();
   if (typeof refreshBlockList === 'function') refreshBlockList(); draw(); updateStat();
@@ -6007,6 +6010,158 @@ function lightPath(e, zb) {
 }
 // 입체로 그려지는 개체(box·extrude 결과 등)의 z 범위. box는 MESH가 아니라
 // 'LWPOLYLINE + bim{kind:column}'이라 bim에서 높이를 읽어야 한다.
+// ═══════════ 태양 ═══════════
+// 건축에서 빛의 주인공. 위도·경도·날짜·시각이 정해지면 태양의 위치는 하나로 결정된다.
+// NOAA Solar Position Algorithm. 대기 굴절은 보정하지 않는다(지평선 근처에서 실제보다
+// 0.5° 가량 낮게 나온다 — 건축 그림자 검토에는 영향이 없는 수준).
+const SUN_D2R = Math.PI / 180, SUN_R2D = 180 / Math.PI;
+const sunMod = (a, n) => ((a % n) + n) % n;
+function sunDefaults() {
+  return {
+    enabled: false,
+    lat: 37.5665, lon: 126.9780, tz: 540,   // 서울 · KST(UTC+9)
+    y: 2026, mo: 6, d: 21, h: 12, mi: 0,
+    north: 0,        // 진북 방위 — 평면의 +Y 에서 시계방향으로 몇 도 돌아갔나
+    turbidity: 3,    // 대기 탁도 — 2=매우 맑음 … 10=뿌옇게 흐림
+  };
+}
+function sunState() { return state.sun || (state.sun = sunDefaults()); }
+// 지역시 → UTC → 율리우스일
+function sunJulianDay(S) {
+  return (Date.UTC(S.y, S.mo - 1, S.d, S.h, S.mi) - S.tz * 60000) / 86400000 + 2440587.5;
+}
+// 반환: alt=고도(°, 지평선 위가 +), az=방위(°, 진북에서 시계방향), decl=적위, eot=균시차(분)
+function solarPosition(S) {
+  const jc = (sunJulianDay(S) - 2451545) / 36525;                    // 율리우스 세기
+  const gmls = sunMod(280.46646 + jc * (36000.76983 + jc * 0.0003032), 360);  // 기하평균 황경
+  const gmas = 357.52911 + jc * (35999.05029 - 0.0001537 * jc);      // 기하평균 근점이각
+  const ecc = 0.016708634 - jc * (0.000042037 + 0.0000001267 * jc);  // 궤도 이심률
+  const ctr = Math.sin(gmas * SUN_D2R) * (1.914602 - jc * (0.004817 + 0.000014 * jc))
+    + Math.sin(2 * gmas * SUN_D2R) * (0.019993 - 0.000101 * jc)
+    + Math.sin(3 * gmas * SUN_D2R) * 0.000289;                       // 중심차
+  const appLong = gmls + ctr - 0.00569 - 0.00478 * Math.sin((125.04 - 1934.136 * jc) * SUN_D2R);
+  const moe = 23 + (26 + (21.448 - jc * (46.815 + jc * (0.00059 - jc * 0.001813))) / 60) / 60;
+  const obl = moe + 0.00256 * Math.cos((125.04 - 1934.136 * jc) * SUN_D2R);   // 황도경사 보정
+  const decl = Math.asin(Math.sin(obl * SUN_D2R) * Math.sin(appLong * SUN_D2R)) * SUN_R2D;
+  const vy = Math.tan(obl / 2 * SUN_D2R) ** 2;
+  const eot = 4 * SUN_R2D * (vy * Math.sin(2 * gmls * SUN_D2R)
+    - 2 * ecc * Math.sin(gmas * SUN_D2R)
+    + 4 * ecc * vy * Math.sin(gmas * SUN_D2R) * Math.cos(2 * gmls * SUN_D2R)
+    - 0.5 * vy * vy * Math.sin(4 * gmls * SUN_D2R)
+    - 1.25 * ecc * ecc * Math.sin(2 * gmas * SUN_D2R));              // 균시차(분)
+  // 진태양시 — 경도와 표준시 자오선의 차이(4분/°)와 균시차를 시계 시각에 더한다
+  const tst = sunMod(S.h * 60 + S.mi + eot + 4 * S.lon - S.tz, 1440);
+  const ha = tst / 4 < 0 ? tst / 4 + 180 : tst / 4 - 180;            // 시간각(°)
+  const latR = S.lat * SUN_D2R, declR = decl * SUN_D2R;
+  const cz = Math.sin(latR) * Math.sin(declR)
+    + Math.cos(latR) * Math.cos(declR) * Math.cos(ha * SUN_D2R);
+  const zen = Math.acos(Math.min(1, Math.max(-1, cz))) * SUN_R2D;    // 천정각
+  let az;
+  const denom = Math.cos(latR) * Math.sin(zen * SUN_D2R);
+  if (Math.abs(denom) < 1e-9) az = ha > 0 ? 180 : 0;                 // 천정/지평 특이점
+  else {
+    const c = Math.min(1, Math.max(-1,
+      (Math.sin(latR) * Math.cos(zen * SUN_D2R) - Math.sin(declR)) / denom));
+    az = ha > 0 ? sunMod(Math.acos(c) * SUN_R2D + 180, 360)
+      : sunMod(540 - Math.acos(c) * SUN_R2D, 360);
+  }
+  return { alt: 90 - zen, az, decl, eot };
+}
+// 태양을 향하는 단위벡터 (씬 좌표계). 진북 보정 포함.
+// 평면 규약: 기본 진북 = +Y, 동쪽 = +X, 위 = +Z.
+function sunDirection(S) {
+  const p = solarPosition(S);
+  const a = (p.az - (S.north || 0)) * SUN_D2R, h = p.alt * SUN_D2R;
+  return { x: Math.sin(a) * Math.cos(h), y: Math.cos(a) * Math.cos(h), z: Math.sin(h), alt: p.alt, az: p.az };
+}
+// 남중 시각(분, 지역시) — 그 날 태양이 가장 높이 뜨는 시각
+function sunNoonMinutes(S) {
+  const p = solarPosition(S);
+  return sunMod(720 - 4 * S.lon + S.tz - p.eot, 1440);
+}
+
+// ─── 직달 일사 ───
+// 태양의 각지름은 0.53°(각반경 0.265°). 이 크기가 그림자 반음영을 만든다 —
+// 건축 사진에서 그림자 가장자리가 부드러운 이유이고, 델타 광원으로는 재현되지 않는다.
+const SUN_ANG_RADIUS = 0.265 * SUN_D2R;
+const SUN_SOLID_ANGLE = Math.PI * SUN_ANG_RADIUS * SUN_ANG_RADIUS;  // ≈ 6.8e-5 sr
+const SUN_E0_LUX = 128000;   // 대기권 밖 태양 조도(태양 광도상수). 실측 물리상수.
+// Kasten-Young(1989) 상대 대기질량 — 지평선 근처에서 1/cos 근사가 발산하는 것을 막는다
+function sunAirMass(altDeg) {
+  const z = 90 - Math.max(-1, altDeg);
+  return 1 / (Math.cos(z * SUN_D2R) + 0.50572 * Math.pow(Math.max(1e-3, 96.07995 - z), -1.6364));
+}
+// Kasten(1996) 레일리 광학두께
+function sunRayleighDepth(m) {
+  return 1 / (6.6296 + 1.7513 * m - 0.1202 * m * m + 0.0065 * m ** 3 - 0.00013 * m ** 4);
+}
+// 직달 법선 조도(lux). Linke 탁도 T 로 소광. E = E0 · exp(−T · δR(m) · m)
+// 검산: T=2, 태양 천정(m=1) → 128000·exp(−2·0.121) ≈ 100,500 lx.
+//       교과서의 '맑은 날 정오 직달조도 ≈ 100,000 lx' 와 일치한다 — 상수를 맞춘 게 아니라 맞아떨어진 것.
+function sunDirectIlluminance(S) {
+  const alt = solarPosition(S).alt;
+  if (alt <= 0) return 0;
+  const m = sunAirMass(alt);
+  return SUN_E0_LUX * Math.exp(-Math.max(1, S.turbidity) * sunRayleighDepth(m) * m);
+}
+// 태양 원반의 휘도(cd/m²) = 직달조도 / 입체각.
+// 검산: 맑은 날 ≈ 100000/6.8e-5 ≈ 1.5e9 cd/m² — 알려진 태양 휘도 1.6e9 과 같은 자릿수.
+function sunDiskLuminance(S) { return sunDirectIlluminance(S) / SUN_SOLID_ANGLE; }
+
+// ─── 물리 하늘 (Preetham et al. 1999, "A Practical Analytic Model for Daylight") ───
+// 탁도 T 하나로 맑음~뿌연 하늘을 만든다. 결과는 cd/m² 이라 그대로 HDR 환경맵이 된다.
+function preethamCoeffs(T) {
+  return {
+    Y: [0.1787 * T - 1.4630, -0.3554 * T + 0.4275, -0.0227 * T + 5.3251, 0.1206 * T - 2.5771, -0.0670 * T + 0.3703],
+    x: [-0.0193 * T - 0.2592, -0.0665 * T + 0.0008, -0.0004 * T + 0.2125, -0.0641 * T - 0.8989, -0.0033 * T + 0.0452],
+    y: [-0.0167 * T - 0.2608, -0.0950 * T + 0.0092, -0.0079 * T + 0.2102, -0.0441 * T - 1.6537, -0.0109 * T + 0.0529],
+  };
+}
+// Perez 광휘 분포 함수
+function perezF(c, theta, gamma) {
+  const ct = Math.max(0.01, Math.cos(theta));
+  return (1 + c[0] * Math.exp(c[1] / ct)) * (1 + c[2] * Math.exp(c[3] * gamma) + c[4] * Math.cos(gamma) ** 2);
+}
+// 천정 휘도·색도
+function preethamZenith(T, thS) {
+  const chi = (4 / 9 - T / 120) * (Math.PI - 2 * thS);
+  const Yz = Math.max(0, (4.0453 * T - 4.9710) * Math.tan(chi) - 0.2155 * T + 2.4192) * 1000; // kcd/m² → cd/m²
+  const t = thS, t2 = t * t, t3 = t2 * t, T2 = T * T;
+  const xz = (0.00166 * t3 - 0.00375 * t2 + 0.00209 * t) * T2
+    + (-0.02903 * t3 + 0.06377 * t2 - 0.03202 * t + 0.00394) * T
+    + (0.11693 * t3 - 0.21196 * t2 + 0.06052 * t + 0.25886);
+  const yz = (0.00275 * t3 - 0.00610 * t2 + 0.00317 * t) * T2
+    + (-0.04214 * t3 + 0.08970 * t2 - 0.04153 * t + 0.00516) * T
+    + (0.15346 * t3 - 0.26756 * t2 + 0.06670 * t + 0.26688);
+  return { Yz, xz, yz };
+}
+// 하늘 한 방향의 분광 휘도 → 선형 sRGB (cd/m²).
+//   theta = 천정으로부터의 각, gamma = 태양과 이루는 각, thS = 태양의 천정각
+function skyRadiance(theta, gamma, thS, T) {
+  const c = preethamCoeffs(T), z = preethamZenith(T, thS);
+  const th = Math.min(theta, Math.PI / 2 - 0.001);          // 지평선 아래는 지평선 값으로
+  const d = (co, zv) => zv * perezF(co, th, gamma) / perezF(co, 0, thS);
+  const Y = Math.max(0, d(c.Y, z.Yz));
+  const x = d(c.x, z.xz), y = d(c.y, z.yz);
+  if (y <= 1e-6) return [0, 0, 0];
+  const X = x * Y / y, Z = (1 - x - y) * Y / y;             // xyY → XYZ
+  return [                                                   // XYZ → 선형 sRGB
+    Math.max(0, 3.2406 * X - 1.5372 * Y - 0.4986 * Z),
+    Math.max(0, -0.9689 * X + 1.8758 * Y + 0.0415 * Z),
+    Math.max(0, 0.0557 * X - 0.2040 * Y + 1.0570 * Z),
+  ];
+}
+// 지표면(태양 아래쪽 반구)의 색 — 하늘만 있으면 아래에서 오는 빛이 0이라 부자연스럽다.
+const SKY_GROUND_ALBEDO = 0.2;
+// Preetham 은 '맑은 하늘' 모델이다. 탁도를 올려도 구름 낀 하늘이 되지 않는다.
+// 실측(하늘 반구 적분, 서울 하지 남중): 탁도 2→전천공 120,559 lx · 3→119,183 · 6→122,366 ·
+// 10→135,446. 탁해질수록 전천공 조도가 늘어나는 건 에너지가 생기는 것이라 비물리다.
+// 2~3 은 산란이 직달→확산으로 옮겨가는 것뿐이라 전천공이 거의 평평하다(정상).
+// 그래서 이 범위로 제한한다. 진짜 흐린 하늘(10,000~25,000 lx)은 CIE 흐림 모델이 필요하고
+// 그건 로드맵 C(날씨)의 몫이다.
+const SKY_TURBIDITY_MIN = 2, SKY_TURBIDITY_MAX = 6;
+const skyTurbidity = (S) => Math.min(SKY_TURBIDITY_MAX, Math.max(SKY_TURBIDITY_MIN, S.turbidity || 3));
+
 function bimZSpan(b) {
   if (!b) return null;
   const base = b.base || 0;
@@ -6469,6 +6624,7 @@ const rt = {
   on: false, mod: null, tracer: null, renderer: null, scene: null, cam: null,
   // denoise: 미완성이라 기본 OFF에 UI도 없다 — 아래 rtSetupDenoise 주석 참고
   cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: false, err: null,
+  exposure: 0,           // 0 = 환경에 따라 자동 (rtExposure 참고)
 };
 // WebGL2 지원 여부. 결과를 캐시하고 시험용 컨텍스트는 반드시 반납한다 —
 // 브라우저는 동시 WebGL 컨텍스트 수를 제한해서, 매번 새로 만들면 몇 번 켰다 끄는 사이
@@ -6546,7 +6702,40 @@ const RT_MM = 0.001;
 //     노출 0.2 → 바닥 213/189 (포화)   0.1 → 175/142   0.05 → 125/92 (계조 살아있음)   0.02 → 65/44 (어두움)
 //   (램프 자체는 1326 cd/m² 라 어느 노출에서도 하얗게 포화 — 광원을 직접 보는 것이므로 정상)
 function rtRadiance(lm, areaM2) { return lm / (Math.max(1e-4, areaM2) * Math.PI); }
-const RT_EXPOSURE = 0.05;
+// ─── 노출 ───
+// 실내 인공조명과 주광은 밝기가 2,000배 차이 난다. 실제 카메라가 실내·실외에서 노출을 바꾸는
+// 것과 같은 문제라, 하나의 고정값으로는 둘 다 담을 수 없다.
+//   800lm 램프 실내: 바닥 휘도 ≈ 2 cd/m²
+//   맑은 날 오후 주광: 바닥 휘도 ≈ 4,500 cd/m²
+// 그래서 환경에 따라 바꾼다. 두 값 모두 실측 스윕으로 정했다.
+//   검은 환경 스윕(바닥/램프): 0.2 → 213/189(포화) · 0.1 → 175/142 · 0.05 → 125/92 ← 채택 · 0.02 → 65/44
+//   주광 스윕(바닥):          5e-4 → 167 · 1e-4 → 159 · 5e-5 → 150 · 2.5e-5 → 133 ← 채택 · 1e-5 → 96
+const RT_EXPOSURE = 0.05;         // 검은 환경 (인공조명만)
+const RT_EXPOSURE_DAY = 2.5e-5;   // 주광 (물리 하늘 + 태양)
+function rtExposure() {
+  if (rt.exposure) return rt.exposure;                      // 사용자가 정한 값이 있으면 그것
+  return rt.env === 'day' ? RT_EXPOSURE_DAY : RT_EXPOSURE;
+}
+function rtApplyExposure() {
+  if (rt.renderer) rt.renderer.toneMappingExposure = rtExposure();
+}
+// 라이노에는 없는 개념이라 이름은 렌더러 관례를 따른다.
+function cmdExposure(arg) {
+  const a = (arg || '').trim();
+  if (!a) {
+    logLine(`  노출 ${rtExposure().toExponential(2)} ${rt.exposure ? '(직접 지정)' : '(환경에 따라 자동: 주광 ' + RT_EXPOSURE_DAY.toExponential(1) + ' · 검은 환경 ' + RT_EXPOSURE + ')'}`, 'info');
+    logLine('     설정: exposure 2.5e-5 · 자동으로 되돌리려면 exposure auto', 'info');
+    return;
+  }
+  if (/^(auto|자동)$/i.test(a)) { rt.exposure = 0; }
+  else {
+    const v = parseFloat(a);
+    if (!isFinite(v) || v <= 0) { logLine('  노출은 0보다 큰 수로 입력하세요 (예: exposure 2.5e-5)', 'warn'); return; }
+    rt.exposure = v;
+  }
+  rtApplyExposure(); rtReset();
+  logLine(`  ▷ 노출 ${rtExposure().toExponential(2)}${rt.exposure ? '' : ' (자동)'}`, 'ok');
+}
 
 // ---------- 발광 메시 vs 해석적 광원 (노이즈의 근원) ----------
 // 광원을 발광 메시로만 두면 패스트레이서는 그 면을 '우연히 맞혀야만' 빛을 찾는다.
@@ -6560,6 +6749,102 @@ const RT_EXPOSURE = 0.05;
 //
 // 표시용 발광 radiance 상한. 광원을 직접 보면 밝게 빛나 보여야 하므로 남겨두되,
 // 에너지는 해석적 광원이 낸다. RT_EXPOSURE 기준으로 이 값이면 하얗게 포화한다.
+// ─── 하늘 → HDR 등장방형 환경맵 ───
+// 태양을 DirectionalLight 로 두지 않고 하늘 텍스처에 원반으로 박는 이유:
+//  · 라이브러리의 DIR_LIGHT 분기는 방향만 넘기고 radius 를 넘기지 않는다(소스 확인) → 델타 광원
+//    → 그림자가 면도날처럼 날카롭다. 실제 태양은 각지름 0.53° 라 반음영이 생기고,
+//    그 부드러움이 건축 사진의 핵심이다.
+//  · 환경맵에 넣으면 EquirectHdrInfoUniform 의 중요도 샘플링(marginal/conditional CDF)이
+//    태양을 직접 조준한다 → 반음영이 물리적으로 맞으면서 노이즈도 낮다. 프로덕션 렌더러의 방식.
+const SKY_TEX_W = 1024, SKY_TEX_H = 512;
+const SKY_HALF_MAX = 60000;   // half-float 상한 65,504 에 여유를 둔 값
+// 라이브러리 셰이더의 등장방형 규약(util_functions.glsl 의 equirectDirectionToUv)을 그대로 뒤집은 것.
+//   uv → theta = (u-0.5)·2π, phi = (1-v)·π  →  방향 = (sinφ·cosθ, cosφ, sinφ·sinθ)
+// ★ three 의 Vector3.setFromSpherical 과 x·z 가 뒤바뀌어 있다. 라이브러리가 소스 주석에
+//   "ray sampling x and z are swapped to align with expected background view" 라고 밝혀둔 그대로다.
+//   setFromSpherical 을 쓰면 텍셀이 나타내는 방향을 잘못 계산해 태양이 거울상 위치에 구워진다
+//   (실측: 카메라를 태양 쪽으로 정면으로 돌려도 화면에 포화 픽셀이 0개였다).
+function skyTexelDir(theta, phi, out) {
+  const sp = Math.sin(phi);
+  return out.set(sp * Math.cos(theta), Math.cos(phi), sp * Math.sin(theta));
+}
+// 태양 원반이 텍셀 몇 개에 걸리든 조도가 흔들리면 안 된다.
+// 1024×512 면 텍셀 하나가 약 0.35° 라 0.53° 태양은 겨우 1~2 텍셀이다.
+// 그래서 원반이 실제로 덮는 입체각을 먼저 세어보고, 휘도를 그 값으로 나눈다.
+//   원반휘도 = 직달조도 / (덮은 입체각)  →  ∑(휘도·입체각) = 직달조도 가 해상도와 무관하게 성립.
+function skySunCoverage(sunV, T3) {
+  const cosDisk = Math.cos(SUN_ANG_RADIUS);
+  const d = new T3.Vector3();
+  let omega = 0;
+  for (let y = 0; y < SKY_TEX_H; y++) {
+    const phi = (1 - (y + 0.5) / SKY_TEX_H) * Math.PI;
+    const dPhi = Math.PI / SKY_TEX_H, dTheta = 2 * Math.PI / SKY_TEX_W;
+    const solid = Math.sin(phi) * dPhi * dTheta;        // 텍셀의 입체각
+    if (solid <= 0) continue;
+    for (let x = 0; x < SKY_TEX_W; x++) {
+      const theta = ((x + 0.5) / SKY_TEX_W - 0.5) * 2 * Math.PI;
+      skyTexelDir(theta, phi, d);
+      if (d.dot(sunV) >= cosDisk) omega += solid;
+    }
+  }
+  return omega;
+}
+function rtMakeSky(S) {
+  const { T: T3, P } = rt.mod;
+  const sd = sunDirection(S);
+  const sunV = new T3.Vector3(sd.x, sd.y, sd.z).normalize();
+  const Tb = skyTurbidity(S);
+  const thS = Math.max(0, 90 - sd.alt) * SUN_D2R;
+  const up = sd.alt > 0;
+  // 원반이 실제로 덮은 입체각으로 휘도를 정규화 (해상도가 바뀌어도 조도가 같다)
+  let diskL = 0;
+  if (up) {
+    const om = skySunCoverage(sunV, T3);
+    diskL = om > 1e-9 ? sunDirectIlluminance({ ...S, turbidity: Tb }) / om : 0;
+  }
+  const tex = new P.ProceduralEquirectTexture(SKY_TEX_W, SKY_TEX_H);
+  const d = new T3.Vector3();
+  const cosDisk = Math.cos(SUN_ANG_RADIUS);
+  tex.generationCallback = (polar, uv, coord, color) => {
+    skyTexelDir(polar.theta, polar.phi, d);
+    // 씬은 Z-up 이다 — rtBuildScene 이 WebCAD 좌표를 그대로 넘긴다. 그래서 천정각을 z 로 잰다.
+    const cz = Math.max(-1, Math.min(1, d.z));
+    const gamma = Math.acos(Math.max(-1, Math.min(1, d.dot(sunV))));
+    if (!up) { color.setRGB(0.006, 0.008, 0.014); return; }     // 해가 지면 어두운 하늘
+    if (cz < 0) {                                               // 아래 반구 = 지표 반사
+      const g = skyRadiance(Math.PI / 2 - 0.01, gamma, thS, Tb);
+      color.setRGB(g[0] * SKY_GROUND_ALBEDO, g[1] * SKY_GROUND_ALBEDO, g[2] * SKY_GROUND_ALBEDO);
+      return;
+    }
+    const s = skyRadiance(Math.acos(cz), gamma, thS, Tb);
+    const disk = d.dot(sunV) >= cosDisk ? diskL : 0;
+    color.setRGB(s[0] + disk, s[1] + disk, s[2] + disk);
+  };
+  tex.update();
+  // ─ half-float 벽 ─
+  // 라이브러리는 환경맵의 중요도 샘플링용 CDF 를 half-float 로 만든다(preprocessEnvMap 의
+  // targetType 기본값). half-float 상한이 65,504 라 태양(약 1.2e9 cd/m²)을 그대로 넣으면
+  // 65,504 로 잘린다. 그러면 CDF 상 태양이 하늘보다 겨우 5배 밝은 셈이 되어 중요도 샘플링이
+  // 태양을 조준하지 않는다 → 직사광도 그림자도 사라진다.
+  // (실측으로 확인: 바닥이 확산광만 받은 밝기(75)로 나왔다. 하늘은 정상인데 태양만 없었다.)
+  // 그래서 텍스처에는 스케일을 나눠 담고 그 배율을 environmentIntensity 로 되돌린다.
+  // CDF 는 상대값이라 스케일에 무관하고, 셰이더는 intensity 를 곱해 물리값을 복원한다.
+  const data = tex.image.data;
+  let mx = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const L = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    if (L > mx) mx = L;
+  }
+  const scale = Math.max(1, mx / SKY_HALF_MAX);
+  if (scale > 1) {
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] /= scale; data[i + 1] /= scale; data[i + 2] /= scale;
+    }
+  }
+  tex.needsUpdate = true;
+  return { tex, scale };
+}
+
 const RT_EMITTER_LOOK = 40;
 // 발광 메시가 실제로 낼 radiance 와 그때 나가는 루멘.
 //  · 작고 밝은 광원 → 물리 radiance 가 상한을 훌쩍 넘음 → 상한으로 깎임 → 메시 몫 루멘은 미미
@@ -6828,45 +7113,84 @@ function rtSetupDenoise() {
     renderer.autoClear = ac;
   };
 }
-// 환경: 'black'(기본, 실내 조명 검토) | 'day'(균일 스카이)
+// 환경: 'black'(기본, 실내 조명 검토) | 'day'(물리 하늘 + 태양)
 // §2.2 — 검은 환경이 기본이어야 인공조명의 효과를 판별할 수 있다. 주광은 옵션.
-// HDRI 파일을 받지 않고 GradientEquirectTexture 로 균일 스카이를 만든다(§2.2가 허용).
-// 세기는 실측으로 정했다. 바닥/하늘 영역의 평균 휘도(검은 환경 기준 바닥 42.6 / 하늘 0):
-//   0.12 → 바닥 0,    하늘 1     (사실상 검은 화면. 처음 넣었던 값 — 완전히 빗나갔다)
-//   1    → 바닥 45.8, 하늘 22.1
-//   3    → 바닥 70,   하늘 61.7
-//   6    → 바닥 85,   하늘 103.5  ← 채택. 하늘이 바닥보다 밝아 하늘답고, 실내도 두 배로 밝아진다
-const RT_SKY_INTENSITY = 6;
+//
+// 예전에는 GradientEquirectTexture 로 만든 '균일 스카이' 였다. 방향이 없어서 그림자도,
+// 시간대도, 방위도 없었다 — 자연광이 아니라 앰비언트 채움광이었다.
+// 지금은 Preetham 물리 하늘 + 실제 위치의 태양 원반을 굽는다. 휘도가 cd/m² 실단위라
+// 세기 배율(예전의 RT_SKY_INTENSITY)이 필요 없다 — 물리값을 그대로 쓴다.
 function rtSetEnv(mode) {
   rt.env = (mode === 'day') ? 'day' : 'black';
   if (!rt.on || !rt.scene || !rt.mod) return;
   const { T, P } = rt.mod;
   if (rt.env === 'day') {
-    if (!rt._sky) {
-      const tex = new P.GradientEquirectTexture(512);
-      tex.topColor.set(0x9ec9ff);     // 천정 하늘
-      tex.bottomColor.set(0x6b6f78);  // 지면 반사광
-      tex.exponent = 1.4;
-      tex.update();
-      rt._sky = tex;
+    const S = sunState();
+    const sig = [S.lat, S.lon, S.tz, S.y, S.mo, S.d, S.h, S.mi, S.north, skyTurbidity(S)].join(',');
+    if (!rt._sky || rt._skySig !== sig) {          // 태양·날씨가 그대로면 다시 굽지 않는다
+      if (rt._sky) rt._sky.dispose();
+      const made = rtMakeSky(S);
+      rt._sky = made.tex; rt._skyScale = made.scale;
+      rt._skySig = sig;
     }
     rt.scene.environment = rt._sky;
     rt.scene.background = rt._sky;
-    rt.scene.environmentIntensity = RT_SKY_INTENSITY;
-    rt.scene.backgroundIntensity = RT_SKY_INTENSITY;
+    // 텍스처에 나눠 담은 배율을 여기서 되돌린다 → 셰이더가 보는 값은 물리 단위(cd/m²)
+    rt.scene.environmentIntensity = rt._skyScale;
+    rt.scene.backgroundIntensity = rt._skyScale;
   } else {
     rt.scene.environment = null;
     rt.scene.background = new T.Color(0x000000);
     rt.scene.environmentIntensity = 1;
   }
+  rtApplyExposure();   // 주광 ↔ 검은 환경은 밝기가 2,000배 달라 노출도 함께 바꿔야 한다
   if (rt.tracer) { rt.tracer.updateEnvironment(); rtReset(); }
 }
 function cmdRtEnv() {
   if (!rt.on) { logLine('  환경 전환은 Raytraced 모드에서 사용합니다 — 먼저 raytrace 를 켜세요.', 'warn'); return; }
   rtSetEnv(rt.env === 'day' ? 'black' : 'day');
   logLine(rt.env === 'day'
-    ? '  ▷ 주광 환경 ON — 균일 스카이. 인공조명만 보려면 다시 입력해 검은 환경으로.'
+    ? `  ▷ 주광 환경 ON — ${sunSummary()}. 인공조명만 보려면 다시 입력해 검은 환경으로.`
     : '  ▷ 검은 환경 (기본) — 광원이 없으면 검은 화면. 인공조명의 효과를 판별할 수 있는 상태.', 'info');
+}
+// 태양 설정 요약 한 줄
+function sunSummary() {
+  const S = sunState(), p = solarPosition(S);
+  const hhmm = `${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')}`;
+  if (p.alt <= 0) return `${S.mo}/${S.d} ${hhmm} · 태양이 지평선 아래 (고도 ${p.alt.toFixed(1)}°)`;
+  return `${S.mo}/${S.d} ${hhmm} · 고도 ${p.alt.toFixed(1)}° 방위 ${p.az.toFixed(0)}° · 직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx`;
+}
+// 라이노의 Sun 명령과 같은 이름·같은 개념(날짜·시각·위경도·북쪽).
+function cmdSun(arg) {
+  const S = sunState();
+  const a = (arg || '').trim();
+  if (!a) {
+    const p = solarPosition(S);
+    const n = sunNoonMinutes(S);
+    logLine(`  ☀ 태양 — ${S.y}-${String(S.mo).padStart(2, '0')}-${String(S.d).padStart(2, '0')} ${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')} (UTC${S.tz >= 0 ? '+' : ''}${S.tz / 60})`, 'info');
+    logLine(`     위치 ${S.lat.toFixed(4)}, ${S.lon.toFixed(4)} · 진북 ${S.north}° · 탁도 ${skyTurbidity(S)}`, 'info');
+    logLine(`     고도 ${p.alt.toFixed(2)}° · 방위 ${p.az.toFixed(2)}° · 남중 ${String(Math.floor(n / 60)).padStart(2, '0')}:${String(Math.round(n % 60)).padStart(2, '0')}`, 'info');
+    logLine(`     직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx`, 'info');
+    logLine('     설정: sun 시각=14:30 · sun 날짜=2026-06-21 · sun 위도=37.5 · sun 경도=127 · sun 북=30 · sun 탁도=3', 'info');
+    return;
+  }
+  const m = a.split('=').map(s => s.trim());
+  const k = m[0], v = m[1];
+  if (v == null) { logLine('  sun 항목=값 형식으로 입력하세요. 그냥 sun 을 입력하면 현재 값을 봅니다.', 'warn'); return; }
+  pushUndo();
+  const num = parseFloat(v);
+  if (/^(시각|time)$/i.test(k)) {
+    const t = v.split(':'); S.h = Math.min(23, Math.max(0, parseInt(t[0], 10) || 0)); S.mi = Math.min(59, Math.max(0, parseInt(t[1], 10) || 0));
+  } else if (/^(날짜|date)$/i.test(k)) {
+    const t = v.split('-'); S.y = parseInt(t[0], 10) || S.y; S.mo = Math.min(12, Math.max(1, parseInt(t[1], 10) || S.mo)); S.d = Math.min(31, Math.max(1, parseInt(t[2], 10) || S.d));
+  } else if (/^(위도|lat)$/i.test(k)) { S.lat = Math.min(90, Math.max(-90, num)); }
+  else if (/^(경도|lon)$/i.test(k)) { S.lon = Math.min(180, Math.max(-180, num)); }
+  else if (/^(시간대|tz)$/i.test(k)) { S.tz = Math.round(num * 60); }
+  else if (/^(북|북쪽|north)$/i.test(k)) { S.north = sunMod(num, 360); }
+  else if (/^(탁도|turbidity)$/i.test(k)) { S.turbidity = Math.min(SKY_TURBIDITY_MAX, Math.max(SKY_TURBIDITY_MIN, num)); }
+  else { logLine(`  모르는 항목: ${k} — 시각·날짜·위도·경도·시간대·북·탁도`, 'warn'); return; }
+  logLine(`  ☀ ${sunSummary()}`, 'ok');
+  if (rt.on && rt.env === 'day') rtSetEnv('day');   // 하늘을 다시 굽는다
 }
 // 디노이저가 실제로 동작하게 되면 다시 명령어로 등록한다. 그 전까지는 노출하지 않는다.
 function cmdRtDenoise() {
@@ -6907,11 +7231,10 @@ async function rtEnter() {
       rt.renderer.setPixelRatio(1);
       // 물리 단위(cd/m²)는 수백~수천이라 그대로 그리면 전부 하얗다 — 노출로 화면 범위에 담는다
       rt.renderer.toneMapping = T.ACESFilmicToneMapping;
-      rt.renderer.toneMappingExposure = RT_EXPOSURE;
     }
     rtResize();
     await rtRebuild();
-    rtSetEnv(rt.env);   // 마지막에 고른 환경 유지 (기본 검은 환경)
+    rtSetEnv(rt.env);   // 노출도 여기서 환경에 맞게 잡힌다   // 마지막에 고른 환경 유지 (기본 검은 환경)
     if (rt.triCount > RT_TRI_WARN && !confirm(`삼각형이 ${rt.triCount.toLocaleString()}개입니다. 레이트레이싱이 매우 느릴 수 있습니다. 계속할까요?`)) { rtExit(); return; }
     logLine(`  ▷ Raytraced ON — 삼각형 ${rt.triCount.toLocaleString()}개 · 광원 ${lightSources().length}개 · 환경 ${rt.env === 'day' ? '주광' : '검은 환경'} (다시 입력하면 OFF)`, 'info');
     if (!state.lights.length) logLine('    광원이 없어 화면이 검게 나옵니다 — setaslight 로 광원을 지정하세요.', 'warn');
@@ -8039,6 +8362,8 @@ const INSTANT_CMDS = {
   setaslight: cmdSetAsLight,
   raytrace: cmdRaytrace,
   rtenv: cmdRtEnv,
+  sun: cmdSun,
+  exposure: cmdExposure,
   falsecolor: cmdFalseColor,
   fcmax: cmdFcMax,
   addsensorplane: cmdAddSensorPlane,
@@ -8410,6 +8735,8 @@ const TOOL_KO = {
   setaslight: '광원으로 지정(SETASLIGHT)',
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
   rtenv: '렌더 환경 전환(RTENV)',
+  sun: '태양 — 날짜·시각·위치·방위(SUN)',
+  exposure: '렌더 노출(EXPOSURE)',
   falsecolor: '조도 색표시(FALSECOLOR)',
   fcmax: '조도 스케일(FCMAX)',
   addsensorplane: '측정면 추가(ADDSENSORPLANE)',
@@ -8473,6 +8800,8 @@ const CMD_ALIASES = {
   unsetlight: 'unsetlight', 광원해제: 'unsetlight',
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
+  sun: 'sun', 태양: 'sun', sunlight: 'sun',
+  exposure: 'exposure', 노출: 'exposure',
   falsecolor: 'falsecolor', fc: 'falsecolor', 조도: 'falsecolor', 조도표시: 'falsecolor',
   fcmax: 'fcmax', 조도스케일: 'fcmax',
   addsensorplane: 'addsensorplane', sensor: 'addsensorplane', 측정면: 'addsensorplane',
@@ -9954,7 +10283,9 @@ const CMD_HELP = [
     ['setaslight', '광원으로 지정', '선택한 개체를 광원으로 지정 — 형태·색·BIM 정체는 하나도 바뀌지 않고 광원 속성만 붙는다(정육면체 → 정육면체 광원체). 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다. 기본 800lm / 3000K. 세기(lm)·색온도(K)는 특성창에서, on/off·솔로는 사이드바 [광원] 패널에서. 3d 후 lighting 으로 확인'],
     ['unsetlight', '광원 해제', '광원 지정을 푼다 — 개체는 그대로 남는다'],
     ['raytrace', '레이트레이싱 렌더', '3D 뷰를 경로추적(path tracing)으로 렌더 — 지정한 광원의 직접광·그림자·간접광이 물리적으로 계산되어 프레임이 쌓이며 수렴한다. 환경은 기본이 완전한 어둠이라 광원이 없으면 검은 화면. 카메라를 움직이면 저해상도로 즉시 따라오고 놓으면 다시 수렴. WebGL2가 없으면 lighting(근사 모드)로 안내. 다시 입력하면 OFF'],
-    ['rtenv', '렌더 환경', 'Raytraced 환경을 검은 환경 ↔ 주광(균일 스카이)으로 전환. 기본은 검은 환경 — 그래야 인공조명의 효과만 판별할 수 있다'],
+    ['rtenv', '렌더 환경', 'Raytraced 환경을 검은 환경 ↔ 주광(물리 하늘+태양)으로 전환. 기본은 검은 환경 — 그래야 인공조명의 효과만 판별할 수 있다'],
+    ['exposure', '노출', 'Raytraced 화면의 노출. 실내 인공조명과 주광은 밝기가 2,000배 차이 나서 환경에 따라 자동으로 바뀐다. exposure 2.5e-5 처럼 직접 지정하거나 exposure auto 로 되돌린다'],
+    ['sun', '태양', '날짜·시각·위경도·진북으로 실제 태양 위치를 계산한다. 그냥 sun 이면 현재 값, sun 시각=14:30 처럼 설정. 주광 환경(rtenv)에서 하늘과 그림자에 반영된다'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
   ]},
@@ -10029,7 +10360,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'rtenv', ko: '렌더 환경(주광)', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'rtenv', ko: '렌더 환경(주광)', d3: 1 }, { name: 'sun', ko: '태양', d3: 1 }, { name: 'exposure', ko: '렌더 노출', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -11511,7 +11842,9 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE_DAY,
+  sunDefaults, sunState, solarPosition, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
+  skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
   get LIT_RGB(){ return LIT_RGB; }, roofSolids, solidTopZ,
