@@ -122,7 +122,7 @@ function restore(snap) {
   state.sensors = d.sensors || []; state.nextSensorId = d.nextSensorId || 1;
   state.sun = d.sun || null;
   state.selection.clear();
-  renderLayers(); renderLightList(); renderSensorList();
+  renderLayers(); renderLightList(); renderSensorList(); renderSunPanel();
   if (typeof refreshBlockList === 'function') refreshBlockList(); draw(); updateStat();
   if (typeof autosave === 'function') autosave();
 }
@@ -2811,7 +2811,9 @@ function render3D() {
   const c = v3.ctx, W = v3.cv.width, H = v3.cv.height;
   saveVp(); // 현재 조작 파라미터를 활성 뷰에 보존
   c.clearRect(0, 0, W, H);
-  if (v3.lighting) { c.fillStyle = '#0a0c14'; c.fillRect(0, 0, W, H); } // 조명 보기 = 야간 배경
+  // 조명 보기(야간)는 어두운 배경. 태양이 켜져 있으면 낮이므로 옅은 하늘색을 깐다.
+  if (sunOn()) { c.fillStyle = '#8fa9c4'; c.fillRect(0, 0, W, H); }
+  else if (v3.lighting) { c.fillStyle = '#0a0c14'; c.fillRect(0, 0, W, H); }
   const dpr = devicePixelRatio || 1;
   v3.grip = null; v3.gum = null;
   const order = v3.quad ? [0, 1, 2, 3] : [v3.act];
@@ -2879,7 +2881,7 @@ function markInteract() {
   if (rt.on) rtCameraChanged();
   // 조명 보기에서 그림자는 비싸다(면×광원×가림형상). 궤도·드래그 중엔 생략해 부드럽게,
   // 멈추면 잠시 뒤 그림자까지 넣어 다시 그린다 — '조작 중 빠른 렌더 / 멈추면 정확 렌더'.
-  if (v3.lighting) {
+  if (v3.lighting || sunOn()) {
     v3._fast = true;
     clearTimeout(v3._settleT);
     v3._settleT = setTimeout(() => { v3._fast = false; render3D(); }, 180);
@@ -3012,16 +3014,18 @@ function zRasterFaces(c, faces, vp, light) {
 function renderScene(isActive) {
   const c = v3.ctx;
   const faces = [];
-  v3._lights = v3.lighting ? lightSources() : null; // 프레임당 1회 광원 수집 (조명 보기 OFF면 null → 예전 셰이딩)
+  // 태양만 켜도 조명 계산이 돌아야 한다 — 안 그러면 sun 을 켜도 화면이 그대로다
+  const litOn = v3.lighting || sunOn();
+  v3._lights = litOn ? lightSources() : null; // 프레임당 1회 광원 수집 (둘 다 OFF면 null → 예전 셰이딩)
   // 그림자용 가림 형상도 프레임당 1회. 삼각형이 상한을 넘으면 그림자만 생략(조명은 유지) — 느려지는 것보다 낫다.
-  if (v3.lighting && !v3._fast && v3._lights && v3._lights.length) {
+  if (litOn && !v3._fast && v3._lights && v3._lights.length) {
     const occ = shadowOccluders();
     v3._occ = occ.length >= SHADOW_TRI_CAP ? null : occ;
     if (!v3._occ && !v3._occWarned) { v3._occWarned = 1; logLine(`  ▷ 형상이 많아(삼각형 ${SHADOW_TRI_CAP}+) 그림자는 생략합니다 — 조명은 그대로 동작`, 'warn'); }
   } else v3._occ = null;
   // 간접광은 가림 형상이 있어야 계산할 수 있다 (광선을 쏘아 맞는 면을 찾으므로). 조작 중엔 생략.
-  v3._bounce = (v3.lighting && !v3._fast && v3._occ) ? bounceLights() : null;
-  if (v3.lighting) {
+  v3._bounce = (litOn && !v3._fast && v3._occ) ? bounceLights() : null;
+  if (litOn) {
     const sg = litCacheSig();
     if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; v3._litBudget = 1200; } // 형상·광원이 바뀔 때만 재계산 + 예산 리셋
   }
@@ -3098,19 +3102,19 @@ function renderScene(isActive) {
       let sSh, sSh3 = null, sFc = null;
       if (s.glow) sSh = 1;
       else if (v3.falseColor) { sSh = 1; sFc = falseColor(illuminanceAt(mx, my, midz, onx, ony, 0), v3.fcMax); } // 조도 색표시
-      else if (v3.lighting) { sSh = litFace(mx, my, midz, onx, ony, 0, !!s.lit); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
+      else if (litOn) { sSh = litFace(mx, my, midz, onx, ony, 0, !!s.lit); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
       else sSh = 0.55 + 0.45 * lightA;
       faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: sFc || s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1)) {  // 상면 (위 향함)
       const mTop = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' };
-      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop, s.eid + '|t|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z1), !!s.lit); // 넓은 면에도 빛 웅덩이가 보이게 (조작 중엔 생략)
+      if (litOn && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop, s.eid + '|t|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z1), !!s.lit); // 넓은 면에도 빛 웅덩이가 보이게 (조작 중엔 생략)
       else faces.push({ ...mTop, pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 1.0 });
     }
     if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1)) { // 하면 (아래 향함)
       const mBot = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' };
-      if (v3.lighting && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot, s.eid + '|b|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z0), !!s.lit);
+      if (litOn && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot, s.eid + '|b|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z0), !!s.lit);
       else faces.push({ ...mBot, pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 0.5 });
     }
   }
@@ -3128,10 +3132,10 @@ function renderScene(isActive) {
       const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
       const mcx = (t[0][0] + t[1][0] + t[2][0]) / 3, mcy = (t[0][1] + t[1][1] + t[2][1]) / 3, mcz = (t[0][2] + t[1][2] + t[2][2]) / 3;
       const mfc = v3.falseColor ? falseColor(illuminanceAt(mcx, mcy, mcz, nx, ny, nz), v3.fcMax) : null;
-      const shade = mfc ? 1 : (v3.lighting
+      const shade = mfc ? 1 : (litOn
         ? litFace(mcx, mcy, mcz, nx, ny, nz, true)
         : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8));
-      const msh3 = (!mfc && v3.lighting && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
+      const msh3 = (!mfc && litOn && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
       const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
       faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mfc || mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
     }
@@ -3139,7 +3143,7 @@ function renderScene(isActive) {
   const light = document.documentElement.classList.contains('light');
   zRasterFaces(c, faces, v3.vp, light);                // 항상 정확한 Z-버퍼 은면 제거 (회전·호버·정지 모두)
   if (v3.falseColor) { drawSensors(c, v3.vp); fcLegend(c, v3.vp); }   // 조도 숫자 + 범례 (§4.1/§4.2)
-  else if (state.sensors.length && v3.lighting) drawSensors(c, v3.vp);
+  else if (state.sensors.length && litOn) drawSensors(c, v3.vp);
   // 광원 기즈모 — 어느 개체가 광원인지 일반 뷰에서도 알아볼 수 있게 (꺼진 광원은 흐리게)
   for (const g of lightGizmos()) {
     const p = proj3D(g.x, g.y, g.z);
@@ -6216,6 +6220,13 @@ function lightGizmos() {
 // ---------- 실제 광원 (지정한 개체 → 3D 셰이딩) ----------
 // v3.lighting이 켜졌을 때만 동작한다. 꺼져 있으면(기본) 셰이딩 식이 예전 그대로라 기존 화면 불변.
 const NIGHT_AMBIENT = 0.16; // 야간 환경광 — 광원이 닿지 않는 곳의 최소 밝기
+// 태양이 켜지면 하늘이 그늘을 채운다. 맑은 날 확산 천공광은 직달의 약 1/4 이다
+// (실측: 확산 23,689 lx / 직달수평 96,868 lx = 0.245). 직접광 최대치가 dot=1 에서
+// SUN_LIT_POWER×LIT_GAIN 이므로 그 0.245 배를 환경광으로 둔다. 방향별 천공광까지는
+// 모델링하지 않는 근사다 — 이 3D 뷰는 미리보기이고, 물리값은 Raytraced 와 조도 분석이 담당한다.
+const SKY_AMBIENT = 0.30;
+const sunOn = () => !!(state.sun && state.sun.enabled);
+function litAmbient() { return sunOn() ? SKY_AMBIENT : NIGHT_AMBIENT; }
 // litFace가 방금 계산한 채널별 밝기 [r, g, b, tinted?]. 반환값(스칼라)과 함께 바로 읽어 쓴다.
 // 루프 안에서 매번 배열을 새로 만들지 않으려고 공용 버퍼를 쓴다 (면 수만큼 호출되는 자리).
 const LIT_RGB = [1, 1, 1, 0];
@@ -6233,8 +6244,39 @@ function toneMap(v) {
   if (v <= LIT_KNEE) return Math.max(LIT_MIN, v);
   return LIT_KNEE + (LIT_MAX - LIT_KNEE) * (1 - Math.exp(-(v - LIT_KNEE) / (LIT_MAX - LIT_KNEE)));
 }
+// 태양을 '아주 멀리 있는 점광원' 으로 만든다. 그러면 litFace·visFraction·그림자·소프트섀도우를
+// 한 줄도 고치지 않고 그대로 쓸 수 있다.
+//  · range 를 거리보다 훨씬 크게  → 거리감쇠 1/(1+k²) 가 사실상 1 = 평행광
+//  · far2 = Infinity            → 거리 컬링에 안 걸린다
+//  · soft = D × 0.00925         → 원반 지름이 태양 각지름 0.53° 와 같아진다.
+//    반그림자 폭 = soft × h/D = h × 0.00925 라 D 를 어떻게 잡든 물리적으로 맞는다.
+// 세기는 물리 직달조도에 비례시킨다 — 해질녘에 저절로 약해지고 붉어진다.
+const SUN_LIT_POWER = 0.45;   // 맑은 날 정오(직달 10만 lx)일 때의 power. 실측으로 정함(아래 주석).
+function sunLight() {
+  if (!sunOn()) return null;
+  const S = sunState();
+  const sd = sunDirection(S);
+  if (sd.alt <= 0) return null;                       // 해가 지평선 아래 = 직사광 없음
+  const fit = (v3 && v3.fit) ? v3.fit : 10000;
+  const D = Math.max(50000, fit * 20);                // 씬보다 훨씬 멀리 = 평행광
+  const cx = v3 ? v3.cx : 0, cy = v3 ? v3.cy : 0, cz = v3 ? v3.cz : 0;
+  // 고도가 낮을수록 붉다 — 대기를 길게 통과하며 파랑이 산란돼 빠진다
+  const cct = 2000 + 4000 * Math.min(1, Math.max(0, sd.alt / 30));
+  const c = kelvinToRGB(cct), mx = Math.max(c[0], c[1], c[2]) || 1;
+  return {
+    x: cx + sd.x * D, y: cy + sd.y * D, z: cz + sd.z * D,
+    range: D * 1e6, far2: Infinity, soft: D * 0.00925,
+    power: SUN_LIT_POWER * (sunDirectIlluminance(S) / 100000),  // 물리 직달조도에 비례
+    bounce: 0.5,
+    cr: c[0] / mx, cg: c[1] / mx, cb: c[2] / mx,
+    lm: 0,          // 태양은 lux 로 다룬다 — illuminanceAt 의 점광원 공식(lm/4πd²)에 넣으면 안 된다
+    sun: true,
+  };
+}
 function lightSources() {
   const out = [];
+  const sl = sunLight();
+  if (sl) out.push(sl);
   if (!state.lights.length) return out;
   const byId = new Map(state.entities.map(e => [e.id, e]));
   for (const L of state.lights) {
@@ -6452,9 +6494,10 @@ function visFraction(ox, oy, oz, g, dx, dy, dz, d) {
 // twoSided: 메시는 삼각형 winding을 신뢰할 수 없어 양면 모두 빛을 받게 한다(기존 메시 셰이딩도 abs를 씀).
 function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
   const L = v3 && v3._lights;
-  if (!L || !L.length) { LIT_RGB[0] = LIT_RGB[1] = LIT_RGB[2] = NIGHT_AMBIENT; LIT_RGB[3] = 0; return NIGHT_AMBIENT; }
+  const AMB = litAmbient();
+  if (!L || !L.length) { LIT_RGB[0] = LIT_RGB[1] = LIT_RGB[2] = AMB; LIT_RGB[3] = 0; return AMB; }
   // 직접광도 채널별로 쌓는다 — 광원의 색온도(K)가 화면에 나타나려면 스칼라 하나로는 안 된다
-  let sr = NIGHT_AMBIENT, sg = NIGHT_AMBIENT, sb = NIGHT_AMBIENT;
+  let sr = AMB, sg = AMB, sb = AMB;
   for (const g of L) {
     const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
     const d2 = dx * dx + dy * dy + dz * dz;
@@ -7160,18 +7203,37 @@ function sunSummary() {
   if (p.alt <= 0) return `${S.mo}/${S.d} ${hhmm} · 태양이 지평선 아래 (고도 ${p.alt.toFixed(1)}°)`;
   return `${S.mo}/${S.d} ${hhmm} · 고도 ${p.alt.toFixed(1)}° 방위 ${p.az.toFixed(0)}° · 직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx`;
 }
+// 태양이 화면에 반영되도록 갱신한다. 형상은 그대로이므로 BVH 재빌드는 하지 않는다.
+function sunApply() {
+  renderSunPanel();
+  if (typeof render3D === 'function' && v3) render3D();
+  if (rt.on) { if (rt.env === 'day') rtSetEnv('day'); else rtLightsChanged(); }
+}
 // 라이노의 Sun 명령과 같은 이름·같은 개념(날짜·시각·위경도·북쪽).
+// 인자 없이 부르면 켜고/끈다 — 라이노의 Sun 패널 체크박스와 같다.
+// 값만 보고 싶으면 sun 상태.
 function cmdSun(arg) {
   const S = sunState();
   const a = (arg || '').trim();
   if (!a) {
+    if (!is3DActive()) { logLine('  태양은 3D 작업 뷰에서 보입니다 — 먼저 3d 명령으로 여세요.', 'warn'); return; }
+    pushUndo();
+    S.enabled = !S.enabled;
+    sunApply();
+    if (S.enabled) {
+      const p = solarPosition(S);
+      if (p.alt <= 0) logLine(`  ☀ 태양 ON — 그런데 ${S.mo}/${S.d} ${String(S.h).padStart(2,'0')}:${String(S.mi).padStart(2,'0')} 은 해가 지평선 아래입니다(고도 ${p.alt.toFixed(1)}°). 오른쪽 [태양] 패널의 시각을 낮으로 옮기세요.`, 'warn');
+      else logLine(`  ☀ 태양 ON — ${sunSummary()}. 오른쪽 [태양] 패널에서 날짜·시각을 조절하세요 (다시 입력하면 OFF)`, 'ok');
+    } else logLine('  ☀ 태양 OFF', 'info');
+    return;
+  }
+  if (/^(상태|status|\?)$/i.test(a)) {
     const p = solarPosition(S);
     const n = sunNoonMinutes(S);
-    logLine(`  ☀ 태양 — ${S.y}-${String(S.mo).padStart(2, '0')}-${String(S.d).padStart(2, '0')} ${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')} (UTC${S.tz >= 0 ? '+' : ''}${S.tz / 60})`, 'info');
+    logLine(`  ☀ 태양 ${S.enabled ? 'ON' : 'OFF'} — ${S.y}-${String(S.mo).padStart(2, '0')}-${String(S.d).padStart(2, '0')} ${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')} (UTC${S.tz >= 0 ? '+' : ''}${S.tz / 60})`, 'info');
     logLine(`     위치 ${S.lat.toFixed(4)}, ${S.lon.toFixed(4)} · 진북 ${S.north}° · 탁도 ${skyTurbidity(S)}`, 'info');
     logLine(`     고도 ${p.alt.toFixed(2)}° · 방위 ${p.az.toFixed(2)}° · 남중 ${String(Math.floor(n / 60)).padStart(2, '0')}:${String(Math.round(n % 60)).padStart(2, '0')}`, 'info');
     logLine(`     직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx`, 'info');
-    logLine('     설정: sun 시각=14:30 · sun 날짜=2026-06-21 · sun 위도=37.5 · sun 경도=127 · sun 북=30 · sun 탁도=3', 'info');
     return;
   }
   const m = a.split('=').map(s => s.trim());
@@ -7189,8 +7251,9 @@ function cmdSun(arg) {
   else if (/^(북|북쪽|north)$/i.test(k)) { S.north = sunMod(num, 360); }
   else if (/^(탁도|turbidity)$/i.test(k)) { S.turbidity = Math.min(SKY_TURBIDITY_MAX, Math.max(SKY_TURBIDITY_MIN, num)); }
   else { logLine(`  모르는 항목: ${k} — 시각·날짜·위도·경도·시간대·북·탁도`, 'warn'); return; }
+  if (!S.enabled) { S.enabled = true; logLine('  (값을 바꿨으므로 태양을 함께 켰습니다)', 'info'); }
+  sunApply();
   logLine(`  ☀ ${sunSummary()}`, 'ok');
-  if (rt.on && rt.env === 'day') rtSetEnv('day');   // 하늘을 다시 굽는다
 }
 // 디노이저가 실제로 동작하게 되면 다시 명령어로 등록한다. 그 전까지는 노출하지 않는다.
 function cmdRtDenoise() {
@@ -7378,7 +7441,7 @@ function renderSensorList() {
     el.innerHTML = '<div class="empty" style="font-size:11.5px;opacity:.6;padding:4px 2px;">측정면이 없습니다. 사각 영역을 선택하고 <b>addsensorplane</b>.</div>';
     return;
   }
-  const on = is3DActive() && typeof v3 !== 'undefined' && v3 && (v3.lighting || rt.on);
+  const on = is3DActive() && typeof v3 !== 'undefined' && v3 && (v3.lighting || sunOn() || rt.on);
   let h = '';
   for (const S of state.sensors) {
     let st = S.stats;
@@ -9482,6 +9545,92 @@ function renderLayers() {
 document.getElementById('btnAllVis').addEventListener('click', () => { state.layers.forEach(l => { l.visible = true; l.locked = false; }); renderLayers(); draw(); });
 document.getElementById('blkScale').addEventListener('change', e => { insertScale = parseFloat(e.target.value) || 1; });
 document.getElementById('blkRot').addEventListener('change', e => { insertRot = parseFloat(e.target.value) || 0; });
+// ─── 태양 패널 ───
+// 시각 슬라이더를 끌면 그림자가 실시간으로 돈다 — 이게 없으면 태양이 있어도 확인할 방법이 없다.
+// 드래그 중에는 pushUndo 를 부르지 않는다(슬라이더 한 번에 스냅샷 수백 개가 쌓인다) —
+// 광원 속성 패널과 같은 모델: pointerdown 에서 한 번만.
+function renderSunPanel() {
+  const S = sunState();
+  const $ = (id) => document.getElementById(id);
+  const on = $('sunOn'); if (!on) return;                 // 패널이 없는 빌드
+  if (document.activeElement !== on) on.checked = !!S.enabled;
+  const body = $('sunBody'); if (body) body.style.opacity = S.enabled ? '1' : '0.45';
+  const p = solarPosition(S);
+  const set = (id, v) => { const el = $(id); if (el && document.activeElement !== el) el.value = v; };
+  set('sunDate', `${S.y}-${String(S.mo).padStart(2, '0')}-${String(S.d).padStart(2, '0')}`);
+  set('sunTime', S.h * 60 + S.mi);
+  set('sunNorth', S.north);
+  set('sunTurb', skyTurbidity(S));
+  set('sunLat', S.lat); set('sunLon', S.lon); set('sunTz', S.tz / 60);
+  const t = $('sunTimeTxt'); if (t) t.textContent = `${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')}`;
+  const nt = $('sunNorthTxt'); if (nt) nt.textContent = S.north + '°';
+  const tt = $('sunTurbTxt'); if (tt) tt.textContent = skyTurbidity(S).toFixed(1);
+  const al = $('sunAlt');
+  if (al) al.textContent = S.enabled ? (p.alt > 0 ? `고도 ${p.alt.toFixed(1)}°` : '지평선 아래') : '';
+  const info = $('sunInfo');
+  if (info) {
+    const n = sunNoonMinutes(S);
+    const noon = `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(Math.round(n % 60)).padStart(2, '0')}`;
+    info.innerHTML = p.alt > 0
+      ? `고도 <b>${p.alt.toFixed(1)}°</b> · 방위 <b>${p.az.toFixed(0)}°</b><br>직달 <b>${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx</b> · 남중 ${noon}`
+      : `해가 지평선 아래입니다 (고도 ${p.alt.toFixed(1)}°)<br>남중 ${noon} — 시각을 낮으로 옮기세요`;
+  }
+}
+{
+  const S = () => sunState();
+  const $ = (id) => document.getElementById(id);
+  let dragged = false;
+  const startEdit = () => { if (!dragged) { dragged = true; pushUndo(); } };
+  const endEdit = () => { dragged = false; };
+  $('sunOn')?.addEventListener('change', (e) => {
+    pushUndo(); S().enabled = e.target.checked; sunApply();
+    logLine(e.target.checked ? `  ☀ 태양 ON — ${sunSummary()}` : '  ☀ 태양 OFF', 'info');
+  });
+  const live = (id, apply) => {
+    const el = $(id); if (!el) return;
+    el.addEventListener('pointerdown', startEdit);
+    el.addEventListener('input', () => { startEdit(); apply(el.value); sunApply(); });
+    el.addEventListener('change', () => { apply(el.value); sunApply(); endEdit(); });
+    el.addEventListener('pointerup', endEdit);
+    el.addEventListener('lostpointercapture', endEdit);   // 패널 밖에서 손을 뗀 경우
+  };
+  live('sunTime', v => { const m = Math.max(0, Math.min(1439, +v)); S().h = Math.floor(m / 60); S().mi = m % 60; });
+  live('sunNorth', v => { S().north = sunMod(+v, 360); });
+  live('sunTurb', v => { S().turbidity = Math.min(SKY_TURBIDITY_MAX, Math.max(SKY_TURBIDITY_MIN, +v)); });
+  $('sunDate')?.addEventListener('change', (e) => {
+    const t = (e.target.value || '').split('-');
+    if (t.length !== 3) return;
+    pushUndo();
+    S().y = +t[0] || S().y; S().mo = +t[1] || S().mo; S().d = +t[2] || S().d;
+    sunApply();
+  });
+  for (const [id, key, min, max] of [['sunLat', 'lat', -90, 90], ['sunLon', 'lon', -180, 180]]) {
+    $(id)?.addEventListener('change', (e) => {
+      const v = parseFloat(e.target.value); if (!isFinite(v)) return;
+      pushUndo(); S()[key] = Math.min(max, Math.max(min, v)); sunApply();
+    });
+  }
+  $('sunTz')?.addEventListener('change', (e) => {
+    const v = parseFloat(e.target.value); if (!isFinite(v)) return;
+    pushUndo(); S().tz = Math.round(Math.min(14, Math.max(-12, v)) * 60); sunApply();
+  });
+  $('btnSunNoon')?.addEventListener('click', () => {
+    pushUndo();
+    const n = sunNoonMinutes(S()); S().h = Math.floor(n / 60); S().mi = Math.round(n % 60);
+    sunApply(); logLine(`  ☀ 남중으로 — ${sunSummary()}`, 'ok');
+  });
+  $('btnSunHere')?.addEventListener('click', () => {
+    if (!navigator.geolocation) { logLine('  이 브라우저는 위치 정보를 지원하지 않습니다.', 'warn'); return; }
+    logLine('  위치를 가져오는 중…', 'info');
+    navigator.geolocation.getCurrentPosition((pos) => {
+      pushUndo();
+      S().lat = +pos.coords.latitude.toFixed(4); S().lon = +pos.coords.longitude.toFixed(4);
+      S().tz = -new Date().getTimezoneOffset();
+      sunApply(); logLine(`  ☀ 현재 위치 ${S().lat}, ${S().lon} (UTC${S().tz >= 0 ? '+' : ''}${S().tz / 60})`, 'ok');
+    }, () => logLine('  위치를 가져오지 못했습니다 — 위도·경도를 직접 입력하세요.', 'warn'));
+  });
+}
+renderSunPanel();   // 시작 시 패널을 현재 태양 상태로 채운다
 document.getElementById('btnSetAsLight')?.addEventListener('click', cmdSetAsLight);
 document.getElementById('btnFalseColor')?.addEventListener('click', cmdFalseColor);
 document.getElementById('btnFcMax')?.addEventListener('click', cmdFcMax);
@@ -11843,7 +11992,7 @@ window.__CADTEST__ = {
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
   bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE_DAY,
-  sunDefaults, sunState, solarPosition, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
+  renderScene, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, SUN_LIT_POWER, SKY_AMBIENT, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,

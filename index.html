@@ -767,6 +767,50 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         </div>
       </div>
 
+      <div class="section" data-sec="sun">
+        <h3>태양</h3>
+        <div class="body">
+          <label style="display:flex;align-items:center;gap:7px;margin-bottom:9px;cursor:pointer;">
+            <input type="checkbox" id="sunOn"><span>태양 켜기</span>
+            <span id="sunAlt" style="margin-left:auto;font-size:11.5px;opacity:.75;"></span>
+          </label>
+          <div id="sunBody">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+              <span style="width:34px;font-size:12px;opacity:.75;">날짜</span>
+              <input type="date" id="sunDate" style="flex:1;">
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="width:34px;font-size:12px;opacity:.75;">시각</span>
+              <input type="range" id="sunTime" min="0" max="1439" step="5" style="flex:1;">
+              <span id="sunTimeTxt" style="width:42px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <span style="width:34px;font-size:12px;opacity:.75;">진북</span>
+              <input type="range" id="sunNorth" min="0" max="359" step="1" style="flex:1;">
+              <span id="sunNorthTxt" style="width:42px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <span style="width:34px;font-size:12px;opacity:.75;">탁도</span>
+              <input type="range" id="sunTurb" min="2" max="6" step="0.5" style="flex:1;">
+              <span id="sunTurbTxt" style="width:42px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"></span>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <div style="flex:1;"><div style="font-size:11px;opacity:.7;margin-bottom:2px;">위도</div>
+                <input type="number" id="sunLat" step="0.0001" style="width:100%;"></div>
+              <div style="flex:1;"><div style="font-size:11px;opacity:.7;margin-bottom:2px;">경도</div>
+                <input type="number" id="sunLon" step="0.0001" style="width:100%;"></div>
+              <div style="width:58px;"><div style="font-size:11px;opacity:.7;margin-bottom:2px;">시간대</div>
+                <input type="number" id="sunTz" step="1" min="-12" max="14" style="width:100%;"></div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+              <button class="miniBtn" id="btnSunNoon" title="그 날 태양이 가장 높은 시각으로">남중으로</button>
+              <button class="miniBtn" id="btnSunHere" title="브라우저 위치·시간대 가져오기">현재 위치</button>
+            </div>
+            <div id="sunInfo" style="margin-top:9px;font-size:11.5px;line-height:1.55;opacity:.8;"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="section" data-sec="lights">
         <h3>광원</h3>
         <div class="body">
@@ -844,7 +888,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260716h"></script>
+<script src="cad.js?v=20260716i"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>

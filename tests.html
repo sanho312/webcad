@@ -967,6 +967,37 @@ function tests(){
     ok('주광 노출이 실내보다 훨씬 작다', C.RT_EXPOSURE_DAY < 1e-3);
   }
 
+  group('태양 — 3D 뷰 조명 연동');
+  {
+    reset();
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { mo: 6, d: 21, h: 15, mi: 0, enabled: false });
+    ok('태양은 기본 OFF (기존 화면 불변)', !C.sunOn());
+    ok('꺼져 있으면 광원 목록에 태양이 없다', !C.lightSources().some(g => g.sun));
+    ok('꺼져 있으면 환경광은 야간값', C.litAmbient() < 0.2);
+    S.enabled = true;
+    ok('켜면 sunOn() true', C.sunOn());
+    ok('켜면 환경광이 하늘값으로 오른다', C.litAmbient() > 0.2);
+    const sl = C.lightSources().filter(g => g.sun);
+    ok('켜면 광원 목록에 태양이 들어간다', sl.length === 1);
+    const g = sl[0];
+    ok('태양은 거리 컬링에 안 걸린다', g.far2 === Infinity);
+    ok('태양은 거리감쇠가 사실상 없다 (평행광)', g.range > 1e9);
+    // 반그림자: soft = D×0.00925 → 폭 = soft×h/D = h×0.00925 로 D 와 무관
+    const V = C.v3;
+    const D = Math.hypot(g.x - (V ? V.cx : 0), g.y - (V ? V.cy : 0), g.z - (V ? V.cz : 0));
+    eq(g.soft / D, 0.00925, '태양 원반 각지름 = 0.53° (soft/D)', 1e-4);
+    // 해가 지면 직사광이 없다
+    S.h = 2; S.mi = 0;
+    ok('해가 지평선 아래면 태양 광원이 없다', !C.lightSources().some(x => x.sun));
+    // 세기는 물리 직달조도에 비례 — 낮은 해가 더 약하다
+    S.h = 12; S.mi = 30; const hi = C.sunLight().power;
+    S.h = 18; S.mi = 0;  const lo = C.sunLight().power;
+    ok('해가 낮으면 직사광이 약해진다', lo < hi);
+    ok('정오 태양 power 가 합리적 범위', hi > 0.2 && hi < 1);
+    S.enabled = false;
+  }
+
   group('조도 분석 — 조도(lux)·False Color·측정면·CSV');
   {
     if (!C.v3) C.INSTANT_CMDS['view3d']();
