@@ -1171,6 +1171,78 @@ function tests(){
     eqi((C.state.entities.find(e => e.id === 1) || {}).bim.h, 2000, '취소하면 원래 높이로 복원된다');
   }
 
+  group('구름 모양 — 에너지를 깨지 않고 무늬를 만든다');
+  {
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { mo: 6, d: 21, h: 12, mi: 0, enabled: true, cloud: 0 });
+    const Y = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+    // 마스크의 경계 조건
+    eq(C.skyCloudMask(0, 0, 0, 1), 0, '운량 0 이면 어디도 구름이 아니다');
+    eq(C.skyCloudMask(1, 0, 0, 1), 1, '운량 100% 면 하늘 전체가 구름 (모양 없음)');
+    eq(C.skyCloudMask(0.5, 0, 0, 0.01), 0.5, '지평선 근처는 평균값으로 뭉갠다 (좌표 폭주 방지)');
+
+    // 결정론적이어야 한다 — 새로고침마다 구름이 움직이면 렌더 비교가 불가능하다
+    eq(C.skyCloudMask(0.5, 0.3, 0.4, 0.86), C.skyCloudMask(0.5, 0.3, 0.4, 0.86), '★같은 방향은 항상 같은 구름');
+    eq(C._skyFbm(1.23, 4.56), C._skyFbm(1.23, 4.56), '★fBm 이 결정론적');
+
+    // ★임계값 보정 — 운량 슬라이더가 '덮인 비율' 을 뜻해야 한다.
+    //   보정 전에는 fBm 값이 0.5 근처에 몰려 운량 20% 로 둬도 하늘의 1% 만 덮였고,
+    //   그 1% 가 확산광 20% 를 지느라 정규화 계수가 31 배로 튀어 구름이 발광하는 덩어리가 됐다.
+    const coverage = (cc) => {
+      const NT = 24, NP = 48, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP;
+      let cov = 0, W = 0;
+      for (let i = 0; i < NT; i++) {
+        const th = (i + 0.5) * dth, st = Math.sin(th), ct = Math.cos(th);
+        for (let j = 0; j < NP; j++) {
+          const ph = (j + 0.5) * dph, w = ct * st * dth * dph;
+          cov += C.skyCloudMask(cc, st * Math.cos(ph), st * Math.sin(ph), ct) * w; W += w;
+        }
+      }
+      return cov / W;
+    };
+    for (const cc of [0.2, 0.4, 0.6, 0.8]) {
+      ok(Math.abs(coverage(cc) - cc) < 0.10, `★운량 ${cc * 100}% → 실제 덮임도 ${cc * 100}% 근처 (오차 10%p 내)`);
+    }
+
+    // ★핵심 계약: 구름이 어떤 모양이든 확산 수평조도는 정확히 Ed 여야 한다.
+    //   skySolve 의 ka·kb 정규화가 이걸 보장한다. 깨지면 '구름 낀 날만 조도가 틀린' 앱이 된다.
+    const integ = (K) => {
+      const NT = 48, NP = 96, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP, t = [0, 0, 0];
+      let E = 0;
+      for (let i = 0; i < NT; i++) {
+        const th = (i + 0.5) * dth, st = Math.sin(th), ct = Math.cos(th);
+        for (let j = 0; j < NP; j++) {
+          const ph = (j + 0.5) * dph;
+          C.skyDirRadiance(K, st * Math.cos(ph), st * Math.sin(ph), ct, t);
+          E += Y(t) * ct * st * dth * dph;
+        }
+      }
+      return E;
+    };
+    for (const cc of [0, 20, 40, 60, 80, 100]) {
+      S.cloud = cc;
+      const K = C.skyCtx(S);
+      ok(Math.abs(integ(K) - K.Ed) / Math.max(1, K.Ed) < 0.02, `★운량 ${cc}% 에서 확산조도 보존 (구름 모양과 무관)`);
+      ok(K.kb < 3, `운량 ${cc}% 정규화 계수가 폭주하지 않는다 (구름이 발광하지 않는다)`);
+    }
+
+    // 하위호환: 구름이 없으면 정규화가 정확히 상쇄돼 예전 식 그대로
+    S.cloud = 0;
+    const K0 = C.skyCtx(S);
+    eq(K0.ka, 1, '★운량 0 이면 맑은 성분 계수 = 1 (예전 식과 동일)');
+    eq(K0.kb, 0, '운량 0 이면 흐림 성분 없음');
+    S.cloud = 100;
+    const K1 = C.skyCtx(S);
+    eq(K1.ka, 0, '운량 100% 면 맑은 성분 없음');
+    eq(K1.kb, 1, '운량 100% 면 흐림 성분 계수 = 1', 0.02);
+
+    // skyCtx 는 캐시된다 — 매 프레임 적분하면 못 쓴다 (rviewSyncSun 이 프레임마다 부른다)
+    S.cloud = 35;
+    ok(C.skyCtx(S) === C.skyCtx(S), '★같은 태양 상태면 skyCtx 가 같은 객체 (캐시)');
+    S.cloud = 0; S.enabled = false;
+  }
+
   group('날씨 — 운량과 흐린 하늘 (물리 보존)');
   {
     const S = C.sunState();
@@ -1186,7 +1258,7 @@ function tests(){
       const dx = d[0] / n, dy = d[1] / n, dz = d[2] / n;
       const gam = Math.acos(Math.max(-1, Math.min(1, dx * K0.sx + dy * K0.sy + dz * K0.sz)));
       const b = [0, 0, 0];
-      C.skyBlend(K0, Math.acos(dz), gam, dz, b);
+      C.skyBlend(K0, Math.acos(dz), gam, dx, dy, dz, b);
       const r = C.skyRadiance(Math.acos(dz), gam, K0.thS, K0.Tb);
       for (let i = 0; i < 3; i++) eq(b[i], r[i], `★운량 0 이면 skyBlend == skyRadiance (ch${i})`, Math.abs(r[i]) * 1e-9 + 1e-9);
     }
@@ -1216,8 +1288,9 @@ function tests(){
     // 흐린 하늘의 모양 — Moon–Spencer L(θ) = Lz(1+2cosθ)/3, 천정이 지평선의 3배
     S.cloud = 100;
     const K1 = C.skyCtx(S), zen = [0, 0, 0], hor = [0, 0, 0];
-    C.skyBlend(K1, 0, Math.PI / 2, 1, zen);
-    C.skyBlend(K1, Math.PI / 2, Math.PI / 2, 0, hor);
+    // cc=1 이면 skyCloudMask 가 어디서나 1 이라 방향은 모양에 영향이 없다 (하늘 전체가 구름)
+    C.skyBlend(K1, 0, Math.PI / 2, 0, 0, 1, zen);
+    C.skyBlend(K1, Math.PI / 2, Math.PI / 2, 1, 0, 0, hor);
     const Y = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     eq(Y(zen) / Y(hor), 3, '★흐린 하늘은 천정이 지평선의 3배 (Moon–Spencer)', 0.02);
 
@@ -1237,7 +1310,7 @@ function tests(){
     S.cloud = 0;
     const K2 = C.skyCtx(S), sh = C.skyProjectSH(S), o = [0, 0, 0];
     C.skyIrradiance(sh, 0, 0, 1, o);
-    ok(Math.abs(K2.EdClear - Y(o)) / Y(o) < 0.06, '★skyDiffuseHorizClear 가 기존 SH 천공광과 일치 (L2 SH 오차 내)');
+    ok(Math.abs(K2.EdClear - Y(o)) / Y(o) < 0.06, '★skySolve 의 EdClear 가 기존 SH 천공광과 일치 (L2 SH 오차 내)');
 
     // 날씨 이름
     eqi(C.weatherName(0), '맑음', '운량 0 = 맑음');

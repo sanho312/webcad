@@ -145,14 +145,13 @@ function resize() {
 // 마우스 이벤트가 자동으로 갈라지는 게 핵심 — 평면 칸 클릭은 2D 핸들러가, 나머지는 3D 핸들러가 받는다.
 function syncPlanCv() {
   const i = vpPlanIndex();
-  const lbl = planVpLabel();
   if (!is3DActive()) { // 3D 미개방 = 오늘과 동일하게 #cv 가 화면 전체
     cv.style.position = ''; cv.style.left = cv.style.top = cv.style.width = cv.style.height = '';
     cv.style.zIndex = ''; cv.style.display = ''; cv.style.outline = '';
-    if (lbl) lbl.style.display = 'none';
+    for (let k = 0; k < 4; k++) vpHideLabel(k);
     return;
   }
-  if (i < 0) { cv.style.display = 'none'; if (lbl) lbl.style.display = 'none'; return; } // 평면 칸이 안 떠 있음 → 3D 가 화면 전체
+  if (i < 0) { cv.style.display = 'none'; return; } // 평면 칸이 안 떠 있음 → 3D 가 화면 전체
   const r = vpRectCss(i);
   cv.style.display = ''; cv.style.position = 'absolute'; cv.style.zIndex = '19';
   cv.style.left = r.x + 'px'; cv.style.top = r.y + 'px';
@@ -164,30 +163,37 @@ function syncPlanCv() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   cv._w = r.w; cv._h = r.h;
-  // 뷰 이름표 + 활성 테두리 — 다른 칸은 3D 렌더러가 캔버스에 그리지만, 평면 칸은 #cv 가 위를
-  // 덮으므로 밑에 그려봤자 안 보인다 → DOM 라벨(z20) + outline 으로 올린다. (라이노처럼
-  // 어느 칸이 활성인지 한눈에 보여야 하고, 평면 칸도 예외가 아니어야 한다)
-  const active = v3.act === i;
-  if (lbl) {
-    lbl.style.display = ''; lbl.textContent = v3.views[i].name;
-    lbl.style.left = (r.x + 8) + 'px'; lbl.style.top = (r.y + 4) + 'px';
-    lbl.style.color = active ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
-  }
-  cv.style.outline = v3.quad ? (active ? '1.5px solid #0A84FF' : '1px solid rgba(120,140,180,.3)') : '';
-  cv.style.outlineOffset = '-1px';
+  vpShowLabel(i, cv);   // 이름표·테두리는 DOM 으로 (아래 b3cv 에 그려봐야 #cv 가 덮는다)
   draw();
 }
-// 평면 칸의 뷰 이름표 (지연 생성) — pointer-events 없음, 표시 전용
-function planVpLabel() {
-  let el = document.getElementById('planVpLabel');
+// 뷰포트 이름표 (지연 생성) — pointer-events 없음, 표시 전용.
+// 다른 캔버스(#cv·#rvcv)가 그 칸을 덮는 경우 b3cv 에 그려봐야 안 보인다 → DOM 으로 올린다.
+function vpLabelEl(i) {
+  const id = 'vpLabel' + i;
+  let el = document.getElementById(id);
   if (!el && typeof wrap !== 'undefined' && wrap) {
     el = document.createElement('div');
-    el.id = 'planVpLabel';
+    el.id = id;
     el.style.cssText = 'position:absolute;z-index:20;font:600 12px -apple-system,system-ui,sans-serif;pointer-events:none;display:none;';
     wrap.appendChild(el);
   }
   return el;
 }
+function vpHideLabel(i) { const el = document.getElementById('vpLabel' + i); if (el) el.style.display = 'none'; }
+// 덮는 캔버스(cover) 위에 이름표 + 활성 테두리를 그린다 — 다른 칸과 같은 문법으로 보이게
+function vpShowLabel(i, cover) {
+  const el = vpLabelEl(i); if (!el) return;
+  const r = vpRectCss(i), active = v3.act === i;
+  el.style.display = ''; el.textContent = v3.views[i].name;
+  el.style.left = (r.x + 8) + 'px'; el.style.top = (r.y + 4) + 'px';
+  el.style.color = active ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
+  if (cover) {
+    cover.style.outline = v3.quad ? (active ? '1.5px solid #0A84FF' : '1px solid rgba(120,140,180,.3)') : '';
+    cover.style.outlineOffset = '-1px';
+  }
+}
+// 이 뷰포트가 렌더링 뷰에 덮여 있나
+const vpIsRendered = (i) => !!(typeof rview !== 'undefined' && rview && rview.on && rview.vi === i);
 function worldToScreen(wx, wy) {
   return {
     x: (wx - state.view.x) * state.view.scale + cv._w / 2,
@@ -2915,9 +2921,19 @@ function render3D() {
       continue;
     }
     v3.vp = r; loadVp(i);
+    // ★렌더링 뷰가 덮은 칸은 조명·그림자를 계산하지 않는다.
+    // 실측: 기둥 40개 + 태양 ON 에서 정밀 178.6ms vs 빠름 13.7ms 인데, 그 그림은 #rvcv(z17)가
+    // 완전히 가려서 아무도 못 본다 — 안 보이는 그림에 178ms 를 태우고 궤도가 6fps 였다.
+    // _fast 경로도 피킹 배열(v3.pick)은 그대로 만들므로 선택은 계속 된다.
+    // (사용자가 말한 D5 원리 '눈에 안 보이는 부분은 잠시 안 보이게' 가 정확히 여기 필요했다)
+    const covered = vpIsRendered(i);
+    const keepFast = v3._fast;
+    if (covered) v3._fast = true;
     c.save(); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip();
     const res = renderScene(i === v3.act);
     c.restore();
+    v3._fast = keepFast;
+    if (covered) vpShowLabel(i, rview.cv); else vpHideLabel(i);
     v3.views[i]._faces = res.faces; v3.views[i]._under = res.under; v3.views[i]._pick = res.pick;
     c.font = `600 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
     c.fillStyle = i === v3.act ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
@@ -6496,8 +6512,18 @@ function preethamZenith(T, thS) {
 }
 // 하늘 한 방향의 분광 휘도 → 선형 sRGB (cd/m²).
 //   theta = 천정으로부터의 각, gamma = 태양과 이루는 각, thS = 태양의 천정각
+// 계수는 (탁도, 태양 천정각) 만의 함수다 — 한 장의 하늘을 구울 때는 내내 같은 값이다.
+// 그런데 텍셀마다 다시 계산하고 있었다: 배열 3개 할당 + tan/거듭제곱 수십 번을
+// 레이트레이싱 환경맵(1024x512 = 52만 텍셀)마다 반복했다. 한 칸짜리 캐시로 충분하다.
+let _preK = '', _preV = null;
+function preethamCache(T, thS) {
+  const k = T + '|' + thS;
+  if (_preK === k && _preV) return _preV;
+  _preK = k; _preV = { c: preethamCoeffs(T), z: preethamZenith(T, thS) };
+  return _preV;
+}
 function skyRadiance(theta, gamma, thS, T) {
-  const c = preethamCoeffs(T), z = preethamZenith(T, thS);
+  const P = preethamCache(T, thS), c = P.c, z = P.z;
   const th = Math.min(theta, Math.PI / 2 - 0.001);          // 지평선 아래는 지평선 값으로
   const d = (co, zv) => zv * perezF(co, th, gamma) / perezF(co, 0, thS);
   const Y = Math.max(0, d(c.Y, z.Yz));
@@ -7499,31 +7525,132 @@ const SKY_OVERCAST_RGB = (() => {
   const Y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   return [c[0] / Y, c[1] / Y, c[2] / Y];
 })();
-// 맑은 하늘의 확산 수평조도 [lx] = ∫ Y(θ,φ)·cosθ dΩ (상반구).
-// 운량 혼합에서 맑은 성분을 '단위 조도당' 으로 정규화하려면 이 값이 필요하다.
-// (Tb, thS) 로 캐시 — 프레임마다 8천 번 적분하면 못 쓴다.
-const _skyEdCache = new Map();
-function skyDiffuseHorizClear(Tb, thS) {
-  const key = Tb.toFixed(2) + '|' + thS.toFixed(3);
-  const hit = _skyEdCache.get(key);
-  if (hit !== undefined) return hit;
-  const NT = 48, NP = 96, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP;
-  let E = 0;
+// ─── 구름 모양 ───
+// 운량은 '하늘이 얼마나 덮였나' 라는 양이고, 여기서는 '어디가 덮였나' 를 그린다.
+// 결정론적 값 노이즈 + fBm — 새로고침마다 구름이 움직이면 렌더 비교가 불가능해진다.
+function _skyHash(x, y) {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+function _skyVNoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = _skyHash(xi, yi), b = _skyHash(xi + 1, yi), c = _skyHash(xi, yi + 1), d = _skyHash(xi + 1, yi + 1);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+const _SKY_FBM_OCT = 5, _SKY_FBM_NORM = 1 / (1 - Math.pow(0.5, _SKY_FBM_OCT));
+function _skyFbm(x, y) {
+  let s = 0, a = 0.5, f = 1;
+  for (let i = 0; i < _SKY_FBM_OCT; i++) { s += a * _skyVNoise(x * f, y * f); a *= 0.5; f *= 2; }
+  return s * _SKY_FBM_NORM;   // 대략 [0,1]
+}
+const _sstep = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0 || 1e-9))); return t * t * (3 - 2 * t); };
+// 구름층의 시야 압축 — 방향을 구름 '평면' 에 투영한다. 천정은 성기고 지평선으로 갈수록 촘촘해진다
+// (실제로 구름이 지평선에서 뭉쳐 보이는 이유). dz 가 0 에 가까우면 좌표가 폭주하므로 잘라낸다.
+const SKY_CLOUD_TILE = 1.7;      // 하늘을 가로지르는 구름 덩어리 개수 (클수록 작은 구름)
+const SKY_CLOUD_SOFT = 0.13;     // 가장자리 부드러움
+// ─── 임계값 보정 ───
+// 임계값을 그냥 (1−운량) 으로 두면 안 된다. fBm 값이 0.5 근처에 몰려 있어서 덮임 비율이
+// 임계값에 대해 심하게 비선형이다 — 실측: 운량 20% 로 두면 하늘의 1% 만 덮였고,
+// 그 1% 가 확산광 20% 를 지느라 정규화 계수가 31 배로 튀어 구름이 발광하는 덩어리가 됐다.
+// 그래서 fBm 값의 '코사인 가중 분포' 를 미리 구해 분위수로 임계값을 정한다.
+// 구름장과 투영이 고정이라 이 분포도 고정이다 — 처음 쓸 때 한 번만 만든다.
+let _skyCloudQ = null;
+function skyCloudQuantiles() {
+  if (_skyCloudQ) return _skyCloudQ;
+  const NT = 64, NP = 128, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP;
+  const arr = [];
+  let W = 0;
+  for (let i = 0; i < NT; i++) {
+    const th = (i + 0.5) * dth, st = Math.sin(th), ct = Math.cos(th);
+    if (ct <= 0.03) continue;                 // 지평선 근처는 마스크가 평균값이라 분포에 안 들어간다
+    const t = SKY_CLOUD_TILE / ct;
+    for (let j = 0; j < NP; j++) {
+      const ph = (j + 0.5) * dph;
+      const v = _skyFbm(st * Math.cos(ph) * t, st * Math.sin(ph) * t);
+      const w = ct * st * dth * dph;          // 수평면 조도 기준 = 코사인 가중
+      arr.push(v); arr.push(w); W += w;
+    }
+  }
+  // [값, 가중] 쌍을 값 기준 정렬 (평탄 배열이라 인덱스로 짝을 맞춘다)
+  const n = arr.length / 2, idx = new Array(n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  idx.sort((p, q) => arr[p * 2] - arr[q * 2]);
+  const vs = new Float64Array(n), ws = new Float64Array(n);
+  for (let i = 0; i < n; i++) { vs[i] = arr[idx[i] * 2]; ws[i] = arr[idx[i] * 2 + 1]; }
+  _skyCloudQ = { vs, ws, W };
+  return _skyCloudQ;
+}
+// 덮임 비율이 cc 가 되는 임계값 — 위(밝은 쪽)에서부터 누적 가중이 cc·W 에 닿는 지점.
+// ★한 칸짜리 캐시다. 예전엔 Map + cc.toFixed(3) 였는데, 이 함수는 **텍셀마다** 불린다:
+// 하늘 텍스처 3만 번, 레이트레이싱 환경맵은 52만 번 — 문자열을 52만 개 만들고 있었다.
+// 한 장을 굽는 동안 cc 는 상수라 한 칸이면 100% 적중한다.
+let _skyThK = -1, _skyThV = 0;
+function skyCloudThreshold(cc) {
+  if (cc === _skyThK) return _skyThV;
+  const { vs, ws, W } = skyCloudQuantiles();
+  let acc = 0, th = 0;
+  for (let i = vs.length - 1; i >= 0; i--) {
+    acc += ws[i];
+    if (acc >= cc * W) { th = vs[i]; break; }
+  }
+  _skyThK = cc; _skyThV = th;
+  return th;
+}
+// 방향 → 구름 덮임 0(맑음)~1(구름). 운량이 임계값을 정한다.
+function skyCloudMask(cc, dx, dy, dz) {
+  if (cc <= 0.005) return 0;
+  if (cc >= 0.995) return 1;                 // 완전히 흐리면 모양이 없다 — 하늘 전체가 구름이다
+  if (dz <= 0.03) return cc;                 // 지평선 근처: 뭉개져 평균값 (수치 폭주도 막는다)
+  const t = SKY_CLOUD_TILE / dz;
+  const f = _skyFbm(dx * t, dy * t);
+  const th = skyCloudThreshold(cc);          // 덮임 비율이 실제로 운량과 맞도록 보정된 임계값
+  return _sstep(th - SKY_CLOUD_SOFT, th + SKY_CLOUD_SOFT, f);
+}
+// ─── 하늘 적분 ───
+// 한 번의 격자 순회로 셋을 구한다:
+//   EdClear = ∫ Y_clear·cosθ dΩ        맑은 하늘의 확산 수평조도
+//   A       = ∫ (1−m)·Y_clear·cosθ dΩ  구름이 안 덮은 곳의 맑은 하늘 몫
+//   B       = ∫ m·f_oc·cosθ dΩ         구름이 덮은 곳의 흐림 하늘 몫
+// 여기서 α=(1−cc)·EdClear/A, β=cc·E_oc/B 로 정규화하면 **구름이 어떤 모양이든**
+// 전체 확산조도가 정확히 Ed 가 된다. m≡cc(균일)이면 α=β=1 이라 구름 없던 시절 식과 완전히 같다.
+// 구름은 하늘에 고정돼 있고 태양은 방위를 따라 도므로, 적분은 태양 방위에 불변이 아니다
+// → 캐시 키에 태양 방향이 들어간다 (skyCtx 가 통째로 캐시하므로 프레임당 한 번도 안 돈다).
+function skySolve(K) {
+  const NT = 32, NP = 64, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP;
+  let Ed = 0, A = 0, B = 0;
   for (let i = 0; i < NT; i++) {
     const th = (i + 0.5) * dth, st = Math.sin(th), ct = Math.cos(th);
     for (let j = 0; j < NP; j++) {
       const ph = (j + 0.5) * dph;
-      // 태양 방위를 0 으로 둔 좌표계에서의 태양각 — 적분값은 방위 회전에 불변이다
-      const cg = ct * Math.cos(thS) + st * Math.sin(thS) * Math.cos(ph);
-      const r = skyRadiance(th, Math.acos(Math.max(-1, Math.min(1, cg))), thS, Tb);
-      E += (0.2126 * r[0] + 0.7152 * r[1] + 0.0722 * r[2]) * ct * st * dth * dph;
+      const dx = st * Math.cos(ph), dy = st * Math.sin(ph), dz = ct;
+      const cg = Math.max(-1, Math.min(1, dx * K.sx + dy * K.sy + dz * K.sz));
+      const r = skyRadiance(th, Math.acos(cg), K.thS, K.Tb);
+      const Y = 0.2126 * r[0] + 0.7152 * r[1] + 0.0722 * r[2];
+      const w = ct * st * dth * dph;
+      const m = skyCloudMask(K.cc, dx, dy, dz);
+      Ed += Y * w;
+      A += (1 - m) * Y * w;
+      B += m * ((1 + 2 * ct) / 3) * w;
     }
   }
-  if (_skyEdCache.size > 200) _skyEdCache.clear();
-  _skyEdCache.set(key, E);
-  return E;
+  K.EdClear = Math.max(1e-6, Ed);
+  K.ka = A > 1e-9 ? (1 - K.cc) * K.EdClear / A : 0;
+  K.kb = B > 1e-9 ? K.cc * SKY_OVERCAST_E / B : 0;
 }
+const _skyCtxCache = new Map();
 function skyCtx(S) {
+  // 적분(skySolve)이 들어가면서 이 함수가 비싸졌다 — rviewSyncSun 은 매 프레임 부른다.
+  // 태양 상태가 같으면 결과도 같으므로 통째로 캐시한다 (반환 객체를 고쳐 쓰는 곳은 없다).
+  const ck = [S.y, S.mo, S.d, S.h, S.mi, S.lat, S.lon, S.tz, S.north, skyTurbidity(S), skyCloud(S)].join(',');
+  const hit = _skyCtxCache.get(ck);
+  if (hit) return hit;
+  const K = skyCtxCompute(S);
+  if (_skyCtxCache.size > 64) _skyCtxCache.clear();
+  _skyCtxCache.set(ck, K);
+  return K;
+}
+function skyCtxCompute(S) {
   const sd = sunDirection(S);
   const Tb = skyTurbidity(S), thS = Math.max(0, 90 - sd.alt) * SUN_D2R;
   const up = sd.alt > 0, cc = skyCloud(S);
@@ -7532,26 +7659,28 @@ function skyCtx(S) {
   //   직달:      Edn = Edn_clear · (1 − cc)      (가려지지 않은 비율 근사)
   //   확산:      Ed  = Eg − Edn·sin(고도)        (나머지가 전부 하늘에서 온다)
   // 그래서 흐릴수록 그림자는 사라지지만 하늘 자체는 오히려 밝아진다 — 흐린 날의 실제 모습이다.
-  let Ed = 0, EdClear = 0;
+  const K = { sx: sd.x, sy: sd.y, sz: sd.z, alt: sd.alt, thS, Tb, up, cc, Ed: 0, EdClear: 1, ka: 1, kb: 0 };
   if (up) {
-    EdClear = Math.max(1e-6, skyDiffuseHorizClear(Tb, thS));
+    skySolve(K);                                   // EdClear·ka·kb 를 한 번에
     const sinA = Math.sin(sd.alt * SUN_D2R);
     const EdnClear = sunDirectIlluminanceClear(S);
-    const Eg = (EdnClear * sinA + EdClear) * (1 - 0.75 * Math.pow(cc, 3.4));
-    Ed = Math.max(0, Eg - EdnClear * (1 - cc) * sinA);
+    const Eg = (EdnClear * sinA + K.EdClear) * (1 - 0.75 * Math.pow(cc, 3.4));
+    K.Ed = Math.max(0, Eg - EdnClear * (1 - cc) * sinA);
   }
-  return { sx: sd.x, sy: sd.y, sz: sd.z, alt: sd.alt, thS, Tb, up, cc, Ed, EdClear };
+  return K;
 }
 // 상반구 한 방향의 하늘 radiance — 맑은 성분과 흐린 성분을 운량으로 섞는다.
 // 각 성분을 '단위 조도당' 으로 정규화한 뒤 목표 조도 Ed 를 곱하므로,
 // 혼합해도 수평면 확산조도가 정확히 Ed 가 된다. cc=0 이면 Ed=EdClear 라 예전 값과 동일하다.
-function skyBlend(K, th, gamma, cz, out) {
+function skyBlend(K, th, gamma, dx, dy, dz, out) {
   const c = skyRadiance(th, gamma, K.thS, K.Tb);
-  const w = 1 - K.cc, inv = 1 / K.EdClear;
-  const oc = K.cc * ((1 + 2 * Math.max(0, cz)) / 3) / SKY_OVERCAST_E;
-  out[0] = K.Ed * (w * c[0] * inv + oc * SKY_OVERCAST_RGB[0]);
-  out[1] = K.Ed * (w * c[1] * inv + oc * SKY_OVERCAST_RGB[1]);
-  out[2] = K.Ed * (w * c[2] * inv + oc * SKY_OVERCAST_RGB[2]);
+  const cz = Math.max(0, dz);
+  const m = skyCloudMask(K.cc, dx, dy, dz);              // 이 방향이 구름에 덮였나 (0~1)
+  const w = (1 - m) * K.ka / K.EdClear;                  // 구름 사이로 보이는 맑은 하늘
+  const oc = m * K.kb * ((1 + 2 * cz) / 3) / SKY_OVERCAST_E;  // 구름 자체 (흐림 하늘 분포)
+  out[0] = K.Ed * (w * c[0] + oc * SKY_OVERCAST_RGB[0]);
+  out[1] = K.Ed * (w * c[1] + oc * SKY_OVERCAST_RGB[1]);
+  out[2] = K.Ed * (w * c[2] + oc * SKY_OVERCAST_RGB[2]);
   return out;
 }
 // 씬 좌표(Z-up) 방향 하나의 하늘 radiance [cd/m²]
@@ -7560,11 +7689,13 @@ function skyDirRadiance(K, dx, dy, dz, out) {
   const gamma = Math.acos(Math.max(-1, Math.min(1, dx * K.sx + dy * K.sy + dz * K.sz)));
   const cz = Math.max(-1, Math.min(1, dz));
   if (cz < 0) {   // 아래 반구 = 지표가 되반사하는 빛. 이게 있어야 처마 밑·차양 아래가 죽지 않는다.
-    skyBlend(K, Math.PI / 2 - 0.01, gamma, 0, out);
+    // 지표는 하늘 전체의 평균을 되반사한다 — 구름 무늬까지 비추면 땅에 구름이 찍힌다.
+    // dz=0.01 이면 skyCloudMask 가 평균값(cc)을 주므로 자연히 무늬 없는 평균이 된다.
+    skyBlend(K, Math.PI / 2 - 0.01, gamma, dx, dy, 0.01, out);
     out[0] *= SKY_GROUND_ALBEDO; out[1] *= SKY_GROUND_ALBEDO; out[2] *= SKY_GROUND_ALBEDO;
     return out;
   }
-  return skyBlend(K, Math.acos(cz), gamma, cz, out);
+  return skyBlend(K, Math.acos(cz), gamma, dx, dy, dz, out);
 }
 
 // ─── 방향별 천공광 (구면조화 L2) ───
@@ -7851,7 +7982,7 @@ function rtSyncCamera(T, cam) {
 //   · Raytraced(rt)  = 최종 확인. 화면 밖 기하도 GI·반사·그림자에 기여하므로 컬링 금지.
 // 이 뷰는 '보기용' 프리뷰다. 태양 방향·시간·계절·탁도는 [태양] 패널 값을 그대로 따르지만,
 // 조도 수치의 진실은 조도 분석(illuminanceAt)과 Raytraced 가 담당한다.
-const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: null, sun: null, hemi: null, sig: '', err: null };
+const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: null, sun: null, hemi: null, sig: '', err: null, skyTex: null, skySig: '' };
 // 뷰포트에 종속된 캔버스 — rt 의 inset:0 실수(4분할 전체를 덮음)를 반복하지 않는다.
 function rviewCanvas() {
   if (rview.cv) return rview.cv;
@@ -7913,6 +8044,49 @@ function rviewBuildScene(T) {
   scene.add(rview.hemi);
   return scene;
 }
+// 렌더링 뷰의 하늘 배경 — 실제 하늘(구름 포함)을 equirect 텍스처로 굽는다.
+// 예전엔 천정색 한 점으로 배경을 칠했다. 구름을 그려놓고 보이지 않으면 만든 의미가 없다.
+//
+// ★equirect 규약 — 여기서 한 번 크게 당한 적이 있다(라이브러리마다 축이 다르다).
+// 추측하지 않고 three 의 샘플링 식을 그대로 뒤집는다:
+//     equirectUv(d) = ( atan2(d.z, d.x)/2π + 0.5 , asin(d.y)/π + 0.5 )
+// 텍셀 (u,v) 를 샘플하게 될 방향 W 를 이 식의 역으로 구해, 그 자리에 sky(W) 를 넣는다.
+// 그러면 축이 Y-up 이든 Z-up 이든 상관없다 — 텍스처는 '방향의 함수' 일 뿐이고 매핑을 정확히 뒤집었으니까.
+const RVIEW_SKY_W = 256, RVIEW_SKY_H = 128;
+function rviewSkyTexture(T, S) {
+  const sig = [S.y, S.mo, S.d, S.h, S.mi, S.lat, S.lon, S.tz, S.north, skyTurbidity(S), skyCloud(S), S.enabled].join(',');
+  if (rview.skyTex && rview.skySig === sig) return rview.skyTex;
+  // 조작 중(슬라이더 드래그·궤도)에는 다시 굽지 않는다 — 한 장에 100ms 라 프레임을 다 잡아먹는다.
+  // 손을 떼면 settle 타이머가 정밀 렌더를 다시 돌리고 그때 최신 하늘이 구워진다.
+  // ('조작 중 빠른 렌더 / 멈추면 정확 렌더' — v3._fast 가 이미 쓰는 규약이다)
+  if (v3 && v3._fast && rview.skyTex) return rview.skyTex;
+  const K = skyCtx(S);
+  const sd = sunDirection(S);
+  const diskL = sunDiskLuminance(S);              // 운량이 오르면 같이 흐려진다 (완전히 흐리면 0)
+  const cosDisk = Math.cos(SUN_ANG_RADIUS * 3);   // 배경용이라 원반을 살짝 키워 계단현상을 줄인다
+  const W = RVIEW_SKY_W, H = RVIEW_SKY_H;
+  const data = new Float32Array(W * H * 4);
+  const rgb = [0, 0, 0];
+  for (let y = 0; y < H; y++) {
+    const v = (y + 0.5) / H, elev = (v - 0.5) * Math.PI;
+    const sy = Math.sin(elev), cy = Math.cos(elev);
+    for (let x = 0; x < W; x++) {
+      const u = (x + 0.5) / W, phi = (u - 0.5) * 2 * Math.PI;
+      const wx = cy * Math.cos(phi), wy = sy, wz = cy * Math.sin(phi);   // 이 텍셀을 샘플할 방향
+      skyDirRadiance(K, wx, wy, wz, rgb);
+      const disk = (K.up && (wx * sd.x + wy * sd.y + wz * sd.z) >= cosDisk) ? diskL : 0;
+      const i = (y * W + x) * 4;
+      data[i] = rgb[0] + disk; data[i + 1] = rgb[1] + disk; data[i + 2] = rgb[2] + disk; data[i + 3] = 1;
+    }
+  }
+  if (rview.skyTex) rview.skyTex.dispose();
+  const tex = new T.DataTexture(data, W, H, T.RGBAFormat, T.FloatType);
+  tex.mapping = T.EquirectangularReflectionMapping;
+  tex.minFilter = T.LinearFilter; tex.magFilter = T.LinearFilter;
+  tex.needsUpdate = true;
+  rview.skyTex = tex; rview.skySig = sig;
+  return tex;
+}
 // 태양 방향·세기·하늘색을 현재 sunState 로 — sunLight()(소프트웨어 뷰와 같은 원천)를 재사용
 function rviewSyncSun(T) {
   const sl = sunOn() ? sunLight() : null;
@@ -7938,13 +8112,14 @@ function rviewSyncSun(T) {
     skyDirRadiance(K, 0, 0, 1, zen);
     const mx = Math.max(zen[0], zen[1], zen[2]) || 1;
     rview.hemi.color.setRGB(zen[0] / mx, zen[1] / mx, zen[2] / mx);
-    rview.scene.background = new T.Color(zen[0] / mx, zen[1] / mx, zen[2] / mx)
-      .multiplyScalar(Math.min(1, Math.max(0.25, K.Ed / 60000)));   // 배경은 보기용 — 톤만 맞춘다
+    // 배경 = 실제 하늘 (구름이 여기 보인다). 물리 휘도라 노출이 알아서 압축한다.
+    rview.scene.background = rviewSkyTexture(T, S);
+    rview.scene.backgroundIntensity = 1;
   } else {
     rview.sun.intensity = 0;
     rview.hemi.intensity = state.lights.length ? 2 : 40;         // 야간: 광원이 있으면 캄캄하게, 없으면 형태만 보이게
     rview.hemi.color.setHex(0xbdd3ea);
-    rview.scene.background = new T.Color(0x0a0c14);
+    rview.scene.background = new T.Color(0x0a0c14);   // 밤: 하늘 텍스처를 구울 이유가 없다
   }
 }
 // 매 프레임 — render3D 끝에서 불린다 (궤도·팬 중에도 render3D 가 돌므로 실시간으로 따라온다)
@@ -7954,7 +8129,7 @@ function rviewFrame() {
   const c = rviewCanvas(); if (!c) return;
   // 이 모드가 붙은 뷰포트가 화면에 없으면(레이아웃 변경) 그리지 않는다
   const visible = v3.quad ? (rview.vi >= 0 && rview.vi < 4) : (rview.vi === v3.act);
-  if (!visible || vpIsPlan(rview.vi)) { c.style.display = 'none'; return; }
+  if (!visible || vpIsPlan(rview.vi)) { c.style.display = 'none'; vpHideLabel(rview.vi); return; }
   const sig = rviewSig();
   if (!rview.scene || sig !== rview.sig) { rview.scene = rviewBuildScene(T); rview.sig = sig; }
   // 캔버스를 그 뷰포트 rect 에만 (해상도 캡: dpr 1.5 — D5식 '가벼움 우선')
@@ -7977,8 +8152,10 @@ function rviewFrame() {
 async function cmdRendered() {
   if (!is3DActive() || !v3) { logLine('  렌더링 뷰는 3D 화면에서 켭니다 — view3d 로 열어주세요.', 'warn'); return; }
   if (rview.on) {
+    const was = rview.vi;
     rview.on = false;
-    if (rview.cv) rview.cv.style.display = 'none';
+    if (rview.cv) { rview.cv.style.display = 'none'; rview.cv.style.outline = ''; }
+    vpHideLabel(was);   // 끄면 3D 렌더러가 자기 캔버스에 이름표를 다시 그린다
     logLine('  ▷ 렌더링 뷰 끔 — 작업 표시로 복귀', 'info');
     render3D();
     return;
@@ -10703,7 +10880,9 @@ function renderSunPanel() {
   const live = (id, apply) => {
     const el = $(id); if (!el) return;
     el.addEventListener('pointerdown', startEdit);
-    el.addEventListener('input', () => { startEdit(); apply(el.value); sunApply(); });
+    // markInteract: 드래그 중엔 그림자·하늘 재굽기를 미루고, 멈추면 정밀 렌더로 다시 그린다.
+    // 안 걸면 시각/운량 슬라이더가 매 스텝 하늘을 굽느라 6fps 로 기어간다 (실측).
+    el.addEventListener('input', () => { startEdit(); markInteract(); apply(el.value); sunApply(); });
     el.addEventListener('change', () => { apply(el.value); sunApply(); endEdit(); });
     el.addEventListener('pointerup', endEdit);
     el.addEventListener('lostpointercapture', endEdit);   // 패널 밖에서 손을 뗀 경우
@@ -13126,7 +13305,12 @@ window.__CADTEST__ = {
   rview, rviewFrame, rviewBuildScene, rviewSyncSun, rviewSig, cmdRendered,
   MAT_PRESETS, MAT_ALIAS, matOf, matKey, matHex, matBoxUV, matGeo, matBuild, matTextures, matDrawTex, cmdMaterial, rtGeoSig, bimSolidColor,
   runCommandInput, feedCmdArg,
-  skyCloud, sunDirectIlluminanceClear, skyDiffuseHorizClear, skyBlend, SKY_OVERCAST_E, SKY_OVERCAST_RGB,
+  skyCloud, sunDirectIlluminanceClear, skyBlend, SKY_OVERCAST_E, SKY_OVERCAST_RGB,
+  skyCloudMask, skySolve, skyCtxCompute, _skyFbm, SKY_CLOUD_TILE,
+  skyCloudThreshold, skyCloudQuantiles,
+  rviewSkyTexture, RVIEW_SKY_W, RVIEW_SKY_H,
+  vpIsRendered, vpShowLabel, vpHideLabel, vpLabelEl,
+  markInteract, sunApply, preethamCache,
   weatherName,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
