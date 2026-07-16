@@ -1171,6 +1171,81 @@ function tests(){
     eqi((C.state.entities.find(e => e.id === 1) || {}).bim.h, 2000, '취소하면 원래 높이로 복원된다');
   }
 
+  group('날씨 — 운량과 흐린 하늘 (물리 보존)');
+  {
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { mo: 6, d: 21, h: 12, mi: 0, enabled: true, cloud: 0 });
+
+    // ★하위호환: 운량 0 이면 예전과 한 치도 달라지면 안 된다.
+    //   skyBlend 는 맑은 성분을 EdClear 로 나눴다가 Ed 를 곱한다. cc=0 이면 Ed==EdClear 라 정확히 상쇄된다.
+    const K0 = C.skyCtx(S);
+    eq(K0.cc, 0, '기본 운량 0');
+    eq(K0.Ed, K0.EdClear, '★운량 0 이면 목표 확산조도 = 맑은 하늘 확산조도');
+    for (const d of [[0, 0, 1], [0.7, 0, 0.714], [0, 0.6, 0.8]]) {
+      const n = Math.hypot(d[0], d[1], d[2]);
+      const dx = d[0] / n, dy = d[1] / n, dz = d[2] / n;
+      const gam = Math.acos(Math.max(-1, Math.min(1, dx * K0.sx + dy * K0.sy + dz * K0.sz)));
+      const b = [0, 0, 0];
+      C.skyBlend(K0, Math.acos(dz), gam, dz, b);
+      const r = C.skyRadiance(Math.acos(dz), gam, K0.thS, K0.Tb);
+      for (let i = 0; i < 3; i++) eq(b[i], r[i], `★운량 0 이면 skyBlend == skyRadiance (ch${i})`, Math.abs(r[i]) * 1e-9 + 1e-9);
+    }
+    eq(C.sunDirectIlluminance(S), C.sunDirectIlluminanceClear(S), '★운량 0 이면 직달 = 맑은 하늘 직달');
+
+    // 직달 — 가려진 만큼 줄고 완전히 흐리면 0 (그림자가 사라지는 이유)
+    const dn0 = C.sunDirectIlluminanceClear(S);
+    S.cloud = 50; eq(C.sunDirectIlluminance(S), dn0 * 0.5, '운량 50% → 직달 절반', dn0 * 1e-6);
+    S.cloud = 100; eq(C.sunDirectIlluminance(S), 0, '★완전히 흐리면 직달 0');
+
+    // 전천 조도 — Kasten–Czeplak: Eg = Eg_clear·(1 − 0.75·cc^3.4). cc=1 이면 정확히 25%.
+    const Eg = (cc) => { S.cloud = cc * 100; const K = C.skyCtx(S);
+      return C.sunDirectIlluminance(S) * Math.sin(C.solarPosition(S).alt * Math.PI / 180) + K.Ed; };
+    const g0 = Eg(0);
+    eq(Eg(1) / g0, 0.25, '★완전히 흐리면 전천 조도가 맑을 때의 25% (Kasten–Czeplak)', 1e-3);
+    ok(Eg(0.5) < g0 && Eg(0.5) > Eg(1), '운량이 오를수록 전천 조도는 단조 감소');
+
+    // ★핵심: 흐려도 빛이 사라지는 게 아니라 직달 → 확산으로 옮겨간다.
+    //   이게 깨지면 '흐린 날 화면이 새까매지는' 버그가 된다 (실제로 그렇게 만들었다가 실측으로 잡았다).
+    S.cloud = 0; const ed0 = C.skyCtx(S).Ed;
+    S.cloud = 50; const ed50 = C.skyCtx(S).Ed;
+    ok(ed50 > ed0, '★구름이 끼면 천공광은 오히려 밝아진다 (직달이 확산으로 옮겨감)');
+    S.cloud = 100; const ed100 = C.skyCtx(S).Ed;
+    ok(ed100 > g0 * 0.15, '★완전히 흐려도 천공광은 상당히 남는다 (까맣지 않다)');
+    ok(ed50 > ed100, '천공광은 반쯤 흐릴 때 가장 밝다 (구름이 햇빛을 하늘로 흩뿌린다)');
+
+    // 흐린 하늘의 모양 — Moon–Spencer L(θ) = Lz(1+2cosθ)/3, 천정이 지평선의 3배
+    S.cloud = 100;
+    const K1 = C.skyCtx(S), zen = [0, 0, 0], hor = [0, 0, 0];
+    C.skyBlend(K1, 0, Math.PI / 2, 1, zen);
+    C.skyBlend(K1, Math.PI / 2, Math.PI / 2, 0, hor);
+    const Y = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    eq(Y(zen) / Y(hor), 3, '★흐린 하늘은 천정이 지평선의 3배 (Moon–Spencer)', 0.02);
+
+    // 흐린 하늘을 실제로 반구 적분하면 목표 확산조도가 나와야 한다 (모양과 밝기가 따로 놀면 안 된다)
+    let E = 0; const NT = 48, NP = 48, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP, t = [0, 0, 0];
+    for (let i = 0; i < NT; i++) {
+      const th = (i + 0.5) * dth, st = Math.sin(th), ct = Math.cos(th);
+      for (let j = 0; j < NP; j++) {
+        const ph = (j + 0.5) * dph;
+        C.skyDirRadiance(K1, st * Math.cos(ph), st * Math.sin(ph), ct, t);
+        E += Y(t) * ct * st * dth * dph;
+      }
+    }
+    eq(E / K1.Ed, 1, '★흐린 하늘 반구 적분 = 목표 확산조도', 0.02);
+
+    // 새 적분이 기존 천공광(SH)과 어긋나면 안 된다 — 하늘의 진실이 둘이 되는 것이다
+    S.cloud = 0;
+    const K2 = C.skyCtx(S), sh = C.skyProjectSH(S), o = [0, 0, 0];
+    C.skyIrradiance(sh, 0, 0, 1, o);
+    ok(Math.abs(K2.EdClear - Y(o)) / Y(o) < 0.06, '★skyDiffuseHorizClear 가 기존 SH 천공광과 일치 (L2 SH 오차 내)');
+
+    // 날씨 이름
+    eqi(C.weatherName(0), '맑음', '운량 0 = 맑음');
+    eqi(C.weatherName(1), '완전히 흐림', '운량 100% = 완전히 흐림');
+    ok(C.weatherName(0.5) !== C.weatherName(0), '중간 운량은 다른 이름');
+    S.cloud = 0; S.enabled = false;
+  }
+
   group('명령 인자 — "명령 인자" 형태가 실제로 먹어야 한다');
   {
     // 회귀 방지: 디스패처가 입력 '전체'를 별칭 표에서 찾기만 해서, 인자를 받도록 만든 명령

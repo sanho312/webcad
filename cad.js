@@ -6357,6 +6357,7 @@ function sunDefaults() {
     y: 2026, mo: 6, d: 21, h: 12, mi: 0,
     north: 0,        // 진북 방위 — 평면의 +Y 에서 시계방향으로 몇 도 돌아갔나
     turbidity: 3,    // 대기 탁도 — 2=매우 맑음 … 10=뿌옇게 흐림
+    cloud: 0,        // 운량(%) — 0=맑음 … 100=완전히 흐림. 탁도와 다른 축이다(아래 skyCloud 참고)
   };
 }
 function sunState() { return state.sun || (state.sun = sunDefaults()); }
@@ -6432,11 +6433,35 @@ function sunRayleighDepth(m) {
 // 직달 법선 조도(lux). Linke 탁도 T 로 소광. E = E0 · exp(−T · δR(m) · m)
 // 검산: T=2, 태양 천정(m=1) → 128000·exp(−2·0.121) ≈ 100,500 lx.
 //       교과서의 '맑은 날 정오 직달조도 ≈ 100,000 lx' 와 일치한다 — 상수를 맞춘 게 아니라 맞아떨어진 것.
-function sunDirectIlluminance(S) {
+// 운량 → 사람이 읽는 날씨 이름 (기상 관례의 대략적 구간)
+function weatherName(cc) {
+  const p = Math.round(cc * 100);
+  if (p <= 10) return '맑음';
+  if (p <= 40) return '구름 조금';
+  if (p <= 70) return '구름 많음';
+  if (p < 100) return '흐림';
+  return '완전히 흐림';
+}
+// 운량 0~1. 탁도와 혼동하면 안 된다:
+//   탁도 = 대기의 '뿌옇기'(에어로졸). Preetham 은 이걸로 맑은 하늘의 색·분포만 바꾼다.
+//   운량 = 구름이 하늘을 덮은 비율. 구름은 태양을 가리고 하늘을 균일한 회색으로 만든다.
+// Preetham 은 애초에 '맑은 하늘' 모델이라 탁도를 아무리 올려도 흐린 날이 되지 않는다.
+// (그래서 탁도는 2~6 으로 묶어 뒀다 — 그 밖은 이 모델이 보증하지 않는다.)
+const skyCloud = (S) => Math.min(1, Math.max(0, (S && S.cloud || 0) / 100));
+// 구름이 없을 때의 직달 법선 조도 [lx] — 하늘 모델의 기준값이다.
+function sunDirectIlluminanceClear(S) {
   const alt = solarPosition(S).alt;
   if (alt <= 0) return 0;
   const m = sunAirMass(alt);
   return SUN_E0_LUX * Math.exp(-Math.max(1, S.turbidity) * sunRayleighDepth(m) * m);
+}
+// 실제 직달 조도 — 구름에 가려진 만큼 준다.
+// (1-cc) 는 '태양이 구름에 가려지지 않은 비율' 근사다. 완전히 흐리면(cc=1) 직달은 0 이고
+// 그림자도 사라진다 — 흐린 날 그림자가 없는 게 바로 이것이다.
+// 이 함수가 직달의 유일한 진실이라, 여기에 운량을 넣으면 소프트웨어 뷰·렌더링 뷰·
+// 레이트레이싱·조도 분석이 전부 자동으로 따라온다 (sunLight/rviewSyncSun/rtMakeSky 가 이걸 쓴다).
+function sunDirectIlluminance(S) {
+  return sunDirectIlluminanceClear(S) * (1 - skyCloud(S));
 }
 // 태양 원반의 휘도(cd/m²) = 직달조도 / 입체각.
 // 검산: 맑은 날 ≈ 100000/6.8e-5 ≈ 1.5e9 cd/m² — 알려진 태양 휘도 1.6e9 과 같은 자릿수.
@@ -7462,13 +7487,72 @@ function cmdExposure(arg) {
 // 아래 두 곳이 이 함수를 공유한다 → 3D 미리보기의 하늘과 Raytraced 의 하늘이 어긋날 수 없다.
 //   ① 3D 뷰의 천공광(SH 투영)   ② Raytraced 환경맵(rtMakeSky)
 // 태양 원반은 여기 넣지 않는다 — 직사광은 따로 다룬다(3D 뷰는 sunLight, RT 는 원반 텍셀).
+// ─── 날씨: 운량과 흐린 하늘 ───
+// Preetham(맑음)과 Moon–Spencer(흐림)를 운량으로 섞는다.
+//   흐린 하늘 L(θ) = Lz·(1 + 2cosθ)/3  — 천정이 지평선의 3배. 고전적 CIE 흐림 하늘.
+//   Lz=1 일 때 수평면 조도 E = ∫L·cosθ dΩ = 2π/3·[1/2 + 2/3] = 7π/9 (직접 적분해서 나온 값).
+const SKY_OVERCAST_E = 7 * Math.PI / 9;
+// 흐린 하늘은 파랗지 않다 — 약간 찬 회백색. 광도(luminance)가 정확히 1 이 되도록 정규화해서
+// '색'과 '밝기'를 분리한다 (밝기는 아래 Ed 가 정한다).
+const SKY_OVERCAST_RGB = (() => {
+  const c = [0.94, 0.99, 1.10];
+  const Y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  return [c[0] / Y, c[1] / Y, c[2] / Y];
+})();
+// 맑은 하늘의 확산 수평조도 [lx] = ∫ Y(θ,φ)·cosθ dΩ (상반구).
+// 운량 혼합에서 맑은 성분을 '단위 조도당' 으로 정규화하려면 이 값이 필요하다.
+// (Tb, thS) 로 캐시 — 프레임마다 8천 번 적분하면 못 쓴다.
+const _skyEdCache = new Map();
+function skyDiffuseHorizClear(Tb, thS) {
+  const key = Tb.toFixed(2) + '|' + thS.toFixed(3);
+  const hit = _skyEdCache.get(key);
+  if (hit !== undefined) return hit;
+  const NT = 48, NP = 96, dth = (Math.PI / 2) / NT, dph = 2 * Math.PI / NP;
+  let E = 0;
+  for (let i = 0; i < NT; i++) {
+    const th = (i + 0.5) * dth, st = Math.sin(th), ct = Math.cos(th);
+    for (let j = 0; j < NP; j++) {
+      const ph = (j + 0.5) * dph;
+      // 태양 방위를 0 으로 둔 좌표계에서의 태양각 — 적분값은 방위 회전에 불변이다
+      const cg = ct * Math.cos(thS) + st * Math.sin(thS) * Math.cos(ph);
+      const r = skyRadiance(th, Math.acos(Math.max(-1, Math.min(1, cg))), thS, Tb);
+      E += (0.2126 * r[0] + 0.7152 * r[1] + 0.0722 * r[2]) * ct * st * dth * dph;
+    }
+  }
+  if (_skyEdCache.size > 200) _skyEdCache.clear();
+  _skyEdCache.set(key, E);
+  return E;
+}
 function skyCtx(S) {
   const sd = sunDirection(S);
-  return {
-    sx: sd.x, sy: sd.y, sz: sd.z, alt: sd.alt,
-    thS: Math.max(0, 90 - sd.alt) * SUN_D2R,
-    Tb: skyTurbidity(S), up: sd.alt > 0,
-  };
+  const Tb = skyTurbidity(S), thS = Math.max(0, 90 - sd.alt) * SUN_D2R;
+  const up = sd.alt > 0, cc = skyCloud(S);
+  // 목표 확산 수평조도 Ed — 구름이 빛을 '없애는' 게 아니라 '직달에서 확산으로 옮긴다'.
+  //   전천 조도: Kasten–Czeplak(1980)  Eg = Eg_clear · (1 − 0.75·cc^3.4)
+  //   직달:      Edn = Edn_clear · (1 − cc)      (가려지지 않은 비율 근사)
+  //   확산:      Ed  = Eg − Edn·sin(고도)        (나머지가 전부 하늘에서 온다)
+  // 그래서 흐릴수록 그림자는 사라지지만 하늘 자체는 오히려 밝아진다 — 흐린 날의 실제 모습이다.
+  let Ed = 0, EdClear = 0;
+  if (up) {
+    EdClear = Math.max(1e-6, skyDiffuseHorizClear(Tb, thS));
+    const sinA = Math.sin(sd.alt * SUN_D2R);
+    const EdnClear = sunDirectIlluminanceClear(S);
+    const Eg = (EdnClear * sinA + EdClear) * (1 - 0.75 * Math.pow(cc, 3.4));
+    Ed = Math.max(0, Eg - EdnClear * (1 - cc) * sinA);
+  }
+  return { sx: sd.x, sy: sd.y, sz: sd.z, alt: sd.alt, thS, Tb, up, cc, Ed, EdClear };
+}
+// 상반구 한 방향의 하늘 radiance — 맑은 성분과 흐린 성분을 운량으로 섞는다.
+// 각 성분을 '단위 조도당' 으로 정규화한 뒤 목표 조도 Ed 를 곱하므로,
+// 혼합해도 수평면 확산조도가 정확히 Ed 가 된다. cc=0 이면 Ed=EdClear 라 예전 값과 동일하다.
+function skyBlend(K, th, gamma, cz, out) {
+  const c = skyRadiance(th, gamma, K.thS, K.Tb);
+  const w = 1 - K.cc, inv = 1 / K.EdClear;
+  const oc = K.cc * ((1 + 2 * Math.max(0, cz)) / 3) / SKY_OVERCAST_E;
+  out[0] = K.Ed * (w * c[0] * inv + oc * SKY_OVERCAST_RGB[0]);
+  out[1] = K.Ed * (w * c[1] * inv + oc * SKY_OVERCAST_RGB[1]);
+  out[2] = K.Ed * (w * c[2] * inv + oc * SKY_OVERCAST_RGB[2]);
+  return out;
 }
 // 씬 좌표(Z-up) 방향 하나의 하늘 radiance [cd/m²]
 function skyDirRadiance(K, dx, dy, dz, out) {
@@ -7476,13 +7560,11 @@ function skyDirRadiance(K, dx, dy, dz, out) {
   const gamma = Math.acos(Math.max(-1, Math.min(1, dx * K.sx + dy * K.sy + dz * K.sz)));
   const cz = Math.max(-1, Math.min(1, dz));
   if (cz < 0) {   // 아래 반구 = 지표가 되반사하는 빛. 이게 있어야 처마 밑·차양 아래가 죽지 않는다.
-    const g = skyRadiance(Math.PI / 2 - 0.01, gamma, K.thS, K.Tb);
-    out[0] = g[0] * SKY_GROUND_ALBEDO; out[1] = g[1] * SKY_GROUND_ALBEDO; out[2] = g[2] * SKY_GROUND_ALBEDO;
+    skyBlend(K, Math.PI / 2 - 0.01, gamma, 0, out);
+    out[0] *= SKY_GROUND_ALBEDO; out[1] *= SKY_GROUND_ALBEDO; out[2] *= SKY_GROUND_ALBEDO;
     return out;
   }
-  const v = skyRadiance(Math.acos(cz), gamma, K.thS, K.Tb);
-  out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
-  return out;
+  return skyBlend(K, Math.acos(cz), gamma, cz, out);
 }
 
 // ─── 방향별 천공광 (구면조화 L2) ───
@@ -7588,12 +7670,18 @@ function rtMakeSky(S) {
   const sd = sunDirection(S);
   const sunV = new T3.Vector3(sd.x, sd.y, sd.z).normalize();
   const Tb = skyTurbidity(S);
-  const thS = Math.max(0, 90 - sd.alt) * SUN_D2R;
   const up = sd.alt > 0;
+  // ★하늘은 skyCtx/skyDirRadiance 가 유일한 진실이다.
+  // 예전엔 여기서 skyRadiance 를 직접 불러 하늘을 '두 번째로' 구현하고 있었다. 그래서 날씨(운량)를
+  // skyDirRadiance 에만 넣으면 레이트레이싱만 맑은 하늘로 남는 — 정확히 우리가 평면에서 겪은 —
+  // 이중 구현 사고가 났을 것이다. 같은 함수를 쓰게 해서 그럴 방법 자체를 없앤다.
+  const K = skyCtx({ ...S, turbidity: Tb });
+  const _rgb = [0, 0, 0];
   // 원반이 실제로 덮은 입체각으로 휘도를 정규화 (해상도가 바뀌어도 조도가 같다)
   let diskL = 0;
   if (up) {
     const om = skySunCoverage(sunV, T3);
+    // 운량이 오르면 sunDirectIlluminance 가 줄어 원반도 같이 흐려진다 (완전히 흐리면 0 = 원반 소멸)
     diskL = om > 1e-9 ? sunDirectIlluminance({ ...S, turbidity: Tb }) / om : 0;
   }
   const tex = new P.ProceduralEquirectTexture(SKY_TEX_W, SKY_TEX_H);
@@ -7602,17 +7690,9 @@ function rtMakeSky(S) {
   tex.generationCallback = (polar, uv, coord, color) => {
     skyTexelDir(polar.theta, polar.phi, d);
     // 씬은 Z-up 이다 — rtBuildScene 이 WebCAD 좌표를 그대로 넘긴다. 그래서 천정각을 z 로 잰다.
-    const cz = Math.max(-1, Math.min(1, d.z));
-    const gamma = Math.acos(Math.max(-1, Math.min(1, d.dot(sunV))));
-    if (!up) { color.setRGB(0.006, 0.008, 0.014); return; }     // 해가 지면 어두운 하늘
-    if (cz < 0) {                                               // 아래 반구 = 지표 반사
-      const g = skyRadiance(Math.PI / 2 - 0.01, gamma, thS, Tb);
-      color.setRGB(g[0] * SKY_GROUND_ALBEDO, g[1] * SKY_GROUND_ALBEDO, g[2] * SKY_GROUND_ALBEDO);
-      return;
-    }
-    const s = skyRadiance(Math.acos(cz), gamma, thS, Tb);
-    const disk = d.dot(sunV) >= cosDisk ? diskL : 0;
-    color.setRGB(s[0] + disk, s[1] + disk, s[2] + disk);
+    skyDirRadiance(K, d.x, d.y, d.z, _rgb);   // 소프트웨어 뷰·천공광 SH 와 같은 함수
+    const disk = (up && d.dot(sunV) >= cosDisk) ? diskL : 0;
+    color.setRGB(_rgb[0] + disk, _rgb[1] + disk, _rgb[2] + disk);
   };
   tex.update();
   // ─ half-float 벽 ─
@@ -7848,11 +7928,22 @@ function rviewSyncSun(T) {
     const sc = rview.sun.shadow.camera;
     sc.left = -R; sc.right = R; sc.top = R; sc.bottom = -R; sc.near = 0.01; sc.far = R * 3;
     sc.updateProjectionMatrix();
-    rview.hemi.intensity = Math.max(1500, sunDirectIlluminance(S) * 0.15); // 천공광 근사 (수평 조도의 대략적 비율)
-    rview.scene.background = new T.Color(0x8fa9c4);
+    // 천공광 = 실제 확산 수평조도(skyCtx.Ed). 예전엔 직달의 15% 로 어림했는데, 그러면
+    // 흐린 날(직달 0)에 하늘까지 같이 죽어 화면이 새까매진다 — 실측으로 드러났다(0.8/255).
+    // 흐림의 본질은 '빛이 사라지는 것' 이 아니라 '직달이 확산으로 옮겨가는 것' 이다.
+    const K = skyCtx(S);
+    rview.hemi.intensity = Math.max(0, K.Ed);
+    // 하늘색도 운량을 따라간다 — 맑으면 파랗고 흐리면 회백색
+    const zen = [0, 0, 0];
+    skyDirRadiance(K, 0, 0, 1, zen);
+    const mx = Math.max(zen[0], zen[1], zen[2]) || 1;
+    rview.hemi.color.setRGB(zen[0] / mx, zen[1] / mx, zen[2] / mx);
+    rview.scene.background = new T.Color(zen[0] / mx, zen[1] / mx, zen[2] / mx)
+      .multiplyScalar(Math.min(1, Math.max(0.25, K.Ed / 60000)));   // 배경은 보기용 — 톤만 맞춘다
   } else {
     rview.sun.intensity = 0;
     rview.hemi.intensity = state.lights.length ? 2 : 40;         // 야간: 광원이 있으면 캄캄하게, 없으면 형태만 보이게
+    rview.hemi.color.setHex(0xbdd3ea);
     rview.scene.background = new T.Color(0x0a0c14);
   }
 }
@@ -8128,7 +8219,9 @@ function sunSummary() {
   const S = sunState(), p = solarPosition(S);
   const hhmm = `${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')}`;
   if (p.alt <= 0) return `${S.mo}/${S.d} ${hhmm} · 태양이 지평선 아래 (고도 ${p.alt.toFixed(1)}°)`;
-  return `${S.mo}/${S.d} ${hhmm} · 고도 ${p.alt.toFixed(1)}° 방위 ${p.az.toFixed(0)}° · 직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx`;
+  const cc = skyCloud(S);
+  const w = cc > 0 ? ` · ${weatherName(cc)}(운량 ${Math.round(cc * 100)}%)` : '';
+  return `${S.mo}/${S.d} ${hhmm} · 고도 ${p.alt.toFixed(1)}° 방위 ${p.az.toFixed(0)}°${w} · 직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx · 천공 ${Math.round(skyCtx(S).Ed).toLocaleString()} lx`;
 }
 // 태양이 화면에 반영되도록 갱신한다. 형상은 그대로이므로 BVH 재빌드는 하지 않는다.
 function sunApply() {
@@ -10576,6 +10669,16 @@ function renderSunPanel() {
   const t = $('sunTimeTxt'); if (t) t.textContent = `${String(S.h).padStart(2, '0')}:${String(S.mi).padStart(2, '0')}`;
   const nt = $('sunNorthTxt'); if (nt) nt.textContent = S.north + '°';
   const tt = $('sunTurbTxt'); if (tt) tt.textContent = skyTurbidity(S).toFixed(1);
+  set('sunCloud', Math.round(skyCloud(S) * 100));
+  const ct = $('sunCloudTxt'); if (ct) ct.textContent = Math.round(skyCloud(S) * 100) + '%';
+  const wx = $('sunWeather');
+  if (wx) {
+    const cc = skyCloud(S);
+    // 흐릴수록 직달은 줄고 확산(하늘)은 는다 — 숫자로 보여줘야 '왜 그림자가 없지?' 가 풀린다
+    wx.textContent = p.alt > 0
+      ? `${weatherName(cc)} · 직달 ${Math.round(sunDirectIlluminance(S)).toLocaleString()} lx · 천공 ${Math.round(skyCtx(S).Ed).toLocaleString()} lx`
+      : weatherName(cc);
+  }
   const al = $('sunAlt');
   if (al) al.textContent = S.enabled ? (p.alt > 0 ? `고도 ${p.alt.toFixed(1)}°` : '지평선 아래') : '';
   const info = $('sunInfo');
@@ -10608,6 +10711,17 @@ function renderSunPanel() {
   live('sunTime', v => { const m = Math.max(0, Math.min(1439, +v)); S().h = Math.floor(m / 60); S().mi = m % 60; });
   live('sunNorth', v => { S().north = sunMod(+v, 360); });
   live('sunTurb', v => { S().turbidity = Math.min(SKY_TURBIDITY_MAX, Math.max(SKY_TURBIDITY_MIN, +v)); });
+  live('sunCloud', v => { S().cloud = Math.min(100, Math.max(0, +v)); });
+  // 날씨 프리셋 — 슬라이더를 정확한 숫자에 맞추기 어려우니 한 번에
+  for (const b of document.querySelectorAll('[data-cloud]')) {
+    b.addEventListener('click', () => {
+      pushUndo();
+      S().cloud = +b.dataset.cloud;
+      if (!S().enabled) S().enabled = true;   // 날씨를 고르는 건 '해를 켜겠다'는 뜻이다
+      sunApply();
+      logLine(`  ☁ ${weatherName(skyCloud(S()))} (운량 ${S().cloud}%) — ${sunSummary()}`, 'info');
+    });
+  }
   $('sunDate')?.addEventListener('change', (e) => {
     const t = (e.target.value || '').split('-');
     if (t.length !== 3) return;
@@ -13012,6 +13126,8 @@ window.__CADTEST__ = {
   rview, rviewFrame, rviewBuildScene, rviewSyncSun, rviewSig, cmdRendered,
   MAT_PRESETS, MAT_ALIAS, matOf, matKey, matHex, matBoxUV, matGeo, matBuild, matTextures, matDrawTex, cmdMaterial, rtGeoSig, bimSolidColor,
   runCommandInput, feedCmdArg,
+  skyCloud, sunDirectIlluminanceClear, skyDiffuseHorizClear, skyBlend, SKY_OVERCAST_E, SKY_OVERCAST_RGB,
+  weatherName,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,

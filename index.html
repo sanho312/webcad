@@ -790,10 +790,22 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
               <span id="sunNorthTxt" style="width:42px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"></span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
-              <span style="width:34px;font-size:12px;opacity:.75;">탁도</span>
+              <span style="width:34px;font-size:12px;opacity:.75;" title="대기의 뿌옇기(에어로졸) — 맑은 하늘의 색·분포를 바꾼다">탁도</span>
               <input type="range" id="sunTurb" min="2" max="6" step="0.5" style="flex:1;">
               <span id="sunTurbTxt" style="width:42px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"></span>
             </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <span style="width:34px;font-size:12px;opacity:.75;" title="구름이 하늘을 덮은 비율 — 흐릴수록 직달광이 줄고 그림자가 사라진다">운량</span>
+              <input type="range" id="sunCloud" min="0" max="100" step="5" style="flex:1;">
+              <span id="sunCloudTxt" style="width:42px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"></span>
+            </div>
+            <div style="display:flex;gap:4px;margin-top:6px;">
+              <button class="miniBtn" data-cloud="0" style="flex:1;">맑음</button>
+              <button class="miniBtn" data-cloud="30" style="flex:1;">구름 조금</button>
+              <button class="miniBtn" data-cloud="70" style="flex:1;">구름 많음</button>
+              <button class="miniBtn" data-cloud="100" style="flex:1;">흐림</button>
+            </div>
+            <div id="sunWeather" style="font-size:11px;opacity:.75;margin-top:4px;"></div>
             <div style="display:flex;gap:6px;margin-top:8px;">
               <div style="flex:1;"><div style="font-size:11px;opacity:.7;margin-bottom:2px;">위도</div>
                 <input type="number" id="sunLat" step="0.0001" style="width:100%;"></div>
@@ -888,7 +900,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260716w"></script>
+<script src="cad.js?v=20260716y"></script>
 <script src="ai.js?v=9"></script>
 <script src="nodes.js?v=10"></script>
 <script src="auth-config.js?v=2"></script>
