@@ -1100,6 +1100,47 @@ function tests(){
     ok(V.panX !== pan0, '★휠드래그로 뷰가 이동한다');
     ok(!!P() && P().heightPhase === 'awaitTop', '★이동 중에도 명령이 취소되지 않는다');
 
+    // ★ 커서가 가리키는 화면 높이 = 개체의 실제 높이 (여러 각도에서)
+    // 예전엔 h0 + (anchorPy - py)/k 였는데 k 는 '수평' px/mm 라 Z 축의 cos(pitch) 가 빠져 있었다
+    // → 커서와 높이가 어긋나고, 궤도를 돌리면 k·anchorPy 가 클릭 시점 값이라 더 어긋났다.
+    let worst = 0;
+    for (const [pd, yw] of [[45, 0.6], [25, 0.2], [60, -1.1]]) {
+      C.extrudePendCancel();
+      const en = C.state.entities.find(x => x.id === 1); en.bim.h = 2000;
+      C.state.selection.clear();
+      C.INSTANT_CMDS.zoom();
+      const w = V.views[V.act];
+      V.pitch = w.pitch = pd * Math.PI / 180; V.yaw = w.yaw = yw;
+      V.panX = w.panX = 0; V.panY = w.panY = 0;
+      V._fast = false; C.render3D();
+      tap(0, 0, 2000); C.INSTANT_CMDS.extrudesrf(); tap(0, 0, 2000);
+      const cur = C.extrudePend;
+      if (!cur || cur.heightPhase !== 'awaitTop') { worst = 1e9; break; }
+      for (const dy of [-150, -60, 60]) {
+        const pp = C.proj3D(cur.ax, cur.ay, cur.base + cur.val);
+        const target = pp[1] + dy;
+        ev('pointermove', pp[0], target);
+        const back = C.proj3D(cur.ax, cur.ay, cur.base + C.extrudePend.val)[1];
+        worst = Math.max(worst, Math.abs(back - target));
+      }
+    }
+    ok(worst < 1, '★★커서가 가리키는 화면 높이 = 실제 높이 (pitch 45·25·60°, 오차 1px 미만)');
+
+    // ★ 뷰를 돌린 뒤에도 일치해야 한다 (k·anchorPy 를 클릭 시점에 고정하면 여기서 깨진다)
+    {
+      const cur = C.extrudePend;
+      const pp = C.proj3D(cur.ax, cur.ay, cur.base + cur.val);
+      const h0 = cur.val;
+      ev('pointerdown', pp[0], pp[1], 2);
+      for (let i = 1; i <= 5; i++) ev('pointermove', pp[0] + i * 18, pp[1] + i * 6);
+      ev('pointerup', pp[0] + 90, pp[1] + 30, 2);
+      eq(C.extrudePend.val, h0, '회전은 높이를 건드리지 않는다', 1e-6);
+      const q = C.proj3D(cur.ax, cur.ay, cur.base + cur.val);
+      ev('pointermove', q[0], q[1] - 70);
+      const back = C.proj3D(cur.ax, cur.ay, cur.base + C.extrudePend.val)[1];
+      ok(Math.abs(back - (q[1] - 70)) < 1, '★★뷰를 돌린 뒤에도 커서 높이 = 실제 높이');
+    }
+
     // 숫자 입력
     C.extrudeSetVal(3300);
     eqi(P().val, 3300, '숫자 입력이 높이에 반영된다');
