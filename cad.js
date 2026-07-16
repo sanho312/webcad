@@ -3565,8 +3565,11 @@ function bind3D(ov, cv3) {
   let drag = null;
   cv3.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    if (extrudePend && extrudePend.stage === 'height') { // 돌출 높이: 기준점 지정 전엔 좌클릭=기준점(스냅), awaitTop=확정, 우클릭=취소
-      if (e.button === 2) { extrudePendCancel(); return; }
+    // 돌출 높이: 좌클릭=기준점(스냅)/확정. 우드래그=뷰 회전, 휠드래그=뷰 이동은 그대로 살린다 —
+    // 원하는 높이에 정확히 맞추려면 각도를 바꿔가며 봐야 하고, 그 사이 명령이 끊기면 안 된다.
+    // 그래서 버튼 1(휠)·2(우)는 아래 공통 궤도/팬 처리로 흘려보낸다(extrudePend 유지).
+    // 우클릭 '탭'(움직임 없음)은 예전처럼 취소 — pointerup 에서 drag.moved 로 가른다.
+    if (extrudePend && extrudePend.stage === 'height' && e.button !== 1 && e.button !== 2) {
       const rr = cv3.getBoundingClientRect();
       const cpx = (e.clientX - rr.left) * (rr.width ? cv3.width / rr.width : 1);
       const cpy = (e.clientY - rr.top) * (rr.height ? cv3.height / rr.height : 1);
@@ -3574,7 +3577,13 @@ function bind3D(ov, cv3) {
       // 포커싱(confirmFace) 중 같은 객체의 '다른 면'을 클릭하면 그 면으로 재타겟 (윗·아랫·옆면 자유 선택)
       if (extrudePend.srf && extrudePend.heightPhase === 'confirmFace') {
         const f = findFaceAt(cpx, cpy);
-        if (f && extrudePend.items.some(it => it.id === f.eid)) {
+        // ★ '다른 면' 일 때만 재타겟한다. 같은 면을 다시 클릭한 건 '기준점 지정' 이다.
+        // 예전엔 eid 만 봐서, 밀고 있는 면 위에 기준점을 찍으면 명령이 통째로 재시작됐다
+        // → heightPhase 가 confirmFace 에서 못 빠져나와 커서로 높이 조절이 아예 안 됐다.
+        const cur = extrudePend.face;
+        const sameFace = !!(f && cur && f.eid === cur.eid && (f.fk || null) === cur.fk
+          && (f.fi != null ? f.fi : null) === cur.fi && (f.si != null ? f.si : null) === cur.si);
+        if (f && !sameFace && extrudePend.items.some(it => it.id === f.eid)) {
           v3.pickFace = f;
           const ents = extrudePend.items.map(it => state.entities.find(en => en.id === it.id)).filter(Boolean);
           extrudePend = null;
@@ -3693,7 +3702,9 @@ function bind3D(ov, cv3) {
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
   });
   cv3.addEventListener('pointermove', (e) => {
-    if (extrudePend && extrudePend.stage === 'height') { extrudeHover(e); return; } // 돌출 높이 조절 중: 커서 라이브 프리뷰
+    // 돌출 높이 조절 중: 커서 라이브 프리뷰. 단 뷰를 돌리거나 옮기는 중이면 그쪽이 우선 —
+    // 안 그러면 궤도 드래그가 높이 조절로 오인돼 높이가 멋대로 바뀐다.
+    if (extrudePend && extrudePend.stage === 'height' && !(drag && (drag.mode === 'orbit' || drag.mode === 'pan'))) { extrudeHover(e); return; }
     if (!drag && (v3.wallMode || state.tool !== 'select' || osnapEnabled)) { // 작도 가선 + 스냅 마커 (선택 도구에서도 마커 표시)
       const r3 = cv3.getBoundingClientRect();
       const px3 = (e.clientX - r3.left) * (r3.width ? cv3.width / r3.width : 1);
@@ -3825,6 +3836,12 @@ function bind3D(ov, cv3) {
     } else if (drag && drag.mode === 'lift') {
       if (drag.pushed) { renderProps(); logLine(`  ✔ 높이 조절: ${drag.h0} → ${drag.ent.bim.h}`, 'ok'); }
     } else if (drag && e && e.type === 'pointerup') {
+      // 돌출 중 우클릭: '탭'(거의 안 움직임)이면 예전처럼 취소, 드래그였으면 뷰를 돌린 것이므로 명령 유지.
+      if (extrudePend && extrudePend.stage === 'height' && drag.mode === 'orbit' && drag.moved < 4 && e.button === 2) {
+        extrudePendCancel();
+        drag = null; cv3.style.cursor = cursor3D(); saveV3Layout();
+        return;
+      }
       if (drag.mode === 'box' && drag.moved >= 4) applyBox3D(drag);
       else if (drag.moved < 4 && (e.button === 0 || e.pointerType === 'touch')) {
         if (v3.wallMode) wall3DClick(e);
@@ -5537,17 +5554,23 @@ function extrudeHover(e) {
     markInteract();
     return;
   }
-  // 높이 결정: srf·crv 공통으로 모든 객체(대상 자신 포함)의 꼭짓점·중점·모서리·표면 스냅 → 다양한 높이 선택지.
-  // 기준면 위·아래 모두 허용 — 아래 스냅/드래그면 음수(아래 방향 돌출), 0이면 평면.
-  const sn = srfSurfaceSnap(px, py, null);
-  if (sn && sn.z != null) { // 근처 지오메트리/표면 z에 흡착(기준면 아래 포함) → 정확한 높낮이
+  // 높이 결정: 기본은 '기준점 대비 커서의 세로 이동량' — 클릭한 지점에서 마우스로 높낮이를 조절한다.
+  // 스냅은 '다른 객체의 꼭짓점·중점·모서리' 에만 건다. 옆면 밀당(위 ex.side 분기)과 같은 규칙이다.
+  // ★ 예전엔 srfSurfaceSnap(px, py, null) 로 '대상 자신 + 표면' 까지 스냅했다. 그래서:
+  //    · 커서가 자기 윗면 위 → 자기 z 에 붙어 높이가 꿈쩍도 안 함
+  //    · 커서가 바닥으로 나감 → 바닥 표면 z=0 에 붙어 높이가 0 으로 떨어짐
+  //   즉 커서를 따라오지 않고 커서 밑 표면의 z 로 고정됐다. 자라는 자기 자신에 스냅하니
+  //   되먹임까지 생긴다. 옆면 경로엔 이미 '표면 제외·자기 제외' 가 있었는데 높이 경로만 빠져 있었다.
+  const sn = srfSurfaceSnap(px, py, ex._exclude); // 자기 자신 제외 — 자라는 제 모서리에 되끌리지 않게
+  const usable = sn && sn.z != null && sn.kind !== '표면' && sn.kind !== 'surface'; // 표면 스냅 제외(값 널뛰기 방지)
+  if (usable) { // 다른 객체의 꼭짓점·중점·모서리 z 에 흡착 → 높이를 정확히 맞춘다 (기준면 아래면 음수)
     v3.snapHit = sn; v3.snapCursor = [px, py];
     extrudeSetVal(sn.z - ex.base);
     setPrompt(`높이 ${ex.val} · 스냅 z=${Math.round(sn.z)}${sn.kind ? ' (' + sn.kind + ')' : ''} — 클릭/Enter 확정 · 숫자 · Esc`);
-  } else { // 스냅 없으면 기준점 대비 세로 이동량 — 위로 올리면 +, 아래로 내리면 −(아래 방향 돌출)
+  } else { // 기준점 대비 세로 이동량 — 위로 올리면 +, 아래로 내리면 −(아래 방향 돌출)
     v3.snapHit = null; v3.snapCursor = null;
     extrudeSetVal(ex.h0 + (ex.anchorPy - py) / (ex.k || 1));
-    setPrompt(`높이 ${ex.val} — 클릭/Enter 확정 · 숫자 입력 · Esc`);
+    setPrompt(`높이 ${ex.val} — 커서로 조절 · 우드래그=뷰 회전 · 휠드래그=이동 · 클릭/Enter 확정 · 숫자 · Esc`);
   }
   v3.solids = bimSolids();
   markInteract();
@@ -5802,6 +5825,9 @@ function extrudeStart(cmd, sel) {
   const base = items.length ? Math.min(...items.map(it => it.base)) : lvElev();
   const startVal = sideMode ? 0 : ((srf && hasSolid) ? (fromBottom ? -curH : curH) : defH); // 아랫면: 음수 시작 · 옆면: 이동량 0에서 시작
   extrudePend = { cmd, srf, stage: 'height', heightPhase: 'awaitBase', items, cx: c.x, cy: c.y, val: startVal, anchorPy: null, h0: 0, k: 0, cap: lastExtrudeCap, base, _exclude: new Set(items.map(it => it.id)), applied: false, fromBottom, side: sideMode };
+  // 지금 밀고 있는 면을 기억한다 — '같은 면 다시 클릭' 과 '다른 면으로 재타겟' 을 구별하기 위해.
+  // 이게 없으면 기준점을 그 면 위에 찍는 순간 재타겟으로 오인해 명령이 재시작된다.
+  extrudePend.face = pf ? { eid: pf.eid, fk: pf.fk || null, fi: pf.fi != null ? pf.fi : null, si: pf.si != null ? pf.si : null } : null;
   if (!srf && typeof merge2 !== 'undefined' && merge2) extrudePend.merge2 = merge2; // 생성 시점 병합 예약
   if (srf) { // 면 밀당: 기존 솔리드는 현재 높이로 그대로 보이게, 화면 클릭/숫자로 높이·이동 조절 (스냅)
     if (sideMode) extrudePend.applied = true; // 옆면: 기존 솔리드의 발자국만 움직임 — 종류/높이 안 건드림

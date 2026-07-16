@@ -1047,6 +1047,69 @@ function tests(){
     S.enabled = false;
   }
 
+  group('extrudesrf 흐름 계약 — 면 클릭 → 기준점 → 커서/숫자');
+  {
+    // 사용자가 여러 번 못박은 계약이다. 깨지면 여기서 잡는다.
+    reset();
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', color: '#c8c4bc', closed: true,
+      points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'column', base: 0, h: 2000 } }]);
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V = C.v3;
+    V.pitch = 45 * Math.PI / 180; V.yaw = 0.6;
+    C.INSTANT_CMDS.zoom();
+    V._fast = false; C.render3D();
+    const cv = V.cv;
+    const toC = (px, py) => { const r = cv.getBoundingClientRect(); return [r.left + px / (cv.width / (r.width || cv.width)), r.top + py / (cv.height / (r.height || cv.height))]; };
+    const ev = (type, px, py, btn) => { const [a, b] = toC(px, py); cv.dispatchEvent(new PointerEvent(type, { clientX: a, clientY: b, button: btn || 0, pointerId: 1, bubbles: true })); };
+    const tap = (wx, wy, wz, btn) => { const p = C.proj3D(wx, wy, wz); ev('pointerdown', p[0], p[1], btn); ev('pointerup', p[0], p[1], btn); };
+    const P = () => C.extrudePend;
+
+    tap(0, 0, 2000);                       // 윗면 클릭 = 선택
+    eqi(V.pickFace && V.pickFace.fk, 'top', '윗면이 잡힌다');
+    C.INSTANT_CMDS.extrudesrf();
+    eqi(P() && P().heightPhase, 'confirmFace', '명령 직후 = 면 포커싱');
+    ok(P() && P().face && P().face.fk === 'top', '밀고 있는 면을 기억한다 (재타겟 오인 방지)');
+
+    tap(0, 0, 2000);                       // ★ 같은 면 위 클릭 = 기준점 (재시작이 아니다)
+    eqi(P() && P().heightPhase, 'awaitTop', '★기준점 클릭 → 높이 조절 단계로 (재시작 아님)');
+
+    const p0 = C.proj3D(0, 0, 2000);
+    const v0 = P().val;
+    ev('pointermove', p0[0], p0[1] - 140);
+    const vUp = P().val;
+    ok(vUp > v0, '★커서를 올리면 높이가 오른다 (커서를 따라온다)');
+    ev('pointermove', p0[0], p0[1] + 140);
+    ok(P().val < vUp, '★커서를 내리면 높이가 내린다');
+    ok(P().val > 0, '★바닥 위로 커서를 옮겨도 0 으로 떨어지지 않는다 (표면 스냅 제외)');
+
+    // 우드래그 = 뷰 회전, 명령은 유지되고 높이는 안 건드린다
+    ev('pointermove', p0[0], p0[1] - 120);
+    const vBefore = P().val, yaw0 = V.yaw;
+    ev('pointerdown', p0[0], p0[1] - 120, 2);
+    for (let i = 1; i <= 5; i++) ev('pointermove', p0[0] + i * 15, p0[1] - 120);
+    ev('pointerup', p0[0] + 75, p0[1] - 120, 2);
+    ok(V.yaw !== yaw0, '★우드래그로 뷰가 회전한다');
+    ok(!!P() && P().heightPhase === 'awaitTop', '★회전 중에도 명령이 취소되지 않는다');
+    eq(P().val, vBefore, '★회전이 높이를 건드리지 않는다', 1e-6);
+
+    // 휠드래그 = 뷰 이동
+    const pan0 = V.panX;
+    ev('pointerdown', p0[0], p0[1] - 120, 1);
+    for (let i = 1; i <= 5; i++) ev('pointermove', p0[0] + i * 12, p0[1] - 120);
+    ev('pointerup', p0[0] + 60, p0[1] - 120, 1);
+    ok(V.panX !== pan0, '★휠드래그로 뷰가 이동한다');
+    ok(!!P() && P().heightPhase === 'awaitTop', '★이동 중에도 명령이 취소되지 않는다');
+
+    // 숫자 입력
+    C.extrudeSetVal(3300);
+    eqi(P().val, 3300, '숫자 입력이 높이에 반영된다');
+
+    // 우탭(안 움직임) = 취소 → 원래 높이 복원
+    ev('pointerdown', p0[0], p0[1], 2); ev('pointerup', p0[0], p0[1], 2);
+    ok(!P(), '★우클릭 탭은 취소한다');
+    eqi((C.state.entities.find(e => e.id === 1) || {}).bim.h, 2000, '취소하면 원래 높이로 복원된다');
+  }
+
   group('면 피킹은 조명과 무관해야 한다 (extrudesrf 보호)');
   {
     // 회귀 방지: 조명/태양을 켜면 pushLitPoly 가 표시용 면을 잘게 쪼갠다.
