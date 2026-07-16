@@ -7241,6 +7241,8 @@ const rt = {
   // denoise: 미완성이라 기본 OFF에 UI도 없다 — 아래 rtSetupDenoise 주석 참고
   cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: false, err: null,
   vi: -1,                // 이 뷰포트에 묶인다 (-1 = 안 붙음). rview 와 같은 규약 — 자기 칸에만 그린다.
+  q: { spp: 64, bounces: 10, name: '보통' },   // 품질 프리셋 (rtquality)
+  ground: true,          // 렌더 전용 대지 평면 (ground 명령 토글)
   exposure: 0,           // 0 = 환경에 따라 자동 (rtExposure 참고)
 };
 // WebGL2 지원 여부. 결과를 캐시하고 시험용 컨텍스트는 반드시 반납한다 —
@@ -7879,6 +7881,37 @@ function rtExposure() {
 function rtApplyExposure() {
   if (rt.renderer) rt.renderer.toneMappingExposure = rtExposure();
 }
+// ground — 렌더 전용 대지 평면 토글 (렌더링 뷰·레이트레이싱 공통)
+function cmdGround() {
+  rt.ground = !rt.ground;
+  logLine(rt.ground ? '  ▷ 대지 켬 — 건물 밖 그림자가 대지에 떨어집니다 (렌더 전용, 도형 아님)'
+                    : '  ▷ 대지 끔', 'info');
+  if (typeof rview !== 'undefined' && rview) rview.sig = '';
+  if (rt.on) { rt.geoSig = ''; rtLightsChanged(); }
+  if (typeof v3 !== 'undefined' && v3 && is3DActive()) render3D();
+}
+// rtquality — 레이트레이싱 품질 프리셋. 낮음/보통/높음/최고 또는 숫자(spp).
+function cmdRtQuality(arg) {
+  const a = String(arg || '').trim();
+  if (!a) {
+    logLine(`  현재 품질: ${rt.q.name} — ${rt.q.spp} spp · 반사 ${rt.q.bounces}회`, 'info');
+    logLine('  사용법: rtquality 낮음|보통|높음|최고 · rtquality 128 (spp 직접)', 'info');
+    return;
+  }
+  const preset = RT_QUALITY[a];
+  if (preset) {
+    rt.q = { spp: preset.spp, bounces: preset.bounces, name: a };
+  } else {
+    const n = parseInt(a, 10);
+    if (!isFinite(n) || n < 1) { logLine(`  ✗ 모르는 품질: ${a} — 낮음/보통/높음/최고 또는 숫자`, 'warn'); return; }
+    rt.q = { spp: Math.min(8192, n), bounces: rt.q.bounces, name: n + 'spp' };
+  }
+  logLine(`  ✔ 레이트레이싱 품질 ${rt.q.name} — ${rt.q.spp} spp · 반사 ${rt.q.bounces}회`, 'ok');
+  if (rt.on && rt.tracer) {
+    rt.tracer.bounces = rt.q.bounces;
+    rtReset();               // 품질을 바꾸면 처음부터 다시 누적 (spp 만 늘린 경우도 단순하게 통일)
+  }
+}
 // 라이노에는 없는 개념이라 이름은 렌더러 관례를 따른다.
 function cmdExposure(arg) {
   const a = (arg || '').trim();
@@ -8320,6 +8353,24 @@ function rtAddLights(T, scene, meshLm) {
     }
   }
 }
+// ── 렌더 전용 대지 평면 ──
+// 건물이 검은 허공에 떠 있으면 그림자가 갈 곳이 없어 렌더가 죽는다 — D5 가 항상 대지를 까는 이유.
+// 알베도는 하늘 모델이 이미 가정하는 SKY_GROUND_ALBEDO(0.2) 와 맞춘다: 천공광의 아래 반구
+// 반사율과 실제 바닥 반사율이 같아야 조명이 자기모순이 없다.
+// z 는 대지 기준면(레벨 0) 바로 아래 — 슬래브 윗면(z=0)과 겹치면 z-파이팅이 난다.
+// 도형이 아니다: 선택·스냅·저장 어디에도 없고 렌더 씬에만 존재한다. ground 명령으로 토글.
+const GROUND_Z_MM = -3;
+function groundSizeMM() { return Math.max(60000, ((v3 && v3.fit) || 10000) * 6); }
+function makeGroundMesh(T, forRt) {
+  const R = groundSizeMM() * RT_MM;
+  const geo = new T.CircleGeometry(R, 48);
+  const mat = new T.MeshStandardMaterial({ color: new T.Color(SKY_GROUND_ALBEDO, SKY_GROUND_ALBEDO * 0.98, SKY_GROUND_ALBEDO * 0.92), roughness: 0.95, metalness: 0 });
+  const m = new T.Mesh(geo, mat);
+  m.position.z = GROUND_Z_MM * RT_MM;   // CircleGeometry 는 XY 평면 = 우리 씬의 바닥 방향 그대로
+  if (!forRt) { m.receiveShadow = true; }
+  m.userData.ground = true;
+  return m;
+}
 function rtBuildScene(T) {
   const scene = new T.Scene();
   scene.background = new T.Color(0x000000);   // 실내 조명 검토 기본 = 완전한 어둠 (§2.2)
@@ -8349,6 +8400,7 @@ function rtBuildScene(T) {
     mesh.userData.eid = eid;
     scene.add(mesh);
   }
+  if (rt.ground) scene.add(makeGroundMesh(T, true));   // 대지 — GI·그림자를 받는다 (도형 아님)
   rtAddLights(T, scene, meshLm);   // 나머지 루멘은 해석적 광원이 낸다 (노이즈 제거)
   rt.triCount = triCount;
   return scene;
@@ -8423,6 +8475,7 @@ function rviewBuildScene(T) {
     mesh.userData.eid = eid;
     scene.add(mesh);
   }
+  if (rt.ground) scene.add(makeGroundMesh(T, false));   // 대지 — 그림자를 받는다 (rt 와 같은 토글)
   // 인공 광원 — lightSources()(소프트웨어 뷰·조도 분석과 같은 원천)에서 위치/색/광속을 가져온다.
   // PointLight 물리 단위 = cd → lm/4π. 그림자 맵은 비싸므로 광속 상위 4개까지만 그림자를 켠다.
   const arts = lightSources().filter(g => !g.sun);
@@ -8437,8 +8490,10 @@ function rviewBuildScene(T) {
   // 태양·하늘 — 매 프레임 rviewSyncSun 이 [태양] 패널 값(시간·계절·탁도)을 반영한다
   rview.sun = new T.DirectionalLight(0xffffff, 0);
   rview.sun.castShadow = true;
-  rview.sun.shadow.mapSize.set(2048, 2048);
+  rview.sun.shadow.mapSize.set(4096, 4096);   // 2048 은 큰 대지에서 그림자 가장자리가 각졌다
   rview.sun.shadow.bias = -0.0015;
+  rview.sun.shadow.normalBias = 0.02;          // 경사면 acne 방지
+  rview.sun.shadow.radius = 4;                 // PCFSoft 반경 — 실제 반그림자 느낌
   scene.add(rview.sun); scene.add(rview.sun.target);
   rview.hemi = new T.HemisphereLight(0xbdd3ea, 0x4a4640, 0);
   scene.add(rview.hemi);
@@ -8452,7 +8507,8 @@ function rviewBuildScene(T) {
 //     equirectUv(d) = ( atan2(d.z, d.x)/2π + 0.5 , asin(d.y)/π + 0.5 )
 // 텍셀 (u,v) 를 샘플하게 될 방향 W 를 이 식의 역으로 구해, 그 자리에 sky(W) 를 넣는다.
 // 그러면 축이 Y-up 이든 Z-up 이든 상관없다 — 텍스처는 '방향의 함수' 일 뿐이고 매핑을 정확히 뒤집었으니까.
-const RVIEW_SKY_W = 256, RVIEW_SKY_H = 128;
+// 512x256 — 256 은 구름 가장자리가 계단으로 보였다. 굽기는 1회성(캐시)이라 해상도를 올린다.
+const RVIEW_SKY_W = 512, RVIEW_SKY_H = 256;
 function rviewSkyTexture(T, S) {
   const sig = [S.y, S.mo, S.d, S.h, S.mi, S.lat, S.lon, S.tz, S.north, skyTurbidity(S), skyCloud(S), S.enabled].join(',');
   if (rview.skyTex && rview.skySig === sig) return rview.skyTex;
@@ -8623,7 +8679,12 @@ async function rtRebuild() {
     // 작은 장면에선 체감이 없고, 큰 장면은 진입 시 경고로 알린다.
     rt.tracer.setBVHWorker({ generate: (g, o) => Promise.resolve(new B.MeshBVH(g, o)) });
     rt.tracer.renderDelay = 0; rt.tracer.minSamples = 1;
+    // ★파이어플라이(흰 점 노이즈) 억제 — 광택 경로의 분산을 죽이는 라이브러리 공식 레버.
+    //   0 = 끔(물리적으로 가장 정확하지만 점 노이즈가 수백 spp 까지 남는다),
+    //   커질수록 매끈하지만 광택 하이라이트가 뭉개진다. 0.5 는 데모들이 쓰는 관례값.
+    rt.tracer.filterGlossyFactor = 0.5;
   }
+  rt.tracer.bounces = rt.q.bounces;   // 품질 프리셋(rtquality)이 정한 반사 횟수
   await rt.tracer.setSceneAsync(rt.scene, rt.cam);
   rt.geoSig = rtGeoSig();
 }
@@ -8640,12 +8701,21 @@ async function rtRebuild() {
 //   256 spp 6.8초 · 41.7 · 0.160
 // 64 를 넘기면 노이즈가 사실상 평평해진다(남은 값의 대부분은 실제 명암 기울기라 더 내려가지
 // 않는다). 그래서 시간을 4배 더 써도 눈에 보이는 이득이 없다.
-const RT_TARGET_SPP = 64;
+// ── 품질 프리셋 ──
+// spp(샘플 수) = 노이즈, bounces(반사 횟수) = 간접광 깊이. 시간과 품질의 직교하는 두 축이다.
+// '높음' 이 기본값의 4배 시간이 아니라는 점에 주의 — spp 는 선형이지만 초반 수렴이 가파르다.
+const RT_QUALITY = {
+  '낮음':  { spp: 24,  bounces: 5,  ko: '낮음(빠른 확인)' },
+  '보통':  { spp: 64,  bounces: 10, ko: '보통' },
+  '높음':  { spp: 256, bounces: 10, ko: '높음' },
+  '최고':  { spp: 1024, bounces: 15, ko: '최고(오래 걸림)' },
+};
+const RT_TARGET_SPP = 64;   // 하위호환 — rt.q.spp 가 실제 기준
 function rtLoop() {
   if (!rt.on) return;
   rt.raf = requestAnimationFrame(rtLoop);
   if (!rt.tracer) return;
-  const done = (rt.tracer.samples || 0) >= RT_TARGET_SPP;
+  const done = (rt.tracer.samples || 0) >= rt.q.spp;
   // 수렴했으면 그리지 않는다. 캔버스는 마지막 프레임을 그대로 유지한다.
   // 카메라·광원·형상이 바뀌면 rtReset()이 samples를 0으로 되돌려 여기서 다시 돌기 시작한다.
   if (!done) {
@@ -8653,8 +8723,8 @@ function rtLoop() {
   }
   const s = rt.tracer.samples || 0;
   rtHud(rt.tracer.isCompiling ? '셰이더 준비 중…'
-    : (s >= RT_TARGET_SPP ? `${RT_TARGET_SPP} spp · 완료`
-      : `${s < 1 ? 0 : Math.floor(s)}/${RT_TARGET_SPP} spp · 수렴 중…`)
+    : (s >= rt.q.spp ? `${rt.q.spp} spp · 완료 (${rt.q.name})`
+      : `${s < 1 ? 0 : Math.floor(s)}/${rt.q.spp} spp · 수렴 중…`)
       + (rt.env === 'day' ? ' · 주광' : '')
       );
 }
@@ -10130,6 +10200,8 @@ const INSTANT_CMDS = {
   raytrace: cmdRaytrace,
   rendered: cmdRendered,
   material: cmdMaterial,
+  rtquality: cmdRtQuality,
+  ground: cmdGround,
   rtenv: cmdRtEnv,
   sun: cmdSun,
   ies: cmdIes,
@@ -10506,6 +10578,8 @@ const TOOL_KO = {
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
   rendered: '렌더링 뷰 — 실시간 태양·조명·그림자(RENDERED)',
   material: '재질 지정 — 질감·거칠기·투과(MATERIAL)',
+  rtquality: '레이트레이싱 품질 — 낮음/보통/높음/최고(RTQUALITY)',
+  ground: '대지 평면 토글 — 렌더 전용(GROUND)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
   ies: 'IES 배광 파일(IES)',
@@ -10574,6 +10648,8 @@ const CMD_ALIASES = {
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
   rendered: 'rendered', 렌더링: 'rendered', 렌더링뷰: 'rendered', 렌더뷰: 'rendered',
   material: 'material', mat: 'material', 재질: 'material', 재료: 'material',
+  rtquality: 'rtquality', 품질: 'rtquality', 렌더품질: 'rtquality',
+  ground: 'ground', 지면: 'ground', 대지: 'ground',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
   ies: 'ies', 배광: 'ies', iesfile: 'ies',
@@ -13766,6 +13842,7 @@ window.__CADTEST__ = {
   vpIsRendered, vpShowLabel, vpHideLabel, vpLabelEl,
   markInteract, sunApply, preethamCache,
   captureDoc, saveLocal, loadLocal,
+  RT_QUALITY, cmdRtQuality, cmdGround, makeGroundMesh, groundSizeMM, GROUND_Z_MM,
   vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
   vpModeMenu, vpSetMode, closeVpMenu, cycleElev,
   modelExtents, entityExtentPts, fit3D, zoomFit, pushViewPrev, zoomPrev,

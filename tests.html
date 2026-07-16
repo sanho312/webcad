@@ -1744,6 +1744,47 @@ function tests(){
     ok(st.pointerEvents !== 'none', '★이름표는 클릭 가능 (pointer-events 살아있음)');
   }
 
+  group('퀄리티 — 품질 프리셋·대지 평면');
+  {
+    reset();
+    // rtquality — 프리셋과 숫자 지정
+    ok(!!C.RT_QUALITY['보통'] && !!C.RT_QUALITY['높음'], '품질 프리셋 테이블');
+    const q0 = { ...C.rt.q };
+    C.cmdRtQuality('높음');
+    eqi(C.rt.q.spp, 256, '★높음 = 256 spp');
+    C.cmdRtQuality('128');
+    eqi(C.rt.q.spp, 128, '★숫자 지정');
+    C.cmdRtQuality('999999');
+    ok(C.rt.q.spp <= 8192, '★상한이 있다 (무한 렌더 방지)');
+    C.cmdRtQuality('말도안되는값');
+    eqi(C.rt.q.spp, Math.min(8192, 999999) && C.rt.q.spp, C.rt.q.spp, '모르는 값은 기존 유지');
+    C.cmdRtQuality('보통');
+    eqi(C.rt.q.spp, 64, '보통 = 64 spp (기본 복귀)');
+    ok(C.rt.q.bounces === 10, '보통 반사 10회');
+
+    // ground — 대지 평면
+    ok(typeof C.cmdGround === 'function', 'ground 명령 존재');
+    ok(C.rt.ground === true, '★대지 기본 켬 (건물이 허공에 뜨지 않게)');
+    eqi(C.CMD_ALIASES['지면'], 'ground', '한글 별칭 지면');
+    eqi(C.CMD_ALIASES['대지'], 'ground', '한글 별칭 대지');
+    eqi(C.CMD_ALIASES['품질'], 'rtquality', '한글 별칭 품질');
+    // 크기·위치 계약
+    ok(C.GROUND_Z_MM < 0, '★대지는 레벨 0 보다 살짝 아래 (슬래브 윗면과 z-파이팅 방지)');
+    ok(C.GROUND_Z_MM > -50, '너무 깊지 않다 (단차가 보이면 안 된다)');
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    C.v3.fit = 10000;
+    ok(C.groundSizeMM() >= 60000, '★대지는 모델보다 훨씬 크다 (수평선까지)');
+    C.v3.fit = 100000;
+    ok(C.groundSizeMM() >= 600000, '큰 모델이면 대지도 커진다');
+    C.v3.fit = 10000;
+    // 토글 왕복
+    const was = C.rt.ground;
+    C.cmdGround();
+    eqi(C.rt.ground, !was, '토글로 뒤집힌다');
+    C.cmdGround();
+    eqi(C.rt.ground, was, '다시 토글하면 복귀');
+  }
+
   group('덮이는 뷰포트 계약 — 렌더링 뷰·레이트레이싱은 자기 칸에만');
   {
     // 회귀 방지: #rtcv 는 예전에 inset:0 로 오버레이 '전체' 를 덮었고 카메라는 활성 칸 하나만
