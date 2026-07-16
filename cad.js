@@ -8859,7 +8859,10 @@ function rviewFrame() {
 //   ② AO 디버그 출력은 ACES 톤맵의 상단 압축을 통과해 '전멸'로 보인다 — 판정은 반드시 최종 화면 A/B 로.
 //  레이트레이싱에는 넣지 않는다 (패스트레이싱은 진짜 GI — AO 는 근사의 보정일 뿐).
 // ============================================================
-const RVIEW_AO = { radius: 1.2, scale: 2.5, samples: 16 };   // scale = 강도 (ao 명령 0.5~5)
+// thickness 0.25 — 지평선 갱신을 '깊이 차 25cm 이내 연속면' 으로 제한. 기본값 1(m)은 부감
+// 정투영에서 벽 상단 밴드와 안쪽 바닥의 깊이 차가 그 안에 들어와, 개활 바닥에 낫 모양
+// 가짜 음영이 생겼다 (사용자 스크린샷 — 실측: t1→0.25 에서 얼룩 88% 감소, 구석 AO 는 유지).
+const RVIEW_AO = { radius: 1.2, scale: 2.5, samples: 16, thickness: 0.25 };   // scale = 강도 (ao 명령 0.5~5)
 async function rviewLoadFx() {
   if (rview.fx || rview._fxLoading) return;
   rview._fxLoading = true;
@@ -8909,9 +8912,9 @@ function rviewAoRender() {
     rview.composer.setSize(c.width, c.height);         // 내부 타깃까지 전파 (renderer pixelRatio 는 1)
     rview._aoW = c.width; rview._aoH = c.height;
   }
-  const cfg = RVIEW_AO.radius + '|' + RVIEW_AO.scale;
+  const cfg = RVIEW_AO.radius + '|' + RVIEW_AO.scale + '|' + RVIEW_AO.thickness;
   if (rview._aoCfg !== cfg) {
-    rview._ao.updateGtaoMaterial({ radius: RVIEW_AO.radius, distanceExponent: 1, thickness: 1, scale: RVIEW_AO.scale, samples: RVIEW_AO.samples, distanceFallOff: 1, screenSpaceRadius: false });
+    rview._ao.updateGtaoMaterial({ radius: RVIEW_AO.radius, distanceExponent: 1, thickness: RVIEW_AO.thickness, scale: RVIEW_AO.scale, samples: RVIEW_AO.samples, distanceFallOff: 1, screenSpaceRadius: false });
     rview._aoCfg = cfg;
   }
   rview.composer.render();

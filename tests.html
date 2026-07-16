@@ -1777,6 +1777,9 @@ function tests(){
     ok(C.rview.ao === true, '★AO 기본 켬 (렌더링 뷰 표시 필터 — rt 에는 안 넣는다, 패스트레이싱은 진짜 GI)');
     ok(typeof C.cmdAo === 'function' && typeof C.rviewAoRender === 'function', 'ao 명령·렌더 경로 존재');
     ok(C.RVIEW_AO && C.RVIEW_AO.radius >= 0.5 && C.RVIEW_AO.radius <= 3, '★반경 기본값이 건축 스케일(m 단위, 0.5~3)');
+    // thickness 1(m) 은 부감 정투영에서 벽 상단↔안쪽 바닥 깊이차가 들어와 개활 바닥에
+    // 낫 모양 가짜 음영을 만들었다 (사용자 스크린샷) — 0.25 로 얼룩 88% 감소·구석 AO 유지 실측.
+    ok(C.RVIEW_AO.thickness >= 0.1 && C.RVIEW_AO.thickness <= 0.5, '★thickness 는 연속면 스케일(0.1~0.5m) — 1 로 되돌리면 낫 얼룩 재발');
     eqi(C.INSTANT_CMDS['ao'], C.cmdAo, 'INSTANT_CMDS 등록');
     eqi(C.CMD_ALIASES['gtao'], 'ao', 'gtao 별칭');
     eqi(C.CMD_ALIASES['구석음영'], 'ao', '한글 별칭');
