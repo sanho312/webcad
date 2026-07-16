@@ -1614,6 +1614,52 @@ function tests(){
     ok(Math.abs(C.v3.cx - 1000) < 1, 'BIM 기둥의 중심을 맞게 잡는다');
   }
 
+  group('뷰 이름 우클릭 → 표시 모드 메뉴 (vpSetMode 계약)');
+  {
+    // 렌더링 뷰 본체는 실브라우저에서 검증했다 — 여기선 네트워크 없이 되는 상태 전이만 못박는다.
+    reset();
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'column', base: 0, h: 2000 } }]);
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V = C.v3;
+    V.quad = true; V.act = 1;
+
+    ok(typeof C.vpSetMode === 'function', 'vpSetMode 존재');
+    ok(typeof C.vpModeMenu === 'function', 'vpModeMenu 존재');
+    ok(typeof C.closeVpMenu === 'function', 'closeVpMenu 존재');
+
+    // 평면 칸은 렌더링/레이트레이싱을 못 켠다 (도면 표시 전용)
+    C.vpSetMode(0, 'rendered');
+    ok(!(C.rview && C.rview.on), '★평면 칸에는 렌더링 뷰가 켜지지 않는다');
+    ok(C.rt && !C.rt.on, '★평면 칸에는 레이트레이싱이 켜지지 않는다');
+
+    // 메뉴 DOM — 3D 칸은 3항목, 평면 칸은 1항목
+    const doc = V.cv.ownerDocument;
+    const lbl1 = doc.getElementById('vpLabel1') || (C.render3D(), doc.getElementById('vpLabel1'));
+    C.vpModeMenu(1, lbl1 || doc.body);
+    let menu = doc.getElementById('vpModeMenu');
+    ok(!!menu, '3D 칸 우클릭 → 메뉴가 뜬다');
+    eqi(menu.querySelectorAll('[data-mode]').length, 3, '★3D 칸 메뉴는 작업/렌더링/레이트레이싱 3항목');
+    C.closeVpMenu();
+    ok(!doc.getElementById('vpModeMenu'), 'closeVpMenu 로 닫힌다');
+    const lbl0 = doc.getElementById('vpLabel0');
+    C.vpModeMenu(0, lbl0 || doc.body);
+    menu = doc.getElementById('vpModeMenu');
+    eqi(menu.querySelectorAll('[data-mode]').length, 1, '★평면 칸 메뉴는 작업 표시 1항목만');
+    C.closeVpMenu();
+
+    // 이름표가 DOM 으로 4칸 모두 (우클릭을 받으려면 실제 요소여야 한다)
+    V.act = 1; C.render3D();
+    for (let i = 0; i < 4; i++) {
+      const el = doc.getElementById('vpLabel' + i);
+      ok(el && el.style.display !== 'none', `뷰포트 ${i} 이름표가 DOM 으로 뜬다`);
+      eqi(el._vi, i, `이름표가 자기 뷰포트 번호를 안다 (${i})`);
+    }
+    // 이름표는 클릭을 받아야 한다 (pointer-events)
+    const st = getComputedStyle(doc.getElementById('vpLabel1'));
+    ok(st.pointerEvents !== 'none', '★이름표는 클릭 가능 (pointer-events 살아있음)');
+  }
+
   group('덮이는 뷰포트 계약 — 렌더링 뷰·레이트레이싱은 자기 칸에만');
   {
     // 회귀 방지: #rtcv 는 예전에 inset:0 로 오버레이 '전체' 를 덮었고 카메라는 활성 칸 하나만

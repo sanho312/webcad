@@ -177,19 +177,89 @@ function vpLabelEl(i) {
   if (!el && typeof wrap !== 'undefined' && wrap) {
     el = document.createElement('div');
     el.id = id;
-    el.style.cssText = 'position:absolute;z-index:20;font:600 12px -apple-system,system-ui,sans-serif;pointer-events:none;display:none;';
+    // pointer-events:auto — 이름표는 클릭을 받는다(나머지 캔버스는 궤도·작도가 그대로 동작).
+    el.style.cssText = 'position:absolute;z-index:20;font:600 12px -apple-system,system-ui,sans-serif;'
+      + 'cursor:pointer;user-select:none;display:none;padding:1px 5px;border-radius:5px;white-space:nowrap;';
+    el.title = '클릭: 이 뷰를 활성화(입면은 방향 순환) · 우클릭: 표시 모드 선택';
+    // 좌클릭 — 이 뷰포트를 활성으로. 입면이면 방향을 순환(예전 캔버스 히트가 하던 일).
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const vi = el._vi; if (vi == null || !v3) return;
+      if (v3.act !== vi) { saveVp(); v3.act = vi; loadVp(vi); saveV3Layout(); render3D(); }
+      const w = v3.views[vi];
+      if (w && (w.name in ELEV_YAW)) cycleElev(vi);
+    });
+    // 우클릭 — 이름표 밑에 표시 모드 선택창
+    el.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (el._vi != null) vpModeMenu(el._vi, el);
+    });
     wrap.appendChild(el);
   }
   return el;
+}
+// ── 뷰포트 표시 모드 메뉴 ───────────────────────────────
+// 우클릭한 뷰포트 이름 밑에 뜨는 선택창. 작업 표시 / 렌더링 뷰 / 레이트레이싱.
+// 렌더링 뷰·레이트레이싱은 이미 뷰포트에 묶여 있으므로(rview.vi / rt.vi) 같은 메뉴에서 고른다.
+let _vpMenuEl = null;
+function closeVpMenu() { if (_vpMenuEl) { _vpMenuEl.remove(); _vpMenuEl = null; } }
+function vpModeMenu(i, labelEl) {
+  closeVpMenu();
+  const host = document.getElementById('canvasWrap'); if (!host) return;
+  const cur = vpIsRt(i) ? 'raytrace' : (vpIsRendered(i) ? 'rendered' : 'work');
+  const plan = vpIsPlan(i);
+  // 평면 칸은 도면 표시 전용 — 렌더링/레이트레이싱은 뜨지 않는다(눌러봐야 거부되니 아예 안 보여준다)
+  const items = plan ? [['work', '작업 표시']]
+    : [['work', '작업 표시'], ['rendered', '렌더링 뷰'], ['raytrace', '레이트레이싱']];
+  const m = document.createElement('div');
+  m.id = 'vpModeMenu';
+  m.style.cssText = 'position:absolute;z-index:40;background:var(--panel,#161b28);'
+    + 'border:1px solid var(--line,rgba(120,140,180,.3));border-radius:9px;padding:4px;'
+    + 'box-shadow:0 8px 24px rgba(0,0,0,.45);font:13px -apple-system,system-ui,sans-serif;min-width:132px;';
+  m.innerHTML = items.map(([k, label]) =>
+    `<div data-mode="${k}" style="padding:6px 11px;border-radius:6px;cursor:pointer;white-space:nowrap;`
+    + `color:${cur === k ? '#0A84FF' : 'var(--ink,#cfe0ff)'};">${cur === k ? '● ' : '○ '}${label}</div>`).join('');
+  const lr = labelEl.getBoundingClientRect(), hr = host.getBoundingClientRect();
+  m.style.left = (lr.left - hr.left) + 'px';
+  m.style.top = (lr.bottom - hr.top + 3) + 'px';
+  host.appendChild(m);
+  _vpMenuEl = m;
+  for (const it of m.querySelectorAll('[data-mode]')) {
+    it.addEventListener('mouseenter', () => { it.style.background = 'rgba(120,140,180,.16)'; });
+    it.addEventListener('mouseleave', () => { it.style.background = ''; });
+    it.addEventListener('click', () => { const mode = it.dataset.mode; closeVpMenu(); vpSetMode(i, mode); });
+  }
+}
+// 뷰포트 i 를 원하는 표시 모드로. rview·rt 는 한 번에 한 칸만(둘 다 무겁다) → 다른 칸/다른 모드는 끈다.
+async function vpSetMode(i, mode) {
+  if (!v3) return;
+  if (vpIsPlan(i)) {
+    if (mode !== 'work') logLine('  평면 칸은 도면 표시 전용입니다 — 아이소 등 3D 뷰포트에서 렌더링/레이트레이싱을 켜세요.', 'warn');
+    return;
+  }
+  // 메뉴를 연 칸을 활성으로 (라이노: 뷰 이름을 누르면 그 뷰가 활성이 된다). cmdRendered/rtEnter 가 v3.act 를 본다.
+  if (v3.act !== i) { saveVp(); v3.act = i; loadVp(i); saveV3Layout(); }
+  const wantR = mode === 'rendered', wantT = mode === 'raytrace';
+  // 원치 않거나 다른 칸에 걸린 모드를 끈다 (cmdRendered/rtExit 는 토글이라 이렇게 조합한다)
+  if (rt.on && !(wantT && rt.vi === i)) rtExit();
+  if (rview.on && !(wantR && rview.vi === i)) await cmdRendered();
+  // 원하는 모드를 켠다 (v3.act === i 이므로 이 칸에 붙는다)
+  if (wantR && !(rview.on && rview.vi === i)) await cmdRendered();
+  if (wantT && !(rt.on && rt.vi === i)) await rtEnter();
+  render3D();
 }
 function vpHideLabel(i) { const el = document.getElementById('vpLabel' + i); if (el) el.style.display = 'none'; }
 // 덮는 캔버스(cover) 위에 이름표 + 활성 테두리를 그린다 — 다른 칸과 같은 문법으로 보이게
 function vpShowLabel(i, cover) {
   const el = vpLabelEl(i); if (!el) return;
-  const r = vpRectCss(i), active = v3.act === i;
-  el.style.display = ''; el.textContent = v3.views[i].name;
-  el.style.left = (r.x + 8) + 'px'; el.style.top = (r.y + 4) + 'px';
+  const r = vpRectCss(i), active = v3.act === i, w = v3.views[i];
+  el._vi = i;
+  const modeTag = vpIsRt(i) ? ' · 레이트레이싱' : (vpIsRendered(i) ? ' · 렌더링' : '');
+  el.textContent = w.name + ((w.name in ELEV_YAW) ? ' ▾' : '') + modeTag;
+  el.style.display = '';
+  el.style.left = (r.x + 5) + 'px'; el.style.top = (r.y + 3) + 'px';
   el.style.color = active ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
+  el.style.background = active ? 'rgba(10,132,255,.10)' : 'transparent';
   if (cover) {
     cover.style.outline = v3.quad ? (active ? '1.5px solid #0A84FF' : '1px solid rgba(120,140,180,.3)') : '';
     cover.style.outlineOffset = '-1px';
@@ -2982,11 +3052,10 @@ function render3D() {
     const res = renderScene(i === v3.act);
     c.restore();
     v3._fast = keepFast;
-    if (!covered) vpHideLabel(i);   // 덮인 칸의 이름표는 rviewFrame/rtFrame 이 DOM 으로 올린다
+    // 이름표는 항상 DOM 으로 (덮인 칸은 rviewFrame/rtFrame 이 올리고, 일반 칸은 여기서).
+    // 캔버스에 fillText 하던 것을 없앴다 — 우클릭 메뉴를 받으려면 이름표가 실제 요소여야 한다.
+    if (!covered) vpShowLabel(i, null);
     v3.views[i]._faces = res.faces; v3.views[i]._under = res.under; v3.views[i]._pick = res.pick;
-    c.font = `600 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
-    c.fillStyle = i === v3.act ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
-    c.fillText(v3.views[i].name + (v3.views[i].name in ELEV_YAW ? ' ▾' : ''), r.x + 8 * dpr, r.y + 16 * dpr);
     if (v3.quad) {
       c.strokeStyle = i === v3.act ? '#0A84FF' : (getCSS('--line') || 'rgba(120,140,180,.3)');
       c.lineWidth = i === v3.act ? 1.5 : 1;
@@ -3841,14 +3910,7 @@ function bind3D(ov, cv3) {
       try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
       return;
     }
-    // 입면 뷰 라벨 클릭 → 정면/우측면/좌측면/배면 순환 (작도 중엔 클릭을 가로채지 않음)
-    if (e.button === 0 && state.tool === 'select' && !v3.wallMode) {
-      const rl = cv3.getBoundingClientRect();
-      const plx = (e.clientX - rl.left) * (rl.width ? cv3.width / rl.width : 1);
-      const ply = (e.clientY - rl.top) * (rl.height ? cv3.height / rl.height : 1);
-      const li = vpAt(plx, ply), lr = vpRect(li), dpr2 = devicePixelRatio || 1;
-      if (plx <= lr.x + 90 * dpr2 && ply <= lr.y + 22 * dpr2 && cycleElev(li)) return;
-    }
+    // (입면 라벨 클릭은 이제 DOM 이름표가 받는다 — vpLabelEl. 캔버스 히트는 제거했다.)
     // 평면과 동일한 규약: 좌드래그=박스 선택 · 우드래그=회전(고정 뷰는 이동) · Shift/휠버튼=화면 이동 · 터치=회전
     const isTouch = e.pointerType === 'touch';
     const fixedVp = !!v3.views[v3.act].fixed; // 평면·입면: 평행 투영 고정 — 회전 대신 이동
@@ -4092,11 +4154,26 @@ function bind3D(ov, cv3) {
     // 평면 복귀는 상단 [평면|3D] 토글로만 — Esc로는 뷰를 바꾸지 않음
   }, true);
 }
+// 모드 메뉴는 바깥을 누르거나 Esc 로 닫는다 (모듈 로드 시 한 번 등록)
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointerdown', (e) => {
+    if (_vpMenuEl && !_vpMenuEl.contains(e.target)) closeVpMenu();
+  }, true);
+  // ★window capture 로 등록한다. 3D 의 Escape 핸들러(bind3D)가 window capture 에서
+  //   stopPropagation 을 하므로 document bubble 로는 이벤트가 오지 않는다. 모듈 로드 시 등록이라
+  //   bind3D(첫 open3D 시 등록)보다 먼저 실행된다 → 메뉴가 열려 있으면 그 Esc 를 여기서 먹는다
+  //   (Esc 로 메뉴만 닫히고 선택 해제 같은 다른 동작은 일어나지 않게).
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && _vpMenuEl) { closeVpMenu(); e.stopPropagation(); }
+  }, true);
+}
 function close3D() {
   const ov = document.getElementById('bim3d');
   if (ov) ov.style.display = 'none';
   if (v3 && v3.wallMode && v3.setWallMode) v3.setWallMode(false);
   stopLive3D(); syncViewSeg(false);
+  closeVpMenu();
+  for (let k = 0; k < 4; k++) vpHideLabel(k);   // 3D 이름표 정리 (평면으로 나가면 안 보여야)
   syncPlanCv(); // #cv 를 다시 화면 전체로 (평면 칸에 배치돼 있던 인라인 스타일 해제) — resize+draw 포함
   resize();     // 캔버스 크기를 화면 전체로 되돌린다
 }
@@ -8483,6 +8560,7 @@ function rviewFrame() {
   rviewSyncSun(T);
   rview.renderer.toneMappingExposure = rtExposure();
   rview.renderer.render(rview.scene, rview.cam);
+  vpShowLabel(rview.vi, rview.cv);   // 이름표·활성 테두리 (rtFrame 과 대칭 — 없으면 라벨이 옛 텍스트로 고인다)
 }
 // rendered / 렌더링 — 활성 3D 뷰포트를 렌더링 뷰로 토글
 async function cmdRendered() {
@@ -13668,6 +13746,7 @@ window.__CADTEST__ = {
   vpIsRendered, vpShowLabel, vpHideLabel, vpLabelEl,
   markInteract, sunApply, preethamCache,
   vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
+  vpModeMenu, vpSetMode, closeVpMenu, cycleElev,
   modelExtents, entityExtentPts, fit3D, zoomFit, pushViewPrev, zoomPrev,
   matSetX, matCommon, matPropRow, wireMatProp, matRefresh,
   matIsLib, matLibName, matLibGet, matLibSpec, matImgCanvas, matImgShrink, MAT_LIB_PREFIX, MAT_IMG_MAX,
