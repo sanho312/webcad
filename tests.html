@@ -1344,6 +1344,86 @@ function tests(){
     C.INSTANT_CMDS.ies = keep2;
   }
 
+  group('재질 커스터마이즈 — 프리셋 위에 개체별 재정의');
+  {
+    reset();
+    // ★MAT_PRESETS 의 객체는 같은 재질을 쓰는 모든 개체가 공유한다.
+    //   matOf 가 프리셋을 직접 고치면 한 개체의 색을 바꿨는데 다른 개체가 전부 따라 바뀐다.
+    //   반드시 사본에 덮어써야 한다 — 이게 이 기능의 가장 큰 함정이다.
+    const before = JSON.stringify(C.MAT_PRESETS.brick);
+    const a = { id: 1, type: 'LWPOLYLINE', mat: 'brick' };
+    const b = { id: 2, type: 'LWPOLYLINE', mat: 'brick' };
+    C.matSetX(a, 'color', '#00ff00');
+    eqi(C.matOf(a).color, '#00ff00', 'a 의 재질색이 바뀐다');
+    eqi(C.matOf(b).color, C.MAT_PRESETS.brick.color, '★같은 재질의 다른 개체는 안 따라 바뀐다');
+    eqi(JSON.stringify(C.MAT_PRESETS.brick), before, '★프리셋 원본이 변형되지 않는다 (공유 객체)');
+    eqi(C.matOf(b), C.MAT_PRESETS.brick, '재정의가 없으면 프리셋 객체를 그대로 준다 (사본 낭비 없음)');
+
+    // 각 재정의가 독립적으로 먹는다
+    C.matSetX(a, 'scale', 300); C.matSetX(a, 'rough', 0.1); C.matSetX(a, 'metal', 1);
+    eq(C.matOf(a).scale, 300, '질감 크기 재정의');
+    eq(C.matOf(a).rough, 0.1, '거칠기 재정의');
+    eq(C.matOf(a).metal, 1, '금속성 재정의');
+    eqi(C.matOf(a).tex, C.MAT_PRESETS.brick.tex, '안 건드린 값은 프리셋을 따라간다');
+
+    // 해제 — null 이면 프리셋으로
+    C.matSetX(a, 'color', null);
+    eqi(C.matOf(a).color, C.MAT_PRESETS.brick.color, '색만 해제하면 프리셋색으로');
+    eq(C.matOf(a).scale, 300, '다른 재정의는 남는다');
+    C.matSetX(a, 'scale', null); C.matSetX(a, 'rough', null); C.matSetX(a, 'metal', null);
+    ok(a.matx === undefined, '★전부 해제하면 matx 자체가 사라진다 (빈 객체를 남기지 않는다)');
+    eqi(C.matOf(a), C.MAT_PRESETS.brick, '프리셋과 완전히 같아진다');
+
+    // 범위 밖 값은 잘린다 (슬라이더 밖에서 들어올 수 있다 — 저장본·공유 링크)
+    const c = { id: 3, mat: 'brick' };
+    C.matSetX(c, 'rough', 5); C.matSetX(c, 'metal', -2);
+    eq(C.matOf(c).rough, 1, '★거칠기가 1 을 넘으면 잘린다');
+    eq(C.matOf(c).metal, 0, '★금속성이 음수면 잘린다');
+    C.matSetX(c, 'scale', -100);
+    eq(C.matOf(c).scale, C.MAT_PRESETS.brick.scale, '★질감 크기가 0 이하면 프리셋으로 (0 으로 나누면 UV 가 무한대)');
+
+    // 재질이 없으면 재정의도 의미 없다
+    const d = { id: 4, matx: { color: '#ff0000' } };
+    eqi(C.matOf(d), null, '재질이 없으면 재정의가 있어도 null');
+
+    // 표시색도 재정의를 따라간다 (작업 뷰에서 붙었는지 보여야 한다)
+    const e2 = { id: 5, mat: 'wood', layer: '0', matx: { color: '#123456' } };
+    eqi(C.matHex(e2, '#b9b2a6'), '#123456', '재정의한 재질색이 표시색이 된다');
+    eqi(C.bimSolidColor(e2, '#b9b2a6'), '#123456', '작업 뷰 색도 재정의를 따른다');
+    eqi(C.matHex({ color: '#00ff00', mat: 'wood', matx: { color: '#123456' } }, '#b9b2a6'), '#00ff00',
+      '개체색은 여전히 재질색을 이긴다');
+
+    // ★씬 시그니처 — 재정의를 빼먹으면 색·크기를 바꿔도 재빌드가 안 돼 화면이 그대로다
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[0, 0], [1000, 0], [1000, 1000], [0, 1000]], bim: { kind: 'slab', top: 0, t: 100 }, mat: 'brick' }]);
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    C.v3.quad = false; C.v3.act = 1;
+    C.v3.solids = C.bimSolids();
+    const ent = C.state.entities[0];
+    const s0 = C.rtGeoSig();
+    C.matSetX(ent, 'color', '#123456');
+    const s1 = C.rtGeoSig();
+    ok(s0 !== s1, '★색을 재정의하면 씬 시그니처가 바뀐다');
+    C.matSetX(ent, 'scale', 2400);
+    ok(s1 !== C.rtGeoSig(), '★질감 크기를 바꿔도 바뀐다');
+    C.matSetX(ent, 'rough', 0.2);
+    const s3 = C.rtGeoSig();
+    C.matSetX(ent, 'metal', 0.7);
+    ok(s3 !== C.rtGeoSig(), '★거칠기·금속성도 시그니처에 들어간다');
+    delete ent.matx;
+    eqi(C.rtGeoSig(), s0, '재정의를 지우면 원래 시그니처로');
+
+    // 질감 크기가 UV 에 실제로 반영된다 (matBoxUV 가 P.scale 을 쓴다)
+    const tri = [[[0, 0, 0], [1000, 0, 0], [1000, 1000, 0]]];
+    eq(C.matBoxUV(tri, 900)[2], 1000 / 900, '900mm 스케일 → UV');
+    eq(C.matBoxUV(tri, 3000)[2], 1000 / 3000, '★3000mm 로 키우면 UV 가 작아진다 = 무늬가 커진다');
+
+    // 다중 선택 표시 — 값이 섞이면 하나를 골라 보여주면 거짓말이 된다
+    eqi(C.matCommon([{ x: 1 }, { x: 1 }], (o) => o.x), 1, '값이 같으면 그 값');
+    eqi(C.matCommon([{ x: 1 }, { x: 2 }], (o) => o.x), null, '★값이 섞이면 null (거짓말 방지)');
+    eqi(C.matCommon([], (o) => o.x), null, '빈 선택은 null');
+  }
+
   group('재질(PBR) — 세 렌더러가 같은 재질을 본다');
   {
     reset();
