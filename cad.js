@@ -7239,7 +7239,7 @@ const RT_TRI_WARN = 3e6;      // 이 이상이면 진입 전 경고 (§6)
 const rt = {
   on: false, mod: null, tracer: null, renderer: null, scene: null, cam: null,
   // denoise: 미완성이라 기본 OFF에 UI도 없다 — 아래 rtSetupDenoise 주석 참고
-  cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: false, err: null,
+  cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: true, err: null,
   vi: -1,                // 이 뷰포트에 묶인다 (-1 = 안 붙음). rview 와 같은 규약 — 자기 칸에만 그린다.
   q: { spp: 64, bounces: 10, name: '보통' },   // 품질 프리셋 (rtquality)
   ground: true,          // 렌더 전용 대지 평면 (ground 명령 토글)
@@ -8683,6 +8683,7 @@ async function rtRebuild() {
     //   0 = 끔(물리적으로 가장 정확하지만 점 노이즈가 수백 spp 까지 남는다),
     //   커질수록 매끈하지만 광택 하이라이트가 뭉개진다. 0.5 는 데모들이 쓰는 관례값.
     rt.tracer.filterGlossyFactor = 0.5;
+    rtSetupDenoise();   // 표시 필터 — rt.denoise 로 토글 (denoise 명령)
   }
   rt.tracer.bounces = rt.q.bounces;   // 품질 프리셋(rtquality)이 정한 반사 횟수
   await rt.tracer.setSceneAsync(rt.scene, rt.cam);
@@ -8725,6 +8726,7 @@ function rtLoop() {
   rtHud(rt.tracer.isCompiling ? '셰이더 준비 중…'
     : (s >= rt.q.spp ? `${rt.q.spp} spp · 완료 (${rt.q.name})`
       : `${s < 1 ? 0 : Math.floor(s)}/${rt.q.spp} spp · 수렴 중…`)
+      + (rt.denoise ? ' · 디노이즈' : '')
       + (rt.env === 'day' ? ' · 주광' : '')
       );
 }
@@ -8822,34 +8824,78 @@ function rtLightsChanged() {
   rt.tracer.updateMaterials();
   rt.tracer.updateLights();
 }
-// 디노이저 (§2.3) — 미완성. 아직 켜지 않는다.
-//
-// 아래 구현은 효과가 없다는 것이 실측으로 확인됐다. 검증한 내용:
-//   · 콜백은 정상 호출된다 (3초에 240번)
-//   · 콜백을 통한 렌더는 캔버스에 도달한다 (MeshBasicMaterial 로 빨강을 그려 확인)
-//   · 그런데 sigma 2→30, threshold 0.03→1.0 을 줘도 바닥 영역 표준편차가
-//     29.4 → 29.0 으로 사실상 불변이고 화면도 픽셀 단위로 동일하다.
-//     공간 블러라면 나올 수 없는 결과 — DenoiseMaterial 의 출력이 입력과 같다.
-// 원인 미규명. 그래서 rt.denoise 기본 OFF, rtEnter 에서 설치하지 않고,
-// 명령어·HUD 표시도 두지 않는다. 아무 일도 안 하는 토글을 노출하면 앱이 거짓말하는 셈이다.
-const RT_DENOISE_UNTIL = 24;
+// ── 디노이저 ──
+// 한 번 '효과 없음 미규명' 으로 봉인했던 것을 라이브러리 소스를 읽고 다시 살렸다.
+// 원인: DenoiseMaterial(smartDeNoise) 의 threshold 는 **버퍼 단위의 색 차이**를 나눈다.
+//   기본값 0.03 은 LDR(0~1) 가정이다. 우리 버퍼는 물리 radiance(수백~수만 cd/m²)라
+//   이웃 픽셀 차이가 수백 → exp(-차이²/threshold²) = exp(-수만) = 0 → 모든 이웃의
+//   가중치가 0 이 되어 출력 == 입력. sigma 를 아무리 키워도 불변이었던 이유다.
+// 해법: threshold 를 노출(exposure)로 스케일한다. 화면에 보이는 밝기 ≈ radiance × exposure
+//   이므로 threshold = (LDR 기준 상수) / exposure 로 두면 주광(2.5e-5)이든 실내(0.05)든
+//   '화면에서 같은 정도의 색 차이' 를 같은 강도로 스무딩한다.
+// 적용 시점: 항상 표시 필터로 (누적 버퍼는 건드리지 않는다 — 표시만 매끈하게).
+//   파이어플라이 번짐 우려는 filterGlossyFactor(생성 억제)와 threshold(큰 차이는 보존)가 막는다.
+// 라이브러리의 DenoiseMaterial 은 두 가지가 우리와 안 맞는다(소스 확인):
+//   ① rgb *= alpha 프리멀티플라이 — 누적 버퍼의 알파가 1 이 아니라서 화면이 16% 어두워졌다(실측 103→87).
+//   ② 선형 HDR 에서 평균 — 기본 블릿(ClampedInterpolationMaterial)은 텍셀별로 톤맵 후 섞는다.
+// 그래서 자체 셰이더로 **디스플레이 공간** 디노이즈를 한다: 커널 안에서 각 텍셀을 먼저
+// 톤맵하고(기본 블릿과 같은 순서) 그 위에서 bilateral. threshold 가 진짜 LDR(0~1) 단위가
+// 되므로 노출 나누기 보정도 필요 없다 — 주광이든 실내든 '화면에서 같은 정도의 차이' 기준.
+const RT_DN = { ldrT: 0.12, sigma: 3, kSigma: 1.5 };
 function rtSetupDenoise() {
-  const { T, P } = rt.mod;
+  const { T } = rt.mod;
   if (!rt._dnQuad) {
-    rt._dnMat = new P.DenoiseMaterial({ sigma: 5, threshold: 0.03, kSigma: 1 });
+    rt._dnMat = new T.ShaderMaterial({
+      uniforms: { map: { value: null }, sigma: { value: RT_DN.sigma }, kSigma: { value: RT_DN.kSigma }, threshold: { value: RT_DN.ldrT } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D map;
+        uniform float sigma, kSigma, threshold;
+        varying vec2 vUv;
+        // 텍셀 하나를 '화면에 보이는 값' 으로 — 기본 블릿과 같은 처리 (톤맵. 색공간 변환은 마지막에 한 번)
+        vec3 disp(vec2 uv){
+          vec3 c = texture2D(map, uv).rgb;
+          #if defined( TONE_MAPPING )
+          c = toneMapping(c);
+          #endif
+          return c;
+        }
+        void main(){
+          float radius = round(kSigma * sigma);
+          float invSigmaQx2 = 0.5 / (sigma * sigma);
+          float invTQx2 = 0.5 / (threshold * threshold);
+          vec2 size = vec2(textureSize(map, 0));
+          vec3 centre = disp(vUv);
+          float z = 0.0; vec3 acc = vec3(0.0);
+          for (float dx = -8.0; dx <= 8.0; dx++) {
+            if (abs(dx) > radius) continue;
+            float pt = sqrt(radius * radius - dx * dx);
+            for (float dy = -8.0; dy <= 8.0; dy++) {
+              if (abs(dy) > pt) continue;
+              vec2 d = vec2(dx, dy);
+              float w = exp(-dot(d, d) * invSigmaQx2);
+              vec3 px = disp(vUv + d / size);
+              vec3 dC = px - centre;
+              w *= exp(-dot(dC, dC) * invTQx2);     // 화면 기준 색 차이가 크면(=모서리) 섞지 않는다
+              z += w; acc += w * px;
+            }
+          }
+          gl_FragColor = vec4(acc / max(z, 1e-6), 1.0);
+          #include <colorspace_fragment>
+        }`,
+      depthWrite: false, depthTest: false,
+    });
+    rt._dnMat.toneMapped = true;   // three 가 TONE_MAPPING 정의 + toneMapping() 함수를 주입하게
     rt._dnQuad = new T.Mesh(new T.PlaneGeometry(2, 2), rt._dnMat);
     rt._dnScene = new T.Scene(); rt._dnScene.add(rt._dnQuad);
     rt._dnCam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   }
   rt.tracer.renderToCanvasCallback = (target, renderer, quad) => {
-    const s = rt.tracer.samples || 0;
-    // 노이즈가 많은 초반에만 디노이즈. 강도도 spp가 오를수록 낮춘다(급격한 전환을 피함).
-    if (rt.denoise && s > 0 && s < RT_DENOISE_UNTIL) {
-      const k = 1 - s / RT_DENOISE_UNTIL;
+    if (rt.denoise) {
       rt._dnMat.uniforms.map.value = target.texture;
-      rt._dnMat.uniforms.sigma.value = 1 + 4 * k;
-      rt._dnMat.uniforms.kSigma.value = k;
-      rt._dnMat.uniforms.opacity.value = 1;
+      rt._dnMat.uniforms.sigma.value = RT_DN.sigma;
+      rt._dnMat.uniforms.kSigma.value = RT_DN.kSigma;
+      rt._dnMat.uniforms.threshold.value = RT_DN.ldrT;   // LDR 단위 그대로 (디스플레이 공간이므로)
       const ac = renderer.autoClear; renderer.autoClear = false;
       renderer.render(rt._dnScene, rt._dnCam);
       renderer.autoClear = ac;
@@ -9017,12 +9063,20 @@ function cmdSun(arg) {
   logLine(`  ☀ ${sunSummary()}`, 'ok');
 }
 // 디노이저가 실제로 동작하게 되면 다시 명령어로 등록한다. 그 전까지는 노출하지 않는다.
-function cmdRtDenoise() {
-  if (!rt.on) { logLine('  디노이저는 Raytraced 모드에서 사용합니다 — 먼저 raytrace 를 켜세요.', 'warn'); return; }
-  rt.denoise = !rt.denoise;
-  rtSetupDenoise();
-  rtReset();
-  logLine(rt.denoise ? '  ▷ 디노이저 ON (시험 중 — 효과 미확인)' : '  ▷ 디노이저 OFF', 'info');
+function cmdRtDenoise(arg) {
+  const a = String(arg || '').trim();
+  if (a) {
+    const v = parseFloat(a);
+    if (isFinite(v) && v > 0 && v <= 2) {
+      RT_DN.ldrT = v;
+      rt.denoise = true;
+      logLine(`  ✔ 디노이즈 강도 ${v} (기본 0.15 — 클수록 매끈하지만 흐릿해짐)`, 'ok');
+      return;
+    }
+    if (!/^(on|off|켬|끔)$/i.test(a)) { logLine('  사용법: denoise (토글) · denoise 0.1~2 (강도)', 'warn'); return; }
+    rt.denoise = /^(on|켬)$/i.test(a);
+  } else rt.denoise = !rt.denoise;
+  logLine(rt.denoise ? '  ▷ 디노이즈 ON — 표시만 매끈하게 (누적 데이터는 그대로)' : '  ▷ 디노이즈 OFF (원본 표시)', 'info');
 }
 
 async function rtEnter() {
@@ -10202,6 +10256,7 @@ const INSTANT_CMDS = {
   material: cmdMaterial,
   rtquality: cmdRtQuality,
   ground: cmdGround,
+  denoise: cmdRtDenoise,
   rtenv: cmdRtEnv,
   sun: cmdSun,
   ies: cmdIes,
@@ -10580,6 +10635,7 @@ const TOOL_KO = {
   material: '재질 지정 — 질감·거칠기·투과(MATERIAL)',
   rtquality: '레이트레이싱 품질 — 낮음/보통/높음/최고(RTQUALITY)',
   ground: '대지 평면 토글 — 렌더 전용(GROUND)',
+  denoise: '레이트레이싱 디노이즈 — 표시 스무딩(DENOISE)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
   ies: 'IES 배광 파일(IES)',
@@ -10650,6 +10706,7 @@ const CMD_ALIASES = {
   material: 'material', mat: 'material', 재질: 'material', 재료: 'material',
   rtquality: 'rtquality', 품질: 'rtquality', 렌더품질: 'rtquality',
   ground: 'ground', 지면: 'ground', 대지: 'ground',
+  denoise: 'denoise', 디노이즈: 'denoise', 노이즈제거: 'denoise',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
   ies: 'ies', 배광: 'ies', iesfile: 'ies',
@@ -13830,7 +13887,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, parseIES, iesCandelaAt, iesSummary, iesToTexture, iesFluxFactor, lightCandela, cmdIes, selectedLights, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, parseIES, iesCandelaAt, iesSummary, iesToTexture, iesFluxFactor, lightCandela, cmdIes, selectedLights, cmdRtDenoise, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
   vpIsPlan, vpPlanIndex, vpRect, vpRectCss, planCvRect, syncPlanCv, open3D, close3D, is3DActive, resize, worldToScreen, screenToWorld,
   rview, rviewFrame, rviewBuildScene, rviewSyncSun, rviewSig, cmdRendered,
   MAT_PRESETS, MAT_ALIAS, matOf, matKey, matHex, matBoxUV, matGeo, matBuild, matTextures, matDrawTex, cmdMaterial, rtGeoSig, bimSolidColor,
@@ -13843,6 +13900,7 @@ window.__CADTEST__ = {
   markInteract, sunApply, preethamCache,
   captureDoc, saveLocal, loadLocal,
   RT_QUALITY, cmdRtQuality, cmdGround, makeGroundMesh, groundSizeMM, GROUND_Z_MM,
+  RT_DN, rtSetupDenoise,
   vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
   vpModeMenu, vpSetMode, closeVpMenu, cycleElev,
   modelExtents, entityExtentPts, fit3D, zoomFit, pushViewPrev, zoomPrev,

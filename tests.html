@@ -1744,6 +1744,28 @@ function tests(){
     ok(st.pointerEvents !== 'none', '★이름표는 클릭 가능 (pointer-events 살아있음)');
   }
 
+  group('디노이즈 — 명령·기본값 계약');
+  {
+    // 디노이저 본체(노이즈 14배 감소·밝기/경계 보존)는 실브라우저 WebGL 로 검증했다.
+    // 여기서는 네트워크 없이 되는 계약만: 기본 켬, 명령 파싱, 강도 범위.
+    reset();
+    ok(C.rt.denoise === true, '★디노이즈 기본 켬 (완성됐으므로 — 예전엔 무동작이라 봉인했었다)');
+    ok(typeof C.cmdRtDenoise === 'function', 'denoise 명령 존재');
+    eqi(C.CMD_ALIASES['디노이즈'], 'denoise', '한글 별칭');
+    ok(C.RT_DN && C.RT_DN.ldrT > 0 && C.RT_DN.ldrT <= 2, '강도 기본값이 유효 범위');
+    const keep = { d: C.rt.denoise, t: C.RT_DN.ldrT };
+    C.cmdRtDenoise('끔');  eqi(C.rt.denoise, false, '끔');
+    C.cmdRtDenoise('켬');  eqi(C.rt.denoise, true, '켬');
+    C.cmdRtDenoise();      eqi(C.rt.denoise, false, '인자 없으면 토글');
+    C.cmdRtDenoise('0.3'); eqi(C.rt.denoise, true, '★강도를 주면 자동으로 켠다');
+    eq(C.RT_DN.ldrT, 0.3, '강도 반영');
+    C.cmdRtDenoise('99');  eq(C.RT_DN.ldrT, 0.3, '★범위 밖 강도는 거부 (0.1~2)');
+    C.RT_DN.ldrT = keep.t; C.rt.denoise = keep.d;
+    // ★심볼 삭제 회귀 — RT_DENOISE_UNTIL 잔재가 남으면 앱이 로드 자체를 못 한다 (실제로 그랬다)
+    ok(typeof C.rtSetupDenoise === 'function', 'rtSetupDenoise 존재');
+    ok(C.RT_DENOISE_UNTIL === undefined, '★옛 상수는 완전히 사라졌다 (남은 참조가 있으면 로드 실패)');
+  }
+
   group('퀄리티 — 품질 프리셋·대지 평면');
   {
     reset();
