@@ -7800,9 +7800,18 @@ function rtTrisByEntity() {
   const out = new Map(); // eid → {tris:[[p,p,p]...], color, area}
   const put = (eid, color) => { let o = out.get(eid); if (!o) out.set(eid, o = { tris: [], color, area: 0 }); return o; };
   for (const s of (v3.solids || [])) {
-    const P = s.poly, n = P.length; if (!P || n < 3) continue;
+    let P = s.poly; const n = P ? P.length : 0; if (!P || n < 3) continue;
     const o = put(s.eid, s.color || '#b9b2a6');
-    const zt = s.zt || P.map(() => s.z1), zb = s.zb || P.map(() => s.z0);
+    let zt = s.zt || P.map(() => s.z1), zb = s.zb || P.map(() => s.z0);
+    // ★감기 방향 정규화 — 반드시 반시계(CCW)로 맞춘다.
+    // bimSolids 의 벽 밴드는 시계방향(CW)으로 나오고, 사용자가 그린 폴리라인도 방향이 제멋대로다.
+    // CW 폴리곤을 그대로 부채꼴 삼각형화하면 윗면 법선이 아래를 향해 three 의 FrontSide 컬링이
+    // 윗면을 지운다 — 렌더링 뷰에서 벽 두께(윗면 밴드)가 사라져 보이던 버그의 원인.
+    // (옆면 법선도 안쪽으로 뒤집혀 조명까지 틀렸다. 소프트웨어 뷰는 양면을 그려 멀쩡했다.)
+    { let a2 = 0;
+      for (let i = 0; i < n; i++) { const j = (i + 1) % n; a2 += P[i][0] * P[j][1] - P[j][0] * P[i][1]; }
+      if (a2 < 0) { P = P.slice().reverse(); zt = zt.slice().reverse(); zb = zb.slice().reverse(); }
+    }
     for (let i = 1; i < n - 1; i++) {
       o.tris.push([[P[0][0], P[0][1], zt[0]], [P[i][0], P[i][1], zt[i]], [P[i + 1][0], P[i + 1][1], zt[i + 1]]]);
       o.tris.push([[P[0][0], P[0][1], zb[0]], [P[i + 1][0], P[i + 1][1], zb[i + 1]], [P[i][0], P[i][1], zb[i]]]);

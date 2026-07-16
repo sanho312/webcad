@@ -1766,6 +1766,44 @@ function tests(){
     ok(C.RT_DENOISE_UNTIL === undefined, '★옛 상수는 완전히 사라졌다 (남은 참조가 있으면 로드 실패)');
   }
 
+  group('렌더 삼각형화 — 감기 방향과 무관하게 윗면 법선은 위를 향한다');
+  {
+    // 회귀 방지: bimSolids 의 벽 밴드 폴리곤은 시계방향(CW)으로 나온다. CW 를 그대로
+    // 부채꼴 삼각형화하면 윗면 법선이 아래를 향해 FrontSide 컬링이 윗면을 지운다 —
+    // 렌더링 뷰에서 벽 두께(윗면 밴드)가 사라져 보이던 실사용 버그 (사용자 스크린샷).
+    // 소프트웨어 작업 뷰는 양면을 그려 멀쩡했기에 렌더 뷰에서만 드러났다.
+    reset();
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const normalOf = (t) => {   // 삼각형 법선 (z 성분만 보면 위/아래 판정)
+      const ux = t[1][0] - t[0][0], uy = t[1][1] - t[0][1], uz = t[1][2] - t[0][2];
+      const vx = t[2][0] - t[0][0], vy = t[2][1] - t[0][1], vz = t[2][2] - t[0][2];
+      return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    };
+    const topNormals = (poly) => {
+      C.v3.solids = [{ eid: 99, poly, z0: 0, z1: 1000, color: '#888888' }];
+      const tris = C.rtTrisByEntity().get(99).tris;
+      // 윗면 삼각형 = 세 꼭짓점 z 가 모두 1000
+      return tris.filter(t => t.every(p => p[2] === 1000)).map(normalOf);
+    };
+    // 반시계(CCW) 사각형 — 원래도 맞았다
+    const ccw = topNormals([[0, 0], [1000, 0], [1000, 1000], [0, 1000]]);
+    ok(ccw.length >= 2 && ccw.every(n => n[2] > 0), 'CCW 폴리곤: 윗면 법선이 위(+Z)');
+    // ★시계(CW) 사각형 — 예전엔 법선이 아래를 향해 윗면이 사라졌다
+    const cw = topNormals([[0, 1000], [1000, 1000], [1000, 0], [0, 0]]);
+    ok(cw.length >= 2 && cw.every(n => n[2] > 0), '★CW 폴리곤도 윗면 법선이 위(+Z) — 감기 방향 정규화');
+    // ★실제 벽 밴드 (bimSolids 가 내는 그 CW 사다리꼴)
+    const band = topNormals([[-2900, -1900], [2900, -1900], [3100, -2100], [-3100, -2100]]);
+    ok(band.every(n => n[2] > 0), '★벽 밴드(CW 사다리꼴)의 윗면 법선이 위 — 두께 밴드가 렌더된다');
+    // zt/zb 가 폴리곤과 함께 뒤집히는지 (경사 지붕처럼 꼭짓점별 높이가 있을 때)
+    C.v3.solids = [{ eid: 98, poly: [[0, 1000], [1000, 1000], [1000, 0], [0, 0]],
+      z0: 0, z1: 0, zt: [100, 200, 300, 400], zb: [0, 0, 0, 0], color: '#888888' }];
+    const tris98 = C.rtTrisByEntity().get(98).tris;
+    // 뒤집힌 뒤에도 각 꼭짓점의 (x,y)↔z 짝이 유지돼야 한다: (0,1000) 꼭짓점의 zt 는 여전히 100
+    const hasPair = tris98.some(t => t.some(p => p[0] === 0 && p[1] === 1000 && p[2] === 100));
+    ok(hasPair, '★뒤집을 때 꼭짓점별 높이(zt)가 자기 꼭짓점을 따라간다');
+    C.v3.solids = C.bimSolids();
+  }
+
   group('퀄리티 — 품질 프리셋·대지 평면');
   {
     reset();
@@ -1898,6 +1936,9 @@ function tests(){
     ]);
     if (!C.v3) C.INSTANT_CMDS['view3d']();
     const V = C.v3;
+    // ★자기 도형으로 솔리드를 스스로 재빌드 — 앞 그룹이 남긴 v3.solids 에 기대면 안 된다.
+    //   (감기 방향 테스트 그룹이 끼어들자 이 그룹이 빈 솔리드로 실행돼 거짓 실패했다)
+    V.solids = C.bimSolids();
     const doc = V.cv.ownerDocument;          // 테스트는 iframe 밖이라 앱의 document 를 따로 잡는다
     const cvEl = doc.getElementById('cv');
 
