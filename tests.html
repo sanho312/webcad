@@ -998,6 +998,22 @@ function tests(){
     S.enabled = false;
   }
 
+  group('태양 ↔ 레이트레이싱 환경은 하나의 진실');
+  {
+    // 회귀 방지: 예전엔 rt.env 를 따로 토글해서 진실이 둘이었다.
+    // 태양을 켜고 raytrace 를 켜도 rt.env='black' 이라 렌더에 햇빛이 없었다
+    // (실측: 태양 ON·고도 55.8° 인데 하늘 텍스처 없음, 노출 0.05).
+    // 사용자가 태양을 켰는데 렌더엔 없으면 앱이 거짓말하는 것이다.
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { mo: 6, d: 21, h: 15, mi: 0, enabled: false });
+    eqi(C.rtEnvWanted(), 'black', '태양 OFF → 검은 환경 (인공조명만 판별)');
+    S.enabled = true;
+    eqi(C.rtEnvWanted(), 'day', '★태양 ON → 주광 환경 (rtenv 를 따로 치지 않아도)');
+    // 노출도 환경을 따라간다 — 실내와 주광은 2,000배 차이라 고정이면 하얗게 날아간다
+    ok(C.RT_EXPOSURE_DAY < C.RT_EXPOSURE / 100, '주광 노출이 실내 노출보다 2자릿수 이상 작다');
+    S.enabled = false;
+  }
+
   group('방향별 천공광 (구면조화)');
   {
     reset();

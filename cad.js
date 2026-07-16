@@ -7403,6 +7403,11 @@ function rtSetupDenoise() {
 // 시간대도, 방위도 없었다 — 자연광이 아니라 앰비언트 채움광이었다.
 // 지금은 Preetham 물리 하늘 + 실제 위치의 태양 원반을 굽는다. 휘도가 cd/m² 실단위라
 // 세기 배율(예전의 RT_SKY_INTENSITY)이 필요 없다 — 물리값을 그대로 쓴다.
+// ★ 레이트레이싱 환경은 '태양이 켜졌는가' 에서 파생된다. 진실은 state.sun.enabled 하나뿐이다.
+// 예전엔 rt.env 를 따로 토글해서 진실이 둘이었다 — 태양을 켜도 레이트레이싱은 검은 환경인
+// 상태가 실제로 생겼다(실측: 태양 ON·고도 55.8° 인데 rt.env='black', 하늘 텍스처 없음, 노출 0.05).
+// 사용자는 태양을 켰는데 렌더에 햇빛이 없으니 앱이 거짓말하는 셈이었다.
+const rtEnvWanted = () => (sunOn() ? 'day' : 'black');
 function rtSetEnv(mode) {
   rt.env = (mode === 'day') ? 'day' : 'black';
   if (!rt.on || !rt.scene || !rt.mod) return;
@@ -7429,13 +7434,8 @@ function rtSetEnv(mode) {
   rtApplyExposure();   // 주광 ↔ 검은 환경은 밝기가 2,000배 달라 노출도 함께 바꿔야 한다
   if (rt.tracer) { rt.tracer.updateEnvironment(); rtReset(); }
 }
-function cmdRtEnv() {
-  if (!rt.on) { logLine('  환경 전환은 Raytraced 모드에서 사용합니다 — 먼저 raytrace 를 켜세요.', 'warn'); return; }
-  rtSetEnv(rt.env === 'day' ? 'black' : 'day');
-  logLine(rt.env === 'day'
-    ? `  ▷ 주광 환경 ON — ${sunSummary()}. 인공조명만 보려면 다시 입력해 검은 환경으로.`
-    : '  ▷ 검은 환경 (기본) — 광원이 없으면 검은 화면. 인공조명의 효과를 판별할 수 있는 상태.', 'info');
-}
+// rtenv = 태양 토글. 환경을 따로 토글하면 태양과 진실이 둘이 되어 어긋난다(그래서 그랬다).
+function cmdRtEnv() { cmdSun(); }
 // 태양 설정 요약 한 줄
 function sunSummary() {
   const S = sunState(), p = solarPosition(S);
@@ -7447,7 +7447,7 @@ function sunSummary() {
 function sunApply() {
   renderSunPanel();
   if (typeof render3D === 'function' && v3) render3D();
-  if (rt.on) { if (rt.env === 'day') rtSetEnv('day'); else rtLightsChanged(); }
+  if (rt.on) rtSetEnv(rtEnvWanted());   // 하늘을 다시 굽고 노출도 환경에 맞춘다
 }
 // 라이노의 Sun 명령과 같은 이름·같은 개념(날짜·시각·위경도·북쪽).
 // 인자 없이 부르면 켜고/끈다 — 라이노의 Sun 패널 체크박스와 같다.
@@ -7537,7 +7537,7 @@ async function rtEnter() {
     }
     rtResize();
     await rtRebuild();
-    rtSetEnv(rt.env);   // 노출도 여기서 환경에 맞게 잡힌다   // 마지막에 고른 환경 유지 (기본 검은 환경)
+    rtSetEnv(rtEnvWanted());   // 태양이 켜져 있으면 주광, 아니면 검은 환경. 노출도 여기서 함께 잡힌다
     if (rt.triCount > RT_TRI_WARN && !confirm(`삼각형이 ${rt.triCount.toLocaleString()}개입니다. 레이트레이싱이 매우 느릴 수 있습니다. 계속할까요?`)) { rtExit(); return; }
     logLine(`  ▷ Raytraced ON — 삼각형 ${rt.triCount.toLocaleString()}개 · 광원 ${lightSources().length}개 · 환경 ${rt.env === 'day' ? '주광' : '검은 환경'} (다시 입력하면 OFF)`, 'info');
     if (!state.lights.length) logLine('    광원이 없어 화면이 검게 나옵니다 — setaslight 로 광원을 지정하세요.', 'warn');
@@ -10672,7 +10672,7 @@ const CMD_HELP = [
     ['setaslight', '광원으로 지정', '선택한 개체를 광원으로 지정 — 형태·색·BIM 정체는 하나도 바뀌지 않고 광원 속성만 붙는다(정육면체 → 정육면체 광원체). 발광 위치는 개체가 놓인 자리: 입체·메시=형상 한가운데, 원=중심, 선·폴리라인=간격마다. 기본 800lm / 3000K. 세기(lm)·색온도(K)는 특성창에서, on/off·솔로는 사이드바 [광원] 패널에서. 3d 후 lighting 으로 확인'],
     ['unsetlight', '광원 해제', '광원 지정을 푼다 — 개체는 그대로 남는다'],
     ['raytrace', '레이트레이싱 렌더', '3D 뷰를 경로추적(path tracing)으로 렌더 — 지정한 광원의 직접광·그림자·간접광이 물리적으로 계산되어 프레임이 쌓이며 수렴한다. 환경은 기본이 완전한 어둠이라 광원이 없으면 검은 화면. 카메라를 움직이면 저해상도로 즉시 따라오고 놓으면 다시 수렴. WebGL2가 없으면 lighting(근사 모드)로 안내. 다시 입력하면 OFF'],
-    ['rtenv', '렌더 환경', 'Raytraced 환경을 검은 환경 ↔ 주광(물리 하늘+태양)으로 전환. 기본은 검은 환경 — 그래야 인공조명의 효과만 판별할 수 있다'],
+    ['rtenv', '렌더 환경', '태양 켜기/끄기 — sun 과 같다. 태양이 켜져 있으면 Raytraced 도 물리 하늘+태양으로, 꺼져 있으면 검은 환경(인공조명만 판별)으로 자동 전환된다'],
     ['exposure', '노출', 'Raytraced 화면의 노출. 실내 인공조명과 주광은 밝기가 2,000배 차이 나서 환경에 따라 자동으로 바뀐다. exposure 2.5e-5 처럼 직접 지정하거나 exposure auto 로 되돌린다'],
     ['sun', '태양', '날짜·시각·위경도·진북으로 실제 태양 위치를 계산한다. 그냥 sun 이면 현재 값, sun 시각=14:30 처럼 설정. 주광 환경(rtenv)에서 하늘과 그림자에 반영된다'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
@@ -12231,7 +12231,7 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE_DAY,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
