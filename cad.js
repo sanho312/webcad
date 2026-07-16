@@ -131,11 +131,37 @@ function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); res
 
 // ---------- 좌표 변환 ----------
 function resize() {
-  const r = wrap.getBoundingClientRect();
+  // #cv 는 '평면 뷰포트'의 캔버스다. 4분할이면 그 칸 크기, 아니면 화면 전체.
+  // worldToScreen 이 cv._w/2 를 중심으로 쓰므로, 크기만 맞춰주면 draw() 는 그대로 그 칸에 그린다.
+  const r = (typeof planCvRect === 'function' && typeof v3 !== 'undefined' && v3)
+    ? planCvRect() : (() => { const b = wrap.getBoundingClientRect(); return { x: 0, y: 0, w: b.width, h: b.height }; })();
   const dpr = window.devicePixelRatio || 1;
-  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  cv.width = Math.max(2, r.w * dpr); cv.height = Math.max(2, r.h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  cv._w = r.width; cv._h = r.height;
+  cv._w = r.w; cv._h = r.h;
+  draw();
+}
+// 평면 칸 위에 #cv 를 올려놓는다 (3D 오버레이 z-index 18 위). 평면 칸이 없으면 숨긴다.
+// 마우스 이벤트가 자동으로 갈라지는 게 핵심 — 평면 칸 클릭은 2D 핸들러가, 나머지는 3D 핸들러가 받는다.
+function syncPlanCv() {
+  const i = vpPlanIndex();
+  if (!is3DActive()) { // 3D 미개방 = 오늘과 동일하게 #cv 가 화면 전체
+    cv.style.position = ''; cv.style.left = cv.style.top = cv.style.width = cv.style.height = '';
+    cv.style.zIndex = ''; cv.style.display = '';
+    return;
+  }
+  if (i < 0) { cv.style.display = 'none'; return; } // 평면 칸이 안 떠 있음 → 3D 가 화면 전체
+  const r = vpRectCss(i);
+  cv.style.display = ''; cv.style.position = 'absolute'; cv.style.zIndex = '19';
+  cv.style.left = r.x + 'px'; cv.style.top = r.y + 'px';
+  cv.style.width = r.w + 'px'; cv.style.height = r.h + 'px';
+  const dpr = window.devicePixelRatio || 1;
+  const nw = Math.max(2, Math.round(r.w * dpr)), nh = Math.max(2, Math.round(r.h * dpr));
+  if (cv.width !== nw || cv.height !== nh) { // 크기가 바뀔 때만 리사이즈 (캔버스 리사이즈는 내용을 지운다)
+    cv.width = nw; cv.height = nh;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  cv._w = r.w; cv._h = r.h;
   draw();
 }
 function worldToScreen(wx, wy) {
@@ -2660,7 +2686,8 @@ function open3D() {
     v3 = { yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0, cv: cv3, ctx: cv3.getContext('2d'), solids: [],
       quad: false, act: 1, views: [ // 사분할 뷰 (TL/TR/BL/BR) — 라이노식
         // fixed = 평행 투영 고정(회전 불가): 평면·입면은 도면에 넣을 수 있는 정투영 뷰
-        { name: '평면', yaw: 0, pitch: Math.PI / 2, zoom: 1, panX: 0, panY: 0, fixed: true },
+        // mode:'plan' — 이 칸은 2D 엔진(draw())이 #cv 로 그린다. 3D 렌더러는 건너뛴다. vpIsPlan 참고.
+        { name: '평면', yaw: 0, pitch: Math.PI / 2, zoom: 1, panX: 0, panY: 0, fixed: true, mode: 'plan' },
         { name: '아이소', yaw: -0.6, pitch: 0.85, zoom: 1, panX: 0, panY: 0 },
         { name: '정면', yaw: 0, pitch: 0, zoom: 1, panX: 0, panY: 0, fixed: true },
         { name: '우측면', yaw: -Math.PI / 2, pitch: 0, zoom: 1, panX: 0, panY: 0, fixed: true },
@@ -2779,6 +2806,30 @@ function vpRect(i) {
   return [{ x: 0, y: 0, w: w2, h: h2 }, { x: w2, y: 0, w: W - w2, h: h2 },
           { x: 0, y: h2, w: w2, h: H - h2 }, { x: w2, y: h2, w: W - w2, h: H - h2 }][i];
 }
+// ── 뷰포트 표시 모드 ──
+// mode 'plan' 인 뷰포트는 3D 렌더러가 아니라 2D 엔진(draw())이 #cv 로 직접 그린다.
+// 평면을 3D 파이프라인으로 "다시" 구현하지 않는 이유: 그게 정확히 '평면이 두 벌' 문제였다.
+// 3D 밑그림 경로는 TEXT/HATCH/IMAGE/INSERT 를 통째로 버려서(아래 under 루프의 else continue)
+// 치수는 선만 남고 숫자가 사라졌고, fit3D 도 같은 화이트리스트라 zoom 범위까지 2D와 어긋났다.
+// → 성숙한 2D 엔진이 평면의 유일한 진실이고, 3D 렌더러는 평면 칸을 아예 건너뛴다.
+const vpIsPlan = (i) => !!(v3 && v3.views[i] && v3.views[i].mode === 'plan');
+// 지금 화면에 떠 있는 뷰포트 중 평면 칸의 인덱스 (없으면 -1)
+function vpPlanIndex() {
+  if (!v3) return -1;
+  for (const i of (v3.quad ? [0, 1, 2, 3] : [v3.act])) if (vpIsPlan(i)) return i;
+  return -1;
+}
+// vpRect 는 캔버스 좌표(디바이스 px). #cv 를 DOM 으로 배치하려면 CSS px 가 필요하다.
+function vpRectCss(i) {
+  const d = devicePixelRatio || 1, r = vpRect(i);
+  return { x: r.x / d, y: r.y / d, w: r.w / d, h: r.h / d };
+}
+// #cv(2D 엔진) 가 차지해야 할 영역 — 평면 칸이 떠 있으면 그 칸, 아니면 캔버스 전체(3D 미개방 시 오늘과 동일)
+function planCvRect() {
+  const i = vpPlanIndex();
+  if (i < 0 || !is3DActive()) { const r = wrap.getBoundingClientRect(); return { x: 0, y: 0, w: r.width, h: r.height }; }
+  return vpRectCss(i);
+}
 function loadVp(i) { const w = v3.views[i]; v3.yaw = w.yaw; v3.pitch = w.pitch; v3.zoom = w.zoom; v3.panX = w.panX; v3.panY = w.panY; }
 // 입면(파사드) 뷰 순환: 정면 → 우측면 → 좌측면 → 배면 (라벨 클릭)
 const ELEV_ORDER = ['정면', '우측면', '좌측면', '배면'];
@@ -2819,6 +2870,10 @@ function render3D() {
   const order = v3.quad ? [0, 1, 2, 3] : [v3.act];
   for (const i of order) {
     const r = vpRect(i);
+    if (vpIsPlan(i)) { // 평면 칸은 2D 엔진이 #cv 로 그린다 (syncPlanCv). 3D 렌더러는 손대지 않는다.
+      c.clearRect(r.x, r.y, r.w, r.h);
+      continue;
+    }
     v3.vp = r; loadVp(i);
     c.save(); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip();
     const res = renderScene(i === v3.act);
@@ -2834,7 +2889,10 @@ function render3D() {
     }
   }
   loadVp(v3.act); v3.vp = vpRect(v3.act);
-  v3.faces = v3.views[v3.act]._faces; v3.under = v3.views[v3.act]._under; v3.pick = v3.views[v3.act]._pick;
+  // 평면 칸이 활성이면 3D 면 목록이 없다 — 그 칸의 피킹은 2D pick() 이 맡으므로 빈 배열로 둔다.
+  // (undefined 로 두면 pick3DAt/findFaceAt 이 v3.faces 를 훑다가 터진다)
+  v3.faces = v3.views[v3.act]._faces || []; v3.under = v3.views[v3.act]._under || []; v3.pick = v3.views[v3.act]._pick || [];
+  syncPlanCv(); // 평면 칸 위치·크기 동기화 + 2D 엔진 재그림
   if (v3.boxRect) { // 선택 박스 러버밴드 (드래그 중)
     const b = v3.boxRect, crossing = b.x1 < b.x0;
     c.save();
@@ -3931,7 +3989,9 @@ function close3D() {
   const ov = document.getElementById('bim3d');
   if (ov) ov.style.display = 'none';
   if (v3 && v3.wallMode && v3.setWallMode) v3.setWallMode(false);
-  stopLive3D(); syncViewSeg(false); draw();
+  stopLive3D(); syncViewSeg(false);
+  syncPlanCv(); // #cv 를 다시 화면 전체로 (평면 칸에 배치돼 있던 인라인 스타일 해제) — resize+draw 포함
+  resize();     // 캔버스 크기를 화면 전체로 되돌린다
 }
 // 상단 뷰 세그먼트(평면/3D) — 항상 바인딩 (3D를 아직 안 열었어도 동작)
 (function bindViewSeg() {
@@ -6034,6 +6094,142 @@ function railingSolids(e) {
 //  개체와 광원 정보를 분리한다: 개체에는 lightId 참조만, 속성은 state.lights 컬렉션에.
 //  개체 자체는 형태·색·BIM 정체 무엇도 바뀌지 않는다.
 // ============================================================
+// ═══════════ IES 배광 (IESNA LM-63) ═══════════
+// 실제 조명기구는 방향마다 광도가 다르다. 지금까지 모든 광원이 lm/(4π) 균등 배광이라
+// 방지따람이든 집광 다운라이트든 사방으로 똑같이 쐈다 — 조도 분석 패널에도 그렇게 고지해 왔다.
+// IES 파일은 제조사가 실측한 '수직각별 광도(cd)' 표다. 그걸 읽어 배광을 그대로 재현한다.
+//
+// 파일 구조(LM-63): 헤더… TILT=NONE 다음에 숫자만 이어진다.
+//   [1] 램프수 · 램프당광속(lm) · 배율 · 수직각수 · 수평각수 · 측광형식 · 단위 · 폭 · 길이 · 높이
+//   [2] 밸러스트계수 · 미래용 · 입력전력(W)
+//   [3] 수직각 목록 (수직각수 개)   — 0°=바로 아래(nadir) … 180°=바로 위
+//   [4] 수평각 목록 (수평각수 개)
+//   [5] 광도값 (수평각수 × 수직각수 개, cd)
+// 줄바꿈·공백이 제멋대로라 줄 단위로 읽으면 깨진다 → '숫자 토큰 스트림' 으로 읽는다.
+function parseIES(text) {
+  const t = String(text || '');
+  const ti = t.search(/TILT\s*=/i);
+  if (ti < 0) return { err: 'TILT= 줄이 없습니다 — IES(LM-63) 파일이 아닌 것 같습니다.' };
+  let rest = t.slice(ti);
+  const nl = rest.indexOf('\n');
+  const tiltLine = nl < 0 ? rest : rest.slice(0, nl);
+  if (!/TILT\s*=\s*NONE/i.test(tiltLine)) return { err: 'TILT=NONE 만 지원합니다 (기울기표가 포함된 파일).' };
+  rest = nl < 0 ? '' : rest.slice(nl + 1);
+  const num = rest.replace(/,/g, ' ').match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g);
+  if (!num || num.length < 13) return { err: '숫자 데이터가 부족합니다.' };
+  const N = num.map(Number);
+  let i = 0;
+  const lamps = N[i++], lumensPerLamp = N[i++], mult = N[i++];
+  const nV = N[i++], nH = N[i++];
+  const photoType = N[i++];
+  i++;      // units
+  i += 3;   // width, length, height
+  const ballast = N[i++];
+  i++;      // future use
+  i++;      // input watts
+  if (!(nV > 0 && nH > 0)) return { err: `각도 개수가 이상합니다 (수직 ${nV}, 수평 ${nH}).` };
+  const vAng = N.slice(i, i + nV); i += nV;
+  const hAng = N.slice(i, i + nH); i += nH;
+  const need = nV * nH;
+  const cand = N.slice(i, i + need);
+  if (cand.length < need) return { err: `광도값이 모자랍니다 (${cand.length}/${need}).` };
+  // 배율·밸러스트계수 적용. 수평각이 여러 개면 축대칭이 아니지만 셰이더가 축대칭만 지원하므로
+  // 수평 방향으로 평균 낸다 (사용자에게 근사임을 알린다).
+  const k = (mult || 1) * (ballast || 1);
+  const byV = new Array(nV).fill(0);
+  for (let v = 0; v < nV; v++) {
+    let sum = 0;
+    for (let h = 0; h < nH; h++) sum += cand[h * nV + v] * k;
+    byV[v] = sum / nH;
+  }
+  return { vAng, cd: byV, nH, photoType, lumens: (lamps || 1) * (lumensPerLamp || 0), axial: nH <= 1 };
+}
+// 수직각(°) → 광도(cd) 선형보간. 표 밖은 양 끝 값으로 물린다.
+function iesCandelaAt(ies, deg) {
+  const a = ies.vAng, c = ies.cd, n = a.length;
+  if (!n) return 0;
+  if (deg <= a[0]) return c[0];
+  if (deg >= a[n - 1]) return c[n - 1];
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (a[m] <= deg) lo = m; else hi = m; }
+  const t = (deg - a[lo]) / ((a[hi] - a[lo]) || 1);
+  return c[lo] + (c[hi] - c[lo]) * t;
+}
+// IES 표 → 셰이더가 기대하는 텍스처.
+// 셰이더(light_sampling_functions.glsl 의 getPhotometricAttenuation):
+//     float angle = acos( dot(posToLight, lightDir) ) / PI;   // 0=정면축, 1=정반대
+//     return texture2D( iesProfiles, vec3(angle, 0.0, iesProfile) ).r;
+// 즉 가로축 = 정면축에서 벌어진 각(0~180° → 0~1), R = 광도 배율. 축대칭만 지원(v=0 고정).
+// 스팟의 정면축은 target 방향(우리는 아래)이고 IES 수직각 0° 도 nadir 라 각이 그대로 대응한다.
+// 값은 최대 광도로 정규화한다 — 절대 밝기는 루멘(intensity)이 담당하고 여기선 '모양' 만 준다.
+const IES_TEX_W = 180;
+function iesToTexture(ies, T3) {
+  let mx = 0;
+  for (const v of ies.cd) if (v > mx) mx = v;
+  if (!(mx > 0)) return null;
+  const data = new Float32Array(IES_TEX_W * 4);
+  for (let x = 0; x < IES_TEX_W; x++) {
+    const deg = (x + 0.5) / IES_TEX_W * 180;
+    const r = iesCandelaAt(ies, deg) / mx;
+    data[x * 4] = r; data[x * 4 + 1] = r; data[x * 4 + 2] = r; data[x * 4 + 3] = 1;
+  }
+  const tex = new T3.DataTexture(data, IES_TEX_W, 1, T3.RGBAFormat, T3.FloatType);
+  tex.minFilter = T3.LinearFilter; tex.magFilter = T3.LinearFilter;
+  tex.wrapS = tex.wrapT = T3.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+// 배광의 입체각 적분 ∫f(θ)dΩ = 2π ∫₀^π f(θ)·sinθ dθ   (축대칭, f 는 최대=1 로 정규화된 모양)
+// 이게 있어야 '광속(lm) 보존' 이 성립한다:
+//   광도 I(θ) = lm · f(θ) / ∫f dΩ   →   ∫I dΩ = lm  (정의상)
+// 균등 배광이면 f≡1 → ∫f dΩ = 4π → I = lm/(4π) 로 기존 식과 정확히 같아진다(연속성 확인).
+// ★ 이게 없으면 IES 가 '모양만' 바꾸고 광속을 깎는다 — 집광 배광인데 중심이 안 밝아진다.
+//   (실측: 집광 IES 를 붙였는데 중심 222 로 그대로, 주변만 65→37 로 어두워졌다. 광속이 샜다.)
+function iesFluxFactor(ies) {
+  if (!ies || !ies.cd || !ies.cd.length) return 4 * Math.PI;
+  let mx = 0;
+  for (const v of ies.cd) if (v > mx) mx = v;
+  if (!(mx > 0)) return 4 * Math.PI;
+  const N = 720;
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    const th = (i + 0.5) / N * Math.PI;
+    sum += (iesCandelaAt(ies, th * 180 / Math.PI) / mx) * Math.sin(th) * (Math.PI / N);
+  }
+  return Math.max(1e-6, 2 * Math.PI * sum);
+}
+// 광원의 '정면축 기준 각도(rad)' 에서의 광도(cd). 배광이 없으면 균등.
+// 렌더러(3D 미리보기)·조도 분석·Raytraced 가 모두 이 한 함수를 쓴다 → 셋이 어긋날 수 없다.
+//   lm  : 광속
+//   ies : 배광 (없으면 균등)
+//   ang : 광원의 정면축(아래)에서 벌어진 각 [rad]
+function lightCandela(lm, ies, ang) {
+  const flux = lm || 0;
+  if (!ies) return flux / (4 * Math.PI);
+  let mx = 0;
+  for (const v of ies.cd) if (v > mx) mx = v;
+  if (!(mx > 0)) return flux / (4 * Math.PI);
+  const f = iesCandelaAt(ies, (ang || 0) * 180 / Math.PI) / mx;
+  return flux * f / iesFluxFactor(ies);
+}
+
+// 배광의 '모양' 요약 — 파일이 제대로 읽혔는지 사용자가 알아볼 수 있게.
+// 빔각 = 최대 광도의 50% 가 되는 각 × 2 (조명업계 관례)
+function iesSummary(ies) {
+  let mx = 0, mxAt = 0;
+  for (let i = 0; i < ies.cd.length; i++) if (ies.cd[i] > mx) { mx = ies.cd[i]; mxAt = ies.vAng[i]; }
+  // 50% 가 되는 각을 이분법으로 정확히 찾는다. 1° 단위로 훑으면 경계각을 통째로 넘겨
+  // 빔각이 몇 도씩 틀린다(실측: 참값 60° 인 파일에서 62° 로 나왔다).
+  let half = null;
+  const halfCd = mx * 0.5;
+  if (iesCandelaAt(ies, 180) < halfCd) {
+    let lo = 0, hi = 180;
+    for (let k = 0; k < 40; k++) { const m = (lo + hi) / 2; if (iesCandelaAt(ies, m) >= halfCd) lo = m; else hi = m; }
+    half = (lo + hi) / 2;
+  }
+  return { maxCd: Math.round(mx), maxAt: mxAt, beamDeg: half != null ? Math.round(half * 2 * 10) / 10 : null };
+}
+
 const LIGHT_TYPES = ['emissive', 'point', 'spot', 'area'];
 const LIGHT_TYPE_KO = { emissive: '발광면(개체 그대로)', point: '점광원', spot: '스팟', area: '면광원' };
 // 사용자 대면 단위는 루멘(lm)·켈빈(K)으로 통일한다. 렌더러 내부 단위로의 환산은 이 아래 두 함수에만 둔다.
@@ -6055,6 +6251,8 @@ function lightColorRGB(L) { return (L && L.color) ? L.color : kelvinToRGB(L ? L.
 function lightDefaults() {
   return { type: 'emissive', enabled: true, intensity: LM_REF, colorTemp: 3000, color: null,
     spotAngleDeg: 60, spotPenumbra: 0.2,
+    ies: null,        // {name, vAng[], cd[], nH, axial, lumens} — IES 배광. 있으면 균등 배광 대신 이걸 쓴다
+    iesRadius: 0,     // 광원 반지름(mm) — 0보다 크면 면적을 가진 스팟 = 부드러운 그림자
     // 아래 셋은 현재 소프트웨어 렌더러용 힌트 — Phase 2(패스트레이싱)에서 물리 기반으로 대체된다
     range: LIGHT_RANGE_DEF, soft: 400, bounce: 0.5 };
 }
@@ -6438,6 +6636,7 @@ function lightSources() {
         bounce: L.bounce != null ? Math.max(0, L.bounce) : 0.5, // 간접광(반사) 세기, 0=끔
         cr: c[0] / mx, cg: c[1] / mx, cb: c[2] / mx,      // 색온도 → 채널별 비율
         lm: L.intensity,                                   // 물리 광속 — 조도(lux) 계산에 쓴다
+        ies: L.ies || null,                                // 배광 — 있으면 방향별 광도로 (조도 분석도 이걸 쓴다)
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
     }
@@ -7141,7 +7340,16 @@ function rtEmitterLook(L, areaM2) {
 }
 // 해석적 광원을 씬에 추가한다. meshLm: eid → 발광 메시가 이미 낸 루멘.
 // 순수 곡선 광원(선·원)은 삼각형이 없어 발광 메시가 아예 없었다 — 여기서 처음으로 실제 빛을 낸다.
+// IES 텍스처는 광원별로 캐시한다 — 매 프레임 180개 텍셀을 다시 굽지 않게.
+const _iesTexCache = new Map();
+function rtIesTexture(L, T3) {
+  const key = L.id + '|' + (L.ies && L.ies.name || '');
+  let t = _iesTexCache.get(key);
+  if (!t) { t = iesToTexture(L.ies, T3); if (t) _iesTexCache.set(key, t); }
+  return t;
+}
 function rtAddLights(T, scene, meshLm) {
+  const P = rt.mod && rt.mod.P;
   const byId = new Map(state.entities.map(e => [e.id, e]));
   for (const L of state.lights) {
     if (!L.enabled) continue;
@@ -7154,13 +7362,29 @@ function rtAddLights(T, scene, meshLm) {
     const c = lightColorRGB(L), mx = Math.max(c[0], c[1], c[2]) || 1;
     const col = new T.Color(c[0] / mx, c[1] / mx, c[2] / mx);
     // 스팟도 lm/(4π) 를 쓴다 — 원뿔로 몰아주면 조도 분석(균등 배광)과 어긋난다. §4.3 전제 유지.
-    const cd = rest / pts.length / (4 * Math.PI);
+    // 광속 보존: 배광이 있으면 그 모양의 입체각 적분으로 나눈다(균등이면 4π 라 기존과 동일).
+    // 그래야 집광 배광이 '같은 루멘을 좁게 모아 더 밝은' 물리가 된다.
+    const flux = rest / pts.length;
+    const cd = flux / (L.ies ? iesFluxFactor(L.ies) : 4 * Math.PI);
     for (const p of pts) {
       let lt;
-      if (L.type === 'spot') {
-        lt = new T.SpotLight(col, cd);
-        lt.angle = Math.max(0.02, (L.spotAngleDeg || 60) * Math.PI / 360);   // 전각 → 반각
-        lt.penumbra = Math.min(1, Math.max(0, L.spotPenumbra == null ? 0.3 : L.spotPenumbra));
+      if (L.type === 'spot' || L.ies) {
+        // IES 가 붙으면 PhysicalSpotLight — iesMap·radius 는 이 클래스에만 있다.
+        // 라이브러리(WebGLPathTracer)가 씬을 훑어 iesMap 텍스처를 모아 셰이더에 올린다:
+        //   getPhotometricAttenuation: angle = acos(dot(posToLight, lightDir))/PI → texture(iesProfiles, ...).r
+        // 즉 '정면축에서 벌어진 각' 으로 배광을 조회한다. 우리 스팟의 정면축은 아래(-Z)이고
+        // IES 수직각 0° 도 nadir 라 그대로 맞물린다.
+        const SpotCls = (L.ies && P && P.PhysicalSpotLight) ? P.PhysicalSpotLight : T.SpotLight;
+        lt = new SpotCls(col, cd);
+        // IES 가 있으면 배광이 각도를 정하므로 원뿔은 넓게 열어둔다 — 원뿔로 자르면 배광이 잘린다.
+        lt.angle = L.ies ? Math.PI / 2 : Math.max(0.02, (L.spotAngleDeg || 60) * Math.PI / 360); // 전각 → 반각
+        lt.penumbra = L.ies ? 0 : Math.min(1, Math.max(0, L.spotPenumbra == null ? 0.3 : L.spotPenumbra));
+        if (L.ies && lt.iesMap !== undefined) {
+          const tex = rtIesTexture(L, T);
+          if (tex) lt.iesMap = tex;
+        }
+        // 광원 반지름 → 면적을 가진 스팟 = 부드러운 그림자 (0 이면 점광원 = 칼날 그림자)
+        if (lt.radius !== undefined) lt.radius = Math.max(0, (L.iesRadius || 0)) * RT_MM;
         lt.target.position.set(p.x * RT_MM, p.y * RT_MM, (p.z - 1000) * RT_MM); // 아래를 비춘다
         lt.target.userData.rtLight = true;
         scene.add(lt.target);
@@ -7449,6 +7673,61 @@ function sunApply() {
   if (typeof render3D === 'function' && v3) render3D();
   if (rt.on) rtSetEnv(rtEnvWanted());   // 하늘을 다시 굽고 노출도 환경에 맞춘다
 }
+// IES 배광 파일 불러오기 — 선택한 광원(또는 유일한 광원)에 붙인다.
+// 붙이면 그 광원은 균등 배광 대신 제조사 실측 배광으로 빛난다.
+function cmdIes(arg) {
+  const a = (arg || '').trim();
+  const sel = selectedLights();
+  if (/^(해제|off|none|제거)$/i.test(a)) {
+    if (!sel.length) { logLine('  IES 를 해제할 광원을 먼저 선택하세요.', 'warn'); return; }
+    pushUndo();
+    for (const L of sel) { L.ies = null; _iesTexCache.delete(L.id + '|'); }
+    for (const k of [..._iesTexCache.keys()]) if (sel.some(L => k.startsWith(L.id + '|'))) _iesTexCache.delete(k);
+    logLine(`  ▷ IES 해제 — 광원 ${sel.length}개가 균등 배광(lm/4π)으로 돌아갑니다`, 'ok');
+    renderLightList(); renderProps(); if (v3) render3D();
+    return;
+  }
+  if (!sel.length) {
+    logLine('  IES 를 붙일 광원을 먼저 선택하세요 — [광원] 패널에서 클릭하거나 개체를 선택합니다.', 'warn');
+    logLine('  사용법: ies (파일 선택) · ies 해제', 'info');
+    return;
+  }
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.ies,.IES,text/plain';
+  inp.addEventListener('change', () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const ies = parseIES(rd.result);
+      if (ies.err) { logLine(`  ✗ ${f.name}: ${ies.err}`, 'warn'); return; }
+      const sm = iesSummary(ies);
+      if (!(sm.maxCd > 0)) { logLine(`  ✗ ${f.name}: 광도가 모두 0 입니다.`, 'warn'); return; }
+      pushUndo();
+      ies.name = f.name;
+      for (const L of sel) {
+        L.ies = ies;
+        if (L.type === 'emissive' || L.type === 'area') L.type = 'spot'; // 배광은 방향이 있는 광원의 개념
+        for (const k of [..._iesTexCache.keys()]) if (k.startsWith(L.id + '|')) _iesTexCache.delete(k);
+      }
+      logLine(`  ▷ IES 적용 — ${f.name} · 최대 ${sm.maxCd.toLocaleString()} cd (${sm.maxAt}°) · 빔각 ${sm.beamDeg != null ? sm.beamDeg + '°' : '—'}`, 'ok');
+      if (ies.lumens > 0) logLine(`     파일의 광속 ${Math.round(ies.lumens).toLocaleString()} lm — 밝기는 광원의 세기(lm) 설정을 그대로 씁니다. 맞추려면 세기를 이 값으로 바꾸세요.`, 'info');
+      if (!ies.axial) logLine(`     ⚠ 수평각 ${ies.nH}개(비축대칭) — 렌더러가 축대칭 배광만 지원해 수평 방향으로 평균했습니다. 좌우가 다른 배광은 근사입니다.`, 'warn');
+      renderLightList(); renderProps(); if (v3) render3D();
+    };
+    rd.onerror = () => logLine('  ✗ 파일을 읽지 못했습니다.', 'warn');
+    rd.readAsText(f);
+  });
+  inp.click();
+}
+// 선택된 광원들 — 개체 선택 또는 [광원] 패널 선택
+function selectedLights() {
+  const out = [];
+  for (const L of state.lights) if (state.selection.has(L.objectId)) out.push(L);
+  if (!out.length && state.lights.length === 1) out.push(state.lights[0]); // 광원이 하나뿐이면 그것
+  return out;
+}
+
 // 라이노의 Sun 명령과 같은 이름·같은 개념(날짜·시각·위경도·북쪽).
 // 인자 없이 부르면 켜고/끈다 — 라이노의 Sun 패널 체크박스와 같다.
 // 값만 보고 싶으면 sun 상태.
@@ -7580,7 +7859,11 @@ function illuminanceAt(wx, wy, wz, nx, ny, nz) {
       vis = visFraction(wx + nx * 2, wy + ny * 2, wz + nz * 2, g, dx, dy, dz, d);
       if (vis <= 0) continue;                     // 완전히 그늘
     }
-    const I = (g.lm || 0) / (4 * Math.PI);        // 광도(cd) — 균등 배광 가정
+    // 광도(cd). 배광(IES)이 있으면 그 방향의 실측 광도를, 없으면 균등 배광.
+    // ★ 렌더러와 반드시 같은 함수를 써야 한다 — 안 그러면 화면과 조도 숫자가 어긋난다.
+    // 광원의 정면축은 아래(-Z). 면에서 광원으로 가는 방향의 반대가 광원이 쏘는 방향이다.
+    const ang = g.ies ? Math.acos(Math.max(-1, Math.min(1, -(-dz) / d))) : 0;
+    const I = lightCandela(g.lm || 0, g.ies || null, ang);
     const dM2 = d2 * RT_MM * RT_MM;               // mm² → m²
     E += I * cos / Math.max(1e-9, dM2) * vis;
   }
@@ -8666,6 +8949,7 @@ const INSTANT_CMDS = {
   raytrace: cmdRaytrace,
   rtenv: cmdRtEnv,
   sun: cmdSun,
+  ies: cmdIes,
   exposure: cmdExposure,
   falsecolor: cmdFalseColor,
   fcmax: cmdFcMax,
@@ -9039,6 +9323,7 @@ const TOOL_KO = {
   raytrace: '레이트레이싱 렌더(RAYTRACE)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
+  ies: 'IES 배광 파일(IES)',
   exposure: '렌더 노출(EXPOSURE)',
   falsecolor: '조도 색표시(FALSECOLOR)',
   fcmax: '조도 스케일(FCMAX)',
@@ -9104,6 +9389,7 @@ const CMD_ALIASES = {
   raytrace: 'raytrace', rt: 'raytrace', raytraced: 'raytrace', 레이트레이싱: 'raytrace', 렌더: 'raytrace',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
+  ies: 'ies', 배광: 'ies', iesfile: 'ies',
   exposure: 'exposure', 노출: 'exposure',
   falsecolor: 'falsecolor', fc: 'falsecolor', 조도: 'falsecolor', 조도표시: 'falsecolor',
   fcmax: 'fcmax', 조도스케일: 'fcmax',
@@ -10674,6 +10960,7 @@ const CMD_HELP = [
     ['raytrace', '레이트레이싱 렌더', '3D 뷰를 경로추적(path tracing)으로 렌더 — 지정한 광원의 직접광·그림자·간접광이 물리적으로 계산되어 프레임이 쌓이며 수렴한다. 환경은 기본이 완전한 어둠이라 광원이 없으면 검은 화면. 카메라를 움직이면 저해상도로 즉시 따라오고 놓으면 다시 수렴. WebGL2가 없으면 lighting(근사 모드)로 안내. 다시 입력하면 OFF'],
     ['rtenv', '렌더 환경', '태양 켜기/끄기 — sun 과 같다. 태양이 켜져 있으면 Raytraced 도 물리 하늘+태양으로, 꺼져 있으면 검은 환경(인공조명만 판별)으로 자동 전환된다'],
     ['exposure', '노출', 'Raytraced 화면의 노출. 실내 인공조명과 주광은 밝기가 2,000배 차이 나서 환경에 따라 자동으로 바뀐다. exposure 2.5e-5 처럼 직접 지정하거나 exposure auto 로 되돌린다'],
+    ['ies', 'IES 배광', '조명기구 제조사의 .ies 파일을 광원에 붙인다 — 방향별 실측 광도를 그대로 재현. 광원을 선택하고 ies 입력. ies 해제 로 균등 배광 복귀. Raytraced 에서 보인다'],
     ['sun', '태양', '날짜·시각·위경도·진북으로 실제 태양 위치를 계산한다. 그냥 sun 이면 현재 값, sun 시각=14:30 처럼 설정. 주광 환경(rtenv)에서 하늘과 그림자에 반영된다'],
     ['railing', '난간 지정', '선/곡선/원 선택 후 → 높이·기둥 간격. 상단 손스침 + 동자기둥. 표면 위 곡선이면 그 높이를 따라 기울어짐(발코니는 닫힌 폴리라인)'],
     ['stair', '계단 지정', '진행 방향 선/곡선(시작=아랫단) 선택 후 → 폭·총높이·최대 단높이. 곡선이면 각 단이 진행방향에 직교(L자·아치형), 표면 위 곡선이면 그 시작·끝 높이를 사용(단높이는 균일)'],
@@ -10749,7 +11036,7 @@ const COMMAND_LIST = [
   { name: 'window', ko: 'BIM 창' }, { name: 'bimclear', ko: 'BIM 해제' },
   { name: '3d', ko: '3D 뷰' },
   { name: 'section', ko: '단면 추출' }, { name: 'elevation', ko: '입면 추출' },
-  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'rtenv', ko: '렌더 환경(주광)', d3: 1 }, { name: 'sun', ko: '태양', d3: 1 }, { name: 'exposure', ko: '렌더 노출', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
+  { name: 'level', ko: '층 정보' }, { name: 'roof', ko: 'BIM 지붕' }, { name: 'stair', ko: 'BIM 계단' }, { name: 'railing', ko: 'BIM 난간', d3: 1 }, { name: 'setaslight', ko: '광원으로 지정', d3: 1 }, { name: 'raytrace', ko: '레이트레이싱 렌더', d3: 1 }, { name: 'rtenv', ko: '렌더 환경(주광)', d3: 1 }, { name: 'sun', ko: '태양', d3: 1 }, { name: 'ies', ko: 'IES 배광', d3: 1 }, { name: 'exposure', ko: '렌더 노출', d3: 1 }, { name: 'falsecolor', ko: '조도 색표시', d3: 1 }, { name: 'addsensorplane', ko: '측정면 추가', d3: 1 }, { name: 'sensorcsv', ko: '조도 CSV', d3: 1 }, { name: 'unsetlight', ko: '광원 해제', d3: 1 }, { name: 'lighting', ko: '조명 보기(야간)', d3: 1 },
   { name: 'extrudecrv', ko: '곡선 돌출(마우스·수치)', d3: 1 }, { name: 'extrudesrf', ko: '면 두께(마우스·수치)', d3: 1 },
   { name: 'box', ko: '상자', d3: 1 }, { name: 'cylinder', ko: '원기둥', d3: 1 }, { name: 'settop', ko: '상단 정렬', d3: 1 },
   { name: 'stl', ko: '3D 저장 STL', d3: 1 }, { name: 'obj', ko: '3D 저장 OBJ', d3: 1 }, { name: 'selectedexport', ko: '선택 3D 저장', d3: 1 },
@@ -12231,7 +12518,8 @@ window.__CADTEST__ = {
   computeAngularDim, lineInfIntersect, zoomPrev, pushViewPrev,
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
-  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
+  bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, rtEnvWanted, cmdRtEnv, parseIES, iesCandelaAt, iesSummary, iesToTexture, iesFluxFactor, lightCandela, cmdIes, selectedLights, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE, RT_EXPOSURE_DAY,
+  vpIsPlan, vpPlanIndex, vpRect, vpRectCss, planCvRect, syncPlanCv, open3D, close3D, is3DActive, resize, worldToScreen, screenToWorld,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,

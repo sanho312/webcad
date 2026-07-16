@@ -1071,6 +1071,10 @@ function tests(){
       points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'column', base: 0, h: 2000 } }]);
     if (!C.v3) C.INSTANT_CMDS['view3d']();
     const V = C.v3;
+    // 뷰 레이아웃은 localStorage 에서 복원된다 — 4분할이 저장돼 있으면 뷰포트가 1/4 크기가 되고
+    // 아래 '140px 이동' 가정이 두 배의 높이 변화가 되어 테스트가 거짓으로 실패한다. 실제로 한 번 속았다.
+    // 테스트는 저장된 상태에 의존하면 안 된다 → 단일 아이소 뷰로 못박는다.
+    V.quad = false; V.act = 1;
     V.pitch = 45 * Math.PI / 180; V.yaw = 0.6;
     C.INSTANT_CMDS.zoom();
     V._fast = false; C.render3D();
@@ -1167,6 +1171,74 @@ function tests(){
     eqi((C.state.entities.find(e => e.id === 1) || {}).bim.h, 2000, '취소하면 원래 높이로 복원된다');
   }
 
+  group('평면 뷰포트는 2D 엔진이 그린다 (평면 이중구현 제거)');
+  {
+    // 배경: 평면이 두 벌이었다 — 2D 편집기(draw())와 3D의 '평면' 뷰포트.
+    // 3D 쪽은 반쪽이었다: renderScene 의 under 루프가 TEXT/HATCH/IMAGE/INSERT 를 통째로 버려서
+    // (else continue) 치수는 선만 남고 숫자가 사라졌다. fit3D 도 같은 화이트리스트라 zoom 범위까지 어긋났다.
+    // → 이제 mode:'plan' 인 칸은 3D 렌더러가 건너뛰고, #cv(2D 엔진)를 그 칸에 배치해 그린다.
+    reset();
+    setEnts([
+      { id: 1, type: 'LWPOLYLINE', layer: '0', color: '#c8c4bc', closed: true,
+        points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'column', base: 0, h: 2000 } },
+      // 2D 엔진만 그릴 수 있는 것 — 3D 밑그림 경로엔 TEXT 가 아예 없다
+      { id: 2, type: 'TEXT', layer: '0', color: '#e04040', x: 0, y: 2600, height: 400, text: 'TXT', rotation: 0 },
+    ]);
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V = C.v3;
+    const doc = V.cv.ownerDocument;          // 테스트는 iframe 밖이라 앱의 document 를 따로 잡는다
+    const cvEl = doc.getElementById('cv');
+
+    eqi(V.views[0].mode, 'plan', "views[0]('평면')은 mode:'plan'");
+    ok(!V.views[1].mode, "views[1]('아이소')는 3D 모드 (plan 아님)");
+    ok(C.vpIsPlan(0), 'vpIsPlan(0) = 참');
+    ok(!C.vpIsPlan(1), 'vpIsPlan(1) = 거짓');
+
+    // ── 4분할: 평면 칸이 떠 있다 ──
+    V.quad = true; V.act = 1; C.render3D();
+    eqi(C.vpPlanIndex(), 0, '4분할이면 평면 칸 인덱스 = 0');
+    const r = C.vpRect(0), Wd = V.cv.width, Hd = V.cv.height;
+    ok(r.w > 0 && r.w <= Wd / 2 + 1, '평면 칸 폭 = 캔버스의 절반');
+    ok(r.h > 0 && r.h <= Hd / 2 + 1, '평면 칸 높이 = 캔버스의 절반');
+    ok(cvEl.style.display !== 'none', '4분할에서 #cv 가 보인다');
+    eqi(cvEl.style.position, 'absolute', '#cv 는 평면 칸에 절대배치된다');
+    ok(+cvEl.style.zIndex >= 19, '#cv 가 3D 오버레이(z-index 18) 위에 온다');
+    // ★3D 렌더러가 평면 칸을 건너뛴다 — 건너뛰지 않으면 반쪽 평면이 되살아난다
+    ok(!(V.views[0]._faces && V.views[0]._faces.length), '★3D 렌더러는 평면 칸의 면을 만들지 않는다 (건너뜀)');
+    ok(V.views[1]._faces && V.views[1]._faces.length > 0, '아이소 칸은 3D 렌더러가 그대로 그린다');
+
+    // ★핵심: 평면 칸에 문자가 실제로 그려진다 (3D 파이프라인은 TEXT 를 못 그린다)
+    C.INSTANT_CMDS.zoom();
+    const g = cvEl.getContext('2d');
+    const d = g.getImageData(0, 0, cvEl.width, cvEl.height).data;
+    let red = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 10 && d[i] > 150 && d[i + 1] < 110 && d[i + 2] < 110) red++;
+    ok(red > 10, '★평면 칸에 문자(TEXT)가 그려진다 — 2D 엔진이 그리므로');
+
+    // ── 단일 + 아이소: 평면 칸이 없다 → #cv 숨김 ──
+    V.quad = false; V.act = 1; C.render3D();
+    eqi(C.vpPlanIndex(), -1, '단일 아이소 뷰에는 평면 칸이 없다');
+    eqi(cvEl.style.display, 'none', '평면 칸이 없으면 #cv 는 숨는다 (3D 가 화면 전체)');
+
+    // ── 단일 + 평면: #cv 가 화면 전체 ──
+    V.quad = false; V.act = 0; C.render3D();
+    eqi(C.vpPlanIndex(), 0, '단일 평면 뷰의 평면 칸 인덱스 = 0');
+    ok(cvEl.style.display !== 'none', '단일 평면 뷰에서 #cv 가 보인다');
+    const rc = C.planCvRect();
+    ok(Math.abs(rc.w - Wd / (window.devicePixelRatio || 1)) < 2, '단일 평면이면 #cv 가 캔버스 전체 폭');
+
+    // ── 3D 를 닫으면 오늘과 동일하게 복귀 ──
+    C.close3D();
+    ok(cvEl.style.display !== 'none', '3D 를 닫으면 #cv 가 다시 보인다');
+    eqi(cvEl.style.position, '', '3D 를 닫으면 절대배치가 풀린다 (인라인 스타일 해제)');
+    ok(cvEl._w > Wd / (window.devicePixelRatio || 1) / 2, '3D 를 닫으면 #cv 가 화면 전체로 돌아온다');
+
+    // 뒷정리 — 이 그룹은 act=0(평면)으로 끝나고 3D를 닫는다. 그대로 두면 다음 그룹이
+    // '평면 칸'을 활성으로 렌더하게 되고, 3D 렌더러가 그 칸을 건너뛰므로 면이 0개가 되어
+    // 남의 테스트가 거짓으로 실패한다. 실제로 그렇게 깨뜨렸다.
+    C.INSTANT_CMDS['view3d'](); V.quad = false; V.act = 1; C.render3D();
+  }
+
   group('면 피킹은 조명과 무관해야 한다 (extrudesrf 보호)');
   {
     // 회귀 방지: 조명/태양을 켜면 pushLitPoly 가 표시용 면을 잘게 쪼갠다.
@@ -1177,6 +1249,9 @@ function tests(){
       points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'column', base: 0, h: 2000 } }]);
     if (!C.v3) C.INSTANT_CMDS['view3d']();
     const V = C.v3;
+    // 앞 그룹/localStorage 가 남긴 레이아웃에 의존하지 않는다.
+    // act=0(평면)이면 3D 렌더러가 그 칸을 건너뛰어 면이 0개가 되고, 이 그룹은 무의미해진다.
+    V.quad = false; V.act = 1;
     V.pitch = 45 * Math.PI / 180; V.yaw = 0.6;
     C.INSTANT_CMDS.zoom();   // 3D 화면 맞춤 (전체보기)
     const hq = () => { V._fast = false; clearTimeout(V._settleT); C.render3D(); };
