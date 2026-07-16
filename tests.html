@@ -1243,6 +1243,49 @@ function tests(){
     S.cloud = 0; S.enabled = false;
   }
 
+  group('새로고침·탭 전환 저장(captureDoc/saveLocal)에 조명·재질·날씨가 포함된다');
+  {
+    // 회귀 방지: captureDoc(탭 전환·자동저장의 원천)에 lights/sensors/matlib/sun 이 없었고,
+    // saveLocal 의 화이트리스트는 levels(층)까지 추가로 버렸다.
+    // → 새로고침하면 광원·재질 라이브러리·태양·층 구성이 통째로 사라졌다 (실사용 스윕에서 잡음).
+    reset();
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[0, 0], [1000, 0], [1000, 1000], [0, 1000]], bim: { kind: 'column', base: 0, h: 2000 } }]);
+    C.state.lights.push({ id: 'L9', objectId: 1, name: '회귀등', type: 'emissive', enabled: true, intensity: 500 });
+    C.state.matlib = { '회귀재질': { name: '회귀재질', base: 'wood', color: '#123123' } };
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { cloud: 60, h: 15, enabled: true });
+    C.state.levels = [{ name: '1F', elev: 0 }, { name: '2F', elev: 3000 }];
+
+    const cap = C.captureDoc();
+    ok(Array.isArray(cap.lights) && cap.lights.length === 1, '★captureDoc 에 광원이 담긴다');
+    ok(!!cap.matlib && !!cap.matlib['회귀재질'], '★captureDoc 에 재질 라이브러리가 담긴다');
+    ok(!!cap.sun && cap.sun.cloud === 60, '★captureDoc 에 태양·날씨가 담긴다');
+    ok(Array.isArray(cap.sensors), 'captureDoc 에 센서 목록');
+    ok(cap.levels && cap.levels.length === 2, 'captureDoc 에 층 구성');
+
+    // saveLocal → localStorage 왕복 (새로고침이 실제로 읽는 것)
+    C.saveLocal();
+    const raw = C.loadLocal();
+    ok(!!raw && Array.isArray(raw.docs), 'saveLocal 이 v2 다중문서 형식으로 저장한다');
+    const d0 = raw.docs[raw.cur || 0];
+    ok(!!d0.sun && d0.sun.cloud === 60, '★localStorage 저장본에 태양·날씨');
+    ok(Array.isArray(d0.lights) && d0.lights.length === 1, '★localStorage 저장본에 광원');
+    ok(!!d0.matlib && !!d0.matlib['회귀재질'], '★localStorage 저장본에 재질 라이브러리');
+    ok(d0.levels && d0.levels.length === 2, '★localStorage 저장본에 층 구성 (예전엔 화이트리스트가 버렸다)');
+    ok(d0.fileHandle === undefined && d0.undo === undefined, '핸들·undo 는 여전히 제외 (직렬화 불가·용량)');
+
+    // 왕복: applyDoc 으로 되살리면 그대로
+    Object.assign(C.state.sun, { cloud: 0, enabled: false });
+    C.state.lights.length = 0; C.state.matlib = {};
+    C.applyDoc(JSON.parse(JSON.stringify(d0)));
+    eq(C.state.sun.cloud, 60, '★왕복 후 운량');
+    eqi(C.state.lights.length, 1, '★왕복 후 광원');
+    ok(!!C.state.matlib['회귀재질'], '★왕복 후 라이브러리');
+    C.state.lights.length = 0; C.state.matlib = {}; C.state.levels = [{ name: '1F', elev: 0 }];
+    S.cloud = 0; S.enabled = false;
+  }
+
   group('저장/복원에 태양·날씨가 포함된다 (문서의 일부)');
   {
     // 회귀 방지: 태양·날씨(시간·계절·운량·탁도)는 restore(undo) 에만 복원됐고

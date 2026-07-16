@@ -13508,6 +13508,11 @@ function captureDoc() {
     entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer,
     nextId: state.nextId, blocks: state.blocks, view: { ...state.view }, views: state.views,
     levels: state.levels, curLv: state.curLv, ghostLv: state.ghostLv,
+    // ★광원·센서·재질 라이브러리·태양도 문서의 일부다. 여기 없으면 문서 탭을 전환하거나
+    //   새로고침 복원할 때 조명·재질·날씨가 통째로 사라진다 — 실사용 스윕에서 잡았다.
+    lights: state.lights, nextLightId: state.nextLightId,
+    sensors: state.sensors, nextSensorId: state.nextSensorId,
+    matlib: state.matlib, sun: state.sun,
     fileName: currentFileName, fileLoc: currentFileLoc, fileHandle,
     undo: undoStack.slice(), redo: redoStack.slice(),
   };
@@ -13636,7 +13641,17 @@ function saveLocal() {
   try {
     if (!docs.length) docs = [{}];
     docs[curDoc] = captureDoc();
-    const sane = docs.map(d => ({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId, blocks: d.blocks, view: d.view, views: d.views, fileName: d.fileName, fileLoc: d.fileLoc === 'pc' ? null : d.fileLoc })); // 핸들·undo 제외
+    // 핸들·undo 만 빼고 문서 전체를 담는다. 예전엔 화이트리스트가 도형·레이어만 살려서
+    // ★새로고침하면 광원·센서·재질 라이브러리·태양·층 구성이 통째로 사라졌다 (실사용 스윕에서 잡음).
+    const sane = docs.map(d => ({
+      entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId,
+      blocks: d.blocks, view: d.view, views: d.views,
+      levels: d.levels, curLv: d.curLv, ghostLv: d.ghostLv,
+      lights: d.lights, nextLightId: d.nextLightId,
+      sensors: d.sensors, nextSensorId: d.nextSensorId,
+      matlib: d.matlib, sun: d.sun,
+      fileName: d.fileName, fileLoc: d.fileLoc === 'pc' ? null : d.fileLoc,
+    }));
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ v: 2, docs: sane, cur: curDoc, t: Date.now() }));
   } catch (e) { /* 용량 초과 등 무시 */ }
 }
@@ -13750,6 +13765,7 @@ window.__CADTEST__ = {
   rviewSkyTexture, RVIEW_SKY_W, RVIEW_SKY_H,
   vpIsRendered, vpShowLabel, vpHideLabel, vpLabelEl,
   markInteract, sunApply, preethamCache,
+  captureDoc, saveLocal, loadLocal,
   vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
   vpModeMenu, vpSetMode, closeVpMenu, cycleElev,
   modelExtents, entityExtentPts, fit3D, zoomFit, pushViewPrev, zoomPrev,
