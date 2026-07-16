@@ -1243,6 +1243,47 @@ function tests(){
     S.cloud = 0; S.enabled = false;
   }
 
+  group('저장/복원에 태양·날씨가 포함된다 (문서의 일부)');
+  {
+    // 회귀 방지: 태양·날씨(시간·계절·운량·탁도)는 restore(undo) 에만 복원됐고
+    // 문서 저장/불러오기·공유(applyDoc) 경로는 빠뜨렸었다 — 흐린 오후로 저장해도 열면 맑음이 됐다.
+    // (조명·재질은 저장되는데 태양만 빠져 있었다. 실사용 스윕에서 잡았다.)
+    reset();
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[0, 0], [1000, 0], [1000, 1000], [0, 1000]], bim: { kind: 'slab', top: 0, t: 100 } }]);
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { mo: 9, d: 23, h: 17, mi: 30, cloud: 85, turbidity: 4, enabled: true });
+
+    // ★공유 링크 payload 에 태양이 실린다 (JSON 이므로 스냅샷)
+    const share = JSON.parse(C.drawingPayload());
+    ok(!!share.sun, '★공유 payload 에 sun 이 있다');
+    eq(share.sun.cloud, 85, '운량이 담긴다');
+    eq(share.sun.h, 17, '시간이 담긴다');
+    eq(share.sun.turbidity, 4, '탁도가 담긴다');
+
+    // ★applyDoc 복원 — 실제 저장(직렬화)을 흉내내 참조 공유를 끊는다
+    const saved = JSON.parse(JSON.stringify({
+      entities: C.state.entities, layers: C.state.layers, currentLayer: C.state.currentLayer,
+      nextId: C.state.nextId, sun: C.state.sun,
+    }));
+    // 태양을 완전히 다른 값으로 오염시킨 뒤 복원
+    Object.assign(C.state.sun, { cloud: 0, h: 12, mi: 0, turbidity: 3, enabled: false, mo: 6, d: 21 });
+    C.applyDoc(saved);
+    eq(C.state.sun.cloud, 85, '★복원 후 운량이 살아있다');
+    eq(C.state.sun.h, 17, '★복원 후 시간이 살아있다');
+    eq(C.state.sun.mi, 30, '복원 후 분');
+    eq(C.state.sun.turbidity, 4, '복원 후 탁도');
+    eq(C.state.sun.mo, 9, '★복원 후 계절(월)');
+    eq(C.state.sun.d, 23, '복원 후 일');
+    eqi(C.state.sun.enabled, true, '★복원 후 태양이 켜져 있다');
+
+    // 태양이 없는 옛 도면도 안 터진다 — applyDoc 이 null 로 두면 이어지는 renderSunPanel→sunState 가
+    // 기본값으로 채운다(맑은 정오·태양 꺼짐). 즉 옛 도면을 열어도 태양 패널이 정상 동작한다.
+    C.applyDoc({ entities: [], sun: undefined });
+    ok(C.state.sun && C.state.sun.enabled === false, '★옛 도면(태양 없음)은 기본값으로 채워진다 (안 터진다)');
+    ok(C.state.sun.cloud === 0 && C.state.sun.turbidity === 3, '옛 도면의 태양은 맑은 기본값');
+  }
+
   group('날씨 — 운량과 흐린 하늘 (물리 보존)');
   {
     const S = C.sunState();

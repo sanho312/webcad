@@ -12639,7 +12639,7 @@ async function shareDecode(enc) {
   return new TextDecoder().decode(await new Response(stream).arrayBuffer());
 }
 function drawingPayload() {
-  return JSON.stringify({ v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer, blocks: state.blocks, matlib: state.matlib, nextId: state.nextId, view: state.view, fileName: currentFileName });
+  return JSON.stringify({ v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer, blocks: state.blocks, matlib: state.matlib, sun: state.sun, nextId: state.nextId, view: state.view, fileName: currentFileName });
 }
 async function shareLink() {
   if (!state.entities.length) { logLine('  공유할 도형이 없습니다.', 'warn'); return; }
@@ -13522,6 +13522,9 @@ function applyDoc(d) {
   state.nextId = Math.max(d.nextId || 1, state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1);
   state.blocks = d.blocks || {}; insertName = null;
   state.matlib = d.matlib || {};   // 재질 라이브러리 — 없으면 빈 것으로 (옛 도면 호환)
+  // ★태양·날씨(시간·계절·운량·탁도)도 도면의 일부다. restore(undo)만 이걸 복원하고
+  //   문서 저장/불러오기·공유 경로(applyDoc)는 빠뜨렸었다 — 흐린 오후로 저장해도 열면 맑음이 됐다.
+  state.sun = d.sun || null;
   // 광원 컬렉션. 개체를 못 찾는 광원은 조용히 지우지 않고 경고로 남긴다 (§1.2)
   state.sensors = Array.isArray(d.sensors) ? d.sensors : [];
   state.nextSensorId = d.nextSensorId || (state.sensors.length + 1);
@@ -13547,7 +13550,9 @@ function applyDoc(d) {
   redoStack.length = 0; if (d.redo) redoStack.push(...d.redo);
   state.selection.clear(); cmdOp = null; draft = null; pts = []; previewEnts = null; moveOp = null;
   setFileName(currentFileName, currentFileLoc);
-  renderLayers(); renderProps(); updateStat(); refreshBlockList(); draw();
+  renderLayers(); renderProps(); updateStat(); refreshBlockList();
+  if (typeof renderSunPanel === 'function') renderSunPanel();   // 복원한 태양·날씨를 패널에 반영
+  draw();
 }
 function switchDoc(i) {
   if (i === curDoc || !docs[i]) { renderDocTabs(); return; }
@@ -13793,7 +13798,7 @@ window.WEBCAD_API = {
   getDoc: () => ({
     name: currentFileName,
     data: { v: 1, entities: liveEnts(), layers: state.layers, currentLayer: state.currentLayer,
-            blocks: state.blocks, matlib: state.matlib, nextId: state.nextId, view: state.view, views: state.views,
+            blocks: state.blocks, matlib: state.matlib, sun: state.sun, nextId: state.nextId, view: state.view, views: state.views,
             levels: state.levels, curLv: state.curLv,
             lights: state.lights, nextLightId: state.nextLightId,
             sensors: state.sensors, nextSensorId: state.nextSensorId },
@@ -13801,7 +13806,7 @@ window.WEBCAD_API = {
   // 클라우드 도면 로드
   setDoc: (name, d) => {
     applyDoc({ entities: d.entities, layers: d.layers, currentLayer: d.currentLayer, nextId: d.nextId,
-               matlib: d.matlib,
+               matlib: d.matlib, sun: d.sun,
                lights: d.lights, nextLightId: d.nextLightId,
                sensors: d.sensors, nextSensorId: d.nextSensorId,
                blocks: d.blocks, view: d.view, views: d.views, levels: d.levels, curLv: d.curLv,
