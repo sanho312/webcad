@@ -1766,6 +1766,39 @@ function tests(){
     ok(C.RT_DENOISE_UNTIL === undefined, '★옛 상수는 완전히 사라졌다 (남은 참조가 있으면 로드 실패)');
   }
 
+  group('퀄리티 3차 — AO(GTAO)·이방성·렌더 캡처 계약');
+  {
+    // GTAO 본체(구석 -5.4 / 벽하단 -8.0 / 열린 바닥 0)는 실브라우저 WebGL 로 검증했다 (2026-07-17).
+    // 검증 때 걸린 함정 2개를 기본값으로 못박는다:
+    //  ① 기본 radius 0.25(m)는 건축 스케일에 무반응 — 1.2m 로 키워야 구석이 반응한다.
+    //  ② AO 디버그 출력은 ACES 톤맵 상단 압축에 눌려 '전멸'로 보인다 — 판정은 최종 화면 A/B 로만.
+    reset();
+    ok(C.rview.ao === true, '★AO 기본 켬 (렌더링 뷰 표시 필터 — rt 에는 안 넣는다, 패스트레이싱은 진짜 GI)');
+    ok(typeof C.cmdAo === 'function' && typeof C.rviewAoRender === 'function', 'ao 명령·렌더 경로 존재');
+    ok(C.RVIEW_AO && C.RVIEW_AO.radius >= 0.5 && C.RVIEW_AO.radius <= 3, '★반경 기본값이 건축 스케일(m 단위, 0.5~3)');
+    eqi(C.INSTANT_CMDS['ao'], C.cmdAo, 'INSTANT_CMDS 등록');
+    eqi(C.CMD_ALIASES['gtao'], 'ao', 'gtao 별칭');
+    eqi(C.CMD_ALIASES['구석음영'], 'ao', '한글 별칭');
+    const keepAo = { ao: C.rview.ao, s: C.RVIEW_AO.scale };
+    C.cmdAo('off'); eqi(C.rview.ao, false, '끔');
+    C.cmdAo('on');  eqi(C.rview.ao, true, '켬');
+    C.cmdAo('');    eqi(C.rview.ao, false, '인자 없으면 토글');
+    C.cmdAo('3');   eqi(C.rview.ao, true, '★강도를 주면 자동으로 켠다');
+    eq(C.RVIEW_AO.scale, 3, '강도 반영');
+    C.cmdAo('99');  eq(C.RVIEW_AO.scale, 3, '★범위 밖 강도는 거부 (0.5~5)');
+    C.rview.ao = keepAo.ao; C.RVIEW_AO.scale = keepAo.s;
+    // 렌더 캡처 (viewcapturetofile — 라이노 이름 그대로)
+    ok(typeof C.cmdCapture === 'function', 'viewcapturetofile 존재');
+    eqi(C.INSTANT_CMDS['viewcapturetofile'], C.cmdCapture, 'INSTANT_CMDS 등록');
+    eqi(C.CMD_ALIASES['capture'], 'viewcapturetofile', 'capture 별칭');
+    eqi(C.CMD_ALIASES['렌더저장'], 'viewcapturetofile', '한글 별칭(렌더저장)');
+    // 이방성 — 가짜 T 로 matTextures 를 돌려 8 이 박히는지 (다른 테스트와 안 겹치는 색으로 캐시 회피)
+    const fakeT = { CanvasTexture: function (c) { this.canvas = c; }, RepeatWrapping: 7, SRGBColorSpace: 'srgb' };
+    const tex = C.matTextures(fakeT, { tex: 'noise', rough: .5, metal: 0, scale: 600, bump: 0.4, base: 'concrete' }, '#a1b2c3');
+    ok(tex && tex.map && tex.map.anisotropy === 8, '★질감 텍스처 anisotropy=8 (스치는 각도 선명)');
+    ok(tex.normalMap && tex.normalMap.anisotropy === 8, '★노멀맵도 anisotropy=8');
+  }
+
   group('렌더 삼각형화 — 감기 방향과 무관하게 윗면 법선은 위를 향한다');
   {
     // 회귀 방지: bimSolids 의 벽 밴드 폴리곤은 시계방향(CW)으로 나온다. CW 를 그대로
