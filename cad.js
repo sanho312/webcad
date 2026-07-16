@@ -2657,7 +2657,10 @@ function bimSolids() {
     else if (e.bim.kind === 'opening' && e.type === 'LINE') opens.push(e);
     else if (e.bim.kind === 'slab') {
       const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : e.points.map(p => [p[0], p[1]]);
-      solids.push({ poly, z0: e.bim.top - e.bim.t, z1: e.bim.top, color: bimSolidColor(e, '#9aa2af'), eid: e.id });
+      // top 누락 방어 — 외부 데이터(공유·임포트)에 top 이 없으면 z 가 NaN 이 되어
+      // three 렌더러에서 슬래브가 통째로 조용히 사라진다 (computeBoundingSphere NaN 실측)
+      const top = (e.bim.top == null || !isFinite(e.bim.top)) ? 0 : e.bim.top;
+      solids.push({ poly, z0: top - (e.bim.t || 0), z1: top, color: bimSolidColor(e, '#9aa2af'), eid: e.id });
     } else if (e.bim.kind === 'roof' && e.type === 'LWPOLYLINE') {
       for (const s of roofSolids(e)) { s.eid = e.id; s.rf = true; s.color = bimSolidColor(e, s.color); solids.push(s); }
     } else if (e.bim.kind === 'stair' && (e.type === 'LINE' || e.type === 'LWPOLYLINE')) {
@@ -6414,6 +6417,16 @@ function iesSummary(ies) {
   return { maxCd: Math.round(mx), maxAt: mxAt, beamDeg: half != null ? Math.round(half * 2 * 10) / 10 : null };
 }
 
+// 배광이 사실상 끝나는 각(°) — 최대 광도의 2% 아래로 떨어지는 마지막 각.
+// 렌더링 뷰의 SpotLight 원뿔 근사에 쓴다 (정확한 배광 모양은 raytrace 가 그린다).
+function iesCutoffDeg(ies) {
+  let mx = 0;
+  for (const v of ies.cd) if (v > mx) mx = v;
+  if (!(mx > 0)) return 180;
+  let last = 0;
+  for (let d = 0; d <= 180; d++) if (iesCandelaAt(ies, d) >= mx * 0.02) last = d;
+  return Math.max(1, last);
+}
 const LIGHT_TYPES = ['emissive', 'point', 'spot', 'area'];
 const LIGHT_TYPE_KO = { emissive: '발광면(개체 그대로)', point: '점광원', spot: '스팟', area: '면광원' };
 // 사용자 대면 단위는 루멘(lm)·켈빈(K)으로 통일한다. 렌더러 내부 단위로의 환산은 이 아래 두 함수에만 둔다.
@@ -6856,6 +6869,9 @@ function lightSources() {
         cr: c[0] / mx, cg: c[1] / mx, cb: c[2] / mx,      // 색온도 → 채널별 비율
         lm: L.intensity,                                   // 물리 광속 — 조도(lux) 계산에 쓴다
         ies: L.ies || null,                                // 배광 — 있으면 방향별 광도로 (조도 분석도 이걸 쓴다)
+        type: L.type || 'point',                           // 렌더링 뷰가 스팟/IES 를 원뿔로 근사할 때 쓴다
+        spotDeg: L.spotAngleDeg || 60,                     // 스팟 전각(°)
+        spotPen: L.spotPenumbra == null ? 0.3 : L.spotPenumbra,
       });
       if (out.length >= 64) return out; // 성능 상한 (면 × 광원 연산) — 초과분은 무시
     }
@@ -7119,7 +7135,9 @@ function litCacheSig() {
   let h = '';
   // 색(cr/cg/cb)까지 넣어야 한다 — 빠뜨리면 색온도를 바꿔도 캐시가 살아남아 옛 색이 그대로 남는다
   for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft},${g.bounce},`
-    + `${(g.cr || 0).toFixed(3)},${(g.cg || 0).toFixed(3)},${(g.cb || 0).toFixed(3)};`;
+    + `${(g.cr || 0).toFixed(3)},${(g.cg || 0).toFixed(3)},${(g.cb || 0).toFixed(3)},`
+    // 배광·타입도 캐시 키다 — 빠뜨리면 IES 를 바꿔도 소프트웨어 뷰·렌더링 뷰가 옛 조명을 그대로 보인다
+    + `${g.type || ''},${g.ies ? (g.ies.name || 'i') + g.ies.cd.length : ''},${g.spotDeg || 0},${g.spotPen || 0};`;
   h += 'S' + (v3._shSig || '') + ';';   // 하늘(태양 설정)이 바뀌면 천공광이 달라진다
   h += 'B' + ((v3._bounce || []).length) + ';'; // 2차 광원이 바뀌면 캐시 무효
   h += 'F' + (v3.falseColor ? (v3.fcMax || FC_MAX_DEF) : 0) + ';'; // 조도 표시/스케일이 바뀌면 색이 달라진다
@@ -7279,13 +7297,17 @@ const MAT_PRESETS = {
   paint:    { ko: '페인트',   color: '#d8d4cc', rough: 0.42, metal: 0, tex: null,      bump: 0,   scale: 500 },
   asphalt:  { ko: '아스팔트', color: '#3f4145', rough: 0.97, metal: 0, tex: 'speckle', bump: 0.5, scale: 500 },
   grass:    { ko: '잔디',     color: '#5c7f3f', rough: 1.0,  metal: 0, tex: 'noise',   bump: 0.8, scale: 250 },
+  marble:   { ko: '대리석',   color: '#e8e6e1', rough: 0.12, metal: 0, tex: 'marble',  bump: 0.15, scale: 1400 },
+  fabric:   { ko: '직물',     color: '#b0a894', rough: 0.96, metal: 0, tex: 'fabric',  bump: 0.5, scale: 260 },
+  steel:    { ko: '스테인리스', color: '#c4c8cc', rough: 0.34, metal: 1, tex: 'brushed', bump: 0.12, scale: 800 },
   // 투과 재질 — MeshPhysicalMaterial. 레이트레이싱에서 굴절·투과가 물리적으로 계산된다.
   glass:    { ko: '유리',     color: '#dfeef2', rough: 0.02, metal: 0, tex: null, bump: 0, scale: 500, transmission: 0.95, ior: 1.52, thickness: 12 },
   water:    { ko: '물',       color: '#4f8fb0', rough: 0.03, metal: 0, tex: null, bump: 0, scale: 500, transmission: 0.85, ior: 1.33, thickness: 200 },
 };
 const MAT_ALIAS = { 콘크리트: 'concrete', 노출콘크리트: 'concrete', 회벽: 'plaster', 석고: 'plaster', 목재: 'wood', 나무: 'wood',
   벽돌: 'brick', 석재: 'stone', 돌: 'stone', 타일: 'tile', 금속: 'metal', 철: 'metal', 페인트: 'paint', 도장: 'paint',
-  아스팔트: 'asphalt', 잔디: 'grass', 유리: 'glass', 물: 'water' };
+  아스팔트: 'asphalt', 잔디: 'grass', 유리: 'glass', 물: 'water',
+  대리석: 'marble', 직물: 'fabric', 패브릭: 'fabric', 천: 'fabric', 스테인리스: 'steel', 스텐: 'steel' };
 // 개체 → 재질 스펙 (없으면 null = 기존 기본 재질 동작 그대로)
 // ─── 재질 라이브러리 ───
 // 개체별 재정의(matx)만으로는 '같은 커스텀 벽돌' 을 여러 개체에 쓰려면 하나하나 맞춰야 하고,
@@ -7382,12 +7404,42 @@ function matSetX(e, k, v) {
   if (!e.matx) e.matx = {};
   e.matx[k] = v;
 }
+// ─── 전역 재질 라이브러리 ───
+// 도면(문서) 라이브러리는 도면과 함께 저장된다. 전역 라이브러리는 이 브라우저의 것 —
+// '내 벽돌' 을 어느 도면에서든 이름만 불러 쓰기 위한 저장소다 (material 공유 <이름>).
+// 쓰는 순간 문서 라이브러리로 **복사**된다: 문서는 항상 자립적이어야 남에게 보내도 같은 재질로 보인다.
+const MATG_KEY = 'webcad_matlib_global';
+function matGlobalAll() {
+  try { return JSON.parse(localStorage.getItem(MATG_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function matGlobalSet(name, L) {
+  const all = matGlobalAll();
+  all[name] = L;
+  try { localStorage.setItem(MATG_KEY, JSON.stringify(all)); return true; }
+  catch (e) { return false; }   // 사진 질감이 큰 경우 용량 초과 가능 — 호출자가 알린다
+}
+function matGlobalDelete(name) {
+  const all = matGlobalAll();
+  if (!(name in all)) return false;
+  delete all[name];
+  try { localStorage.setItem(MATG_KEY, JSON.stringify(all)); } catch (e) {}
+  return true;
+}
 function matKey(arg) {
   const raw = String(arg || '').trim();
   if (!raw) return null;
   // 저장된 재질 이름이 먼저 — 사용자가 지은 이름이 프리셋 별칭에 가려지면 안 된다
   if (matLibGet(raw)) return MAT_LIB_PREFIX + raw;
   if (matIsLib(raw) && matLibGet(matLibName(raw))) return raw;
+  // 전역 라이브러리 — 이 도면에 없으면 전역에서 문서로 복사해 온다 (자동 가져오기)
+  const nm = matIsLib(raw) ? matLibName(raw) : raw;
+  const G = matGlobalAll()[nm];
+  if (G) {
+    if (!state.matlib) state.matlib = {};
+    state.matlib[nm] = Object.assign({}, G, { name: nm });
+    logLine(`  ▷ 전역 재질 "${nm}" 을 이 도면으로 가져왔습니다`, 'info');
+    return MAT_LIB_PREFIX + nm;
+  }
   const a = raw.toLowerCase();
   if (MAT_PRESETS[a]) return a;
   return MAT_ALIAS[raw] || null;
@@ -7443,6 +7495,42 @@ function matDrawTex(kind, hex, out) { // out: 'color' | 'height'
         g.fillStyle = put(v); g.fillRect(x, y, bw - mortar, bh - mortar);
       }
     }
+  } else if (kind === 'marble') {        // 대리석: 밝은 바탕 + 정맥(랜덤 워크 곡선)
+    for (let i = 0; i < 26; i++) {
+      let x = rnd() * N, y = rnd() * N, a = rnd() * Math.PI * 2;
+      g.strokeStyle = put(color ? (0.78 + rnd() * 0.12) : (0.30 + rnd() * 0.14));
+      g.lineWidth = 0.6 + rnd() * 1.6; g.globalAlpha = 0.55;
+      g.beginPath(); g.moveTo(x, y);
+      for (let s = 0; s < 46; s++) {
+        a += (rnd() - 0.5) * 0.9;                         // 방향이 흔들리며 흐르는 정맥
+        x += Math.cos(a) * 7; y += Math.sin(a) * 7;
+        g.lineTo(x, y);
+      }
+      g.stroke();
+    }
+    g.globalAlpha = 0.25;                                  // 옅은 구름 얼룩 (돌의 깊이감)
+    for (let i = 0; i < 260; i++) {
+      const x = rnd() * N, y = rnd() * N, r = 6 + rnd() * 26;
+      g.fillStyle = put(color ? (0.90 + rnd() * 0.10) : (0.44 + rnd() * 0.12));
+      g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    }
+    g.globalAlpha = 1;
+  } else if (kind === 'fabric') {        // 직물: 씨실/날실 직조 격자
+    const s = N / 64;                                       // 실 간격
+    for (let k = 0; k < 64; k++) {
+      const vy = color ? (0.86 + rnd() * 0.20) : (0.36 + rnd() * 0.30);
+      g.fillStyle = put(vy); g.fillRect(0, k * s, N, s * 0.55);           // 씨실(가로)
+      const vx = color ? (0.82 + rnd() * 0.20) : (0.30 + rnd() * 0.30);
+      g.globalAlpha = 0.5; g.fillStyle = put(vx); g.fillRect(k * s, 0, s * 0.55, N); g.globalAlpha = 1; // 날실(세로)
+    }
+  } else if (kind === 'brushed') {       // 헤어라인 금속: 가로 미세 스크래치
+    for (let i = 0; i < 9000; i++) {
+      const x = rnd() * N, y = rnd() * N, L = 20 + rnd() * 150;
+      g.strokeStyle = put(color ? (0.86 + rnd() * 0.24) : (0.42 + rnd() * 0.18));
+      g.globalAlpha = 0.35; g.lineWidth = 0.5 + rnd() * 0.7;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + L, y); g.stroke();
+    }
+    g.globalAlpha = 1;
   } else if (kind === 'tile') {          // 타일: 격자 + 그라우트
     const n = 4, s = N / n, gr = Math.max(2, s * 0.05);
     g.fillStyle = put(color ? 0.78 : 0.15); g.fillRect(0, 0, N, N);   // 그라우트
@@ -7678,13 +7766,30 @@ function matLibSave(name, sel) {
 }
 function matLibList() {
   const ks = Object.keys(state.matlib || {});
-  if (!ks.length) { logLine('  저장된 재질이 없습니다 — material 저장 <이름> 으로 만듭니다.', 'info'); return; }
-  logLine(`  저장된 재질 ${ks.length}개:`, 'info');
-  for (const k of ks) {
-    const L = state.matlib[k], P = MAT_PRESETS[L.base];
-    const used = state.entities.filter(e => e.mat === MAT_LIB_PREFIX + k).length;
-    logLine(`    · ${k} — ${P ? P.ko : L.base} 바탕 · ${L.color}${L.img ? ' · 사진 질감' : ''} · 쓰는 개체 ${used}개`, 'info');
+  const gs = Object.keys(matGlobalAll());
+  if (!ks.length && !gs.length) { logLine('  저장된 재질이 없습니다 — material 저장 <이름> 으로 만듭니다.', 'info'); return; }
+  if (ks.length) {
+    logLine(`  저장된 재질 ${ks.length}개:`, 'info');
+    for (const k of ks) {
+      const L = state.matlib[k], P = MAT_PRESETS[L.base];
+      const used = state.entities.filter(e => e.mat === MAT_LIB_PREFIX + k).length;
+      logLine(`    · ${k} — ${P ? P.ko : L.base} 바탕 · ${L.color}${L.img ? ' · 사진 질감' : ''} · 쓰는 개체 ${used}개`, 'info');
+    }
   }
+  const gOnly = gs.filter(k => !state.matlib || !state.matlib[k]);
+  if (gOnly.length) logLine(`  전역 재질(모든 도면에서 이름으로 사용 가능): ${gOnly.join(' · ')}`, 'info');
+}
+// material 공유 <이름> — 문서 라이브러리 항목을 전역(이 브라우저의 모든 도면)으로 올린다
+function matLibShare(name) {
+  const L = matLibGet(name);
+  if (!L) { logLine(`  "${name}" 이라는 저장된 재질이 없습니다 — 먼저 material 저장 <이름>.`, 'warn'); return; }
+  if (!matGlobalSet(name, L)) { logLine('  ✗ 전역 저장 실패 — 브라우저 저장 용량 초과(사진 질감이 너무 큼)일 수 있습니다.', 'warn'); return; }
+  logLine(`  ✔ 재질 "${name}" 전역 공유 — 다른 도면에서도 material ${name} 으로 바로 씁니다`, 'ok');
+  logLine('     전역에서 빼려면 material 공유해제 <이름>.', 'info');
+}
+function matLibUnshare(name) {
+  if (!matGlobalDelete(name)) { logLine(`  전역에 "${name}" 이 없습니다.`, 'warn'); return; }
+  logLine(`  ▷ 전역 재질 "${name}" 제거 — 이미 가져다 쓴 도면들에는 사본이 남아 있습니다`, 'ok');
 }
 function matLibDelete(name) {
   if (!matLibGet(name)) { logLine(`  "${name}" 이라는 재질이 없습니다.`, 'warn'); return; }
@@ -7737,17 +7842,28 @@ function cmdMaterial(arg) {
   const a = String(arg || '').trim();
   const list = () => Object.keys(MAT_PRESETS).map(k => `${k}(${MAT_PRESETS[k].ko})`).join(' · ')
     + (Object.keys(state.matlib || {}).length ? '\n  저장된 재질: ' + Object.keys(state.matlib).join(' · ') : '');
+  // 선택이 필요 없는 하위명령 — 목록·공유·공유해제는 라이브러리 관리다
+  const mgmt = a.match(/^(목록|list|공유해제|unshare|공유|share)\s*(.*)$/i);
+  if (mgmt) {
+    const cmd = mgmt[1].toLowerCase(), rest = mgmt[2].trim();
+    if (/^(목록|list)$/.test(cmd)) { matLibList(); return; }
+    if (/^(공유해제|unshare)$/.test(cmd)) {
+      if (!rest) { logLine('  사용법: material 공유해제 <이름>', 'warn'); return; }
+      matLibUnshare(rest); return;
+    }
+    if (!rest) { logLine('  사용법: material 공유 <이름> — 저장된 재질을 모든 도면에서 쓰게 합니다', 'warn'); matLibList(); return; }
+    matLibShare(rest); return;
+  }
   if (!sel.length) {
     logLine('  재질을 지정할 개체를 먼저 선택하세요.', 'warn');
-    logLine('  사용법: material 콘크리트 · material 해제 · material 저장 <이름> · material 이미지 · material 목록', 'info');
+    logLine('  사용법: material 콘크리트 · material 해제 · material 저장 <이름> · material 이미지 · material 목록 · material 공유 <이름>', 'info');
     logLine('  재질: ' + list(), 'info');
     return;
   }
-  // 하위명령 — material 저장 <이름> / material 목록 / material 삭제 <이름> / material 이미지
-  const sub = a.match(/^(저장|save|목록|list|삭제|delete|이미지|image)\s*(.*)$/i);
+  // 하위명령 — material 저장 <이름> / 삭제 <이름> / 이미지 (목록·공유는 위에서 선택 없이 처리)
+  const sub = a.match(/^(저장|save|삭제|delete|이미지|image)\s*(.*)$/i);
   if (sub) {
     const cmd = sub[1].toLowerCase(), rest = sub[2].trim();
-    if (/^(목록|list)$/.test(cmd)) { matLibList(); return; }
     if (/^(삭제|delete)$/.test(cmd)) {
       if (!rest) { logLine('  사용법: material 삭제 <이름>', 'warn'); matLibList(); return; }
       matLibDelete(rest); return;
@@ -8445,7 +8561,8 @@ function rtSyncCamera(T, cam) {
 // 이 뷰는 '보기용' 프리뷰다. 태양 방향·시간·계절·탁도는 [태양] 패널 값을 그대로 따르지만,
 // 조도 수치의 진실은 조도 분석(illuminanceAt)과 Raytraced 가 담당한다.
 const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: null, sun: null, hemi: null, sig: '', err: null, skyTex: null, skySig: '', pmrem: null, envTex: null, envFrom: null,
-  ao: true, fx: null, _fxLoading: false, composer: null, _rp: null, _ao: null, _aoW: 0, _aoH: 0, _aoCfg: '' };   // GTAO — 정투영에서 동작 실측 검증(2026-07-17)
+  ao: true, fx: null, _fxLoading: false, composer: null, _rp: null, _ao: null, _aoW: 0, _aoH: 0, _aoCfg: '',   // GTAO — 정투영에서 동작 실측 검증(2026-07-17)
+  groundMat: null, cloudTex: null, cloudSig: '' };   // 구름 그림자 (시각 전용 — 대지 알베도 변조)
 // 뷰포트에 종속된 캔버스 — rt 의 inset:0 실수(4분할 전체를 덮음)를 반복하지 않는다.
 function rviewCanvas() {
   if (rview.cv) return rview.cv;
@@ -8458,7 +8575,18 @@ function rviewCanvas() {
   rview.cv = c;
   return c;
 }
-function rviewSig() { return rtGeoSig() + '|' + litCacheSig(); }
+function rviewSig() {
+  // 광원 특성은 state.lights 에서 직접 읽는다 — litCacheSig 는 v3._lights 를 보는데,
+  // 소프트웨어 조명이 꺼진 밤 씬에선 그게 null 이라 광원을 바꿔도 시그니처가 안 변했다
+  // (실측: IES 해제가 렌더링 뷰에 반영 안 됨 — 세기·색도 같은 조건이면 마찬가지였다).
+  let ls = '';
+  for (const L of state.lights) {
+    ls += `${L.id},${L.enabled ? 1 : 0},${L.intensity},${L.color || ''},${L.colorTemp || 0},`
+      + `${L.type || ''},${L.ies ? (L.ies.name || 'i') + L.ies.cd.length : ''},${L.spotAngleDeg || 0},${L.spotPenumbra == null ? '' : L.spotPenumbra};`;
+  }
+  ls += 'solo' + (soloLightId || '');
+  return rtGeoSig() + '|' + litCacheSig() + '|' + ls;
+}
 // 씬 구성 — rtBuildScene 과 같은 삼각형(rtTrisByEntity)에서 출발하되 실시간용 재질/광원.
 // three@0.155+ 물리 단위: DirectionalLight=lux, PointLight=cd → rt 와 같은 노출(rtExposure)을 그대로 쓴다.
 function rviewBuildScene(T) {
@@ -8486,13 +8614,38 @@ function rviewBuildScene(T) {
     mesh.userData.eid = eid;
     scene.add(mesh);
   }
-  if (rt.ground) scene.add(makeGroundMesh(T, false));   // 대지 — 그림자를 받는다 (rt 와 같은 토글)
+  rview.groundMat = null; rview.cloudSig = '';
+  if (rt.ground) {
+    const gm = makeGroundMesh(T, false);                // 대지 — 그림자를 받는다 (rt 와 같은 토글)
+    rview.groundMat = gm.material;                      // 구름 그림자는 이 재질의 map(알베도 변조)으로 얹는다
+    scene.add(gm);
+  }
   // 인공 광원 — lightSources()(소프트웨어 뷰·조도 분석과 같은 원천)에서 위치/색/광속을 가져온다.
   // PointLight 물리 단위 = cd → lm/4π. 그림자 맵은 비싸므로 광속 상위 4개까지만 그림자를 켠다.
   const arts = lightSources().filter(g => !g.sun);
   arts.sort((a, b) => (b.lm || 0) - (a.lm || 0));
   arts.slice(0, 32).forEach((g, i) => {
-    const pl = new T.PointLight(new T.Color(g.cr, g.cg, g.cb), Math.max(0, (g.lm || 0) / (4 * Math.PI)));
+    let pl;
+    if (g.ies || g.type === 'spot') {
+      // 스팟/IES = 하향 원뿔 근사 — rt 의 스팟과 같은 조준(바로 아래)·같은 광도식(lm/∫배광dΩ).
+      // 래스터에는 IES 프로파일 셰이더가 없으므로 '배광이 끝나는 각' 을 원뿔로 삼는다.
+      // 모양은 근사, 광속은 보존 — 정확한 배광(도넛·비대칭 등)은 raytrace 가 그린다.
+      const cd = Math.max(0, (g.lm || 0) / (g.ies ? iesFluxFactor(g.ies) : 4 * Math.PI));
+      pl = new T.SpotLight(new T.Color(g.cr, g.cg, g.cb), cd);
+      if (g.ies) {
+        const cut = iesCutoffDeg(g.ies), sm = iesSummary(g.ies);
+        pl.angle = Math.min(Math.PI / 2, cut * Math.PI / 180);
+        // 빔각(50%)→컷오프 사이를 반그림자로 — 배광의 어깨를 흉내낸다
+        pl.penumbra = sm.beamDeg ? Math.min(1, Math.max(0.05, 1 - (sm.beamDeg / 2) / cut)) : 0.5;
+      } else {
+        pl.angle = Math.max(0.02, (g.spotDeg || 60) * Math.PI / 360);   // 전각 → 반각
+        pl.penumbra = Math.min(1, Math.max(0, g.spotPen));
+      }
+      pl.target.position.set(g.x * RT_MM, g.y * RT_MM, (g.z - 1000) * RT_MM);
+      scene.add(pl.target);
+    } else {
+      pl = new T.PointLight(new T.Color(g.cr, g.cg, g.cb), Math.max(0, (g.lm || 0) / (4 * Math.PI)));
+    }
     pl.position.set(g.x * RT_MM, g.y * RT_MM, g.z * RT_MM);
     pl.decay = 2; pl.distance = 0;
     if (i < 4) { pl.castShadow = true; pl.shadow.mapSize.set(1024, 1024); pl.shadow.bias = -0.002; }
@@ -8554,6 +8707,64 @@ function rviewSkyTexture(T, S) {
   rview.skyTex = tex; rview.skySig = sig;
   return tex;
 }
+// ── 구름 그림자 (렌더링 뷰 전용 · 시각 근사) ──
+// 대지 재질의 map(알베도 변조)에 구름 그림자를 굽는다. ★물리 렌더(rt·조도 분석)에는 넣지 않는다 —
+// 거긴 태양 모델이 에너지를 관리하므로 임의 감쇠를 얹으면 자기모순이 된다. 여기는 '보이는 맛' 전용.
+// (첫 구현은 지면 위 Multiply 평면이었는데 투명 렌더 순서가 슬래브 위까지 어둡게 칠했다 —
+//  알베도 변조는 깊이·블렌딩 문제가 원천적으로 없고, CircleGeometry 의 UV(0..1)와 정확히 맞물린다.)
+// 무늬: 지면 점 p 에서 태양 쪽으로 올라가 구름층(고도 H)과 만나는 점의 방향을 skyCloudMask 에
+// 넣는다 → 하늘과 같은 fbm 장·같은 임계값에서 그림자가 나온다 (태양을 옮기면 그림자도 흐른다).
+// 단 H(배율)는 물리 구름 고도가 아니라 모델 fit 기준 — 하늘 구름과 1:1 위치 대응까지는 하지 않는다.
+// 그림자 짙기 = 직달광 비중(Ebh/(Ebh+Ed)) — 흐릴수록 직달이 확산으로 옮겨가 그림자가 옅어지다 사라진다.
+// 한계(명시): 그림자는 대지에만 진다 — 지붕·슬래브 위 구름 그림자는 없다 (시각 전용 예외).
+const RVIEW_CLOUD_N = 128;   // 대지에 뿌옇게 깔리는 그림자 — 128 이면 충분하고 굽기가 4배 싸다
+function rviewCloudShadowTexture(T, S, sd) {   // sd = 태양 '쪽' 단위벡터 (위로)
+  const cc = skyCloud(S);
+  const R = groundSizeMM();                    // 그림자 평면 = 대지와 같은 반경 (원점 중심)
+  // 가상 구름층 고도 = 구름 무늬의 공간 배율. 대지(R) 기준으로 잡으면 덩어리가 ~R 크기라
+  // 화면(모델 fit 몇 배)에는 구름 '하나의 속' 만 들어와 균일해 보인다 — 실측으로 걸렸다.
+  // 모델 fit 기준: 시야에 항상 두어 덩이가 걸리는 스케일 (시각 전용이므로 보이는 게 기준).
+  const H = Math.max(8000, ((v3 && v3.fit) || 10000) * 2);
+  const Ebh = Math.max(0, sunDirectIlluminance(S)), Ed = Math.max(0, skyCtx(S).Ed);
+  const dirFrac = (Ebh + Ed) > 0 ? Ebh / (Ebh + Ed) : 0;   // 직달 비중 = 구름이 지울 수 있는 몫
+  const N = RVIEW_CLOUD_N, data = new Uint8Array(N * N * 4);
+  const ox = sd.z > 0.05 ? sd.x / sd.z * H : 0, oy = sd.z > 0.05 ? sd.y / sd.z * H : 0;
+  for (let j = 0; j < N; j++) {
+    const wy = ((j + 0.5) / N - 0.5) * 2 * R;
+    for (let i = 0; i < N; i++) {
+      const wx = ((i + 0.5) / N - 0.5) * 2 * R;
+      const cx = wx + ox, cy = wy + oy;        // 구름층 위 교점 (원점 관측 기준)
+      const d = Math.hypot(cx, cy, H) || 1;
+      const m = skyCloudMask(cc, cx / d, cy / d, H / d);
+      const a = Math.max(0, Math.min(1, 1 - m * dirFrac));
+      const v = Math.round(a * 255), k = (j * N + i) * 4;
+      data[k] = v; data[k + 1] = v; data[k + 2] = v; data[k + 3] = 255;
+    }
+  }
+  const tex = new T.DataTexture(data, N, N, T.RGBAFormat, T.UnsignedByteType);
+  tex.minFilter = T.LinearFilter; tex.magFilter = T.LinearFilter;
+  if (T.LinearSRGBColorSpace) tex.colorSpace = T.LinearSRGBColorSpace;   // 값 = 감쇠 계수 그대로 (색이 아니다)
+  tex.needsUpdate = true;
+  return tex;
+}
+function rviewSyncCloudShadow(T, S, sd) {
+  if (!rview.groundMat) return;                        // 대지가 꺼져 있으면 얹을 곳이 없다
+  const cc = skyCloud(S);
+  const on = !!(sd && cc > 0.005 && cc < 0.995 && sunOn());  // 완전 흐림 = 그림자 자체가 없다
+  if (!on) {
+    if (rview.groundMat.map) { rview.groundMat.map = null; rview.groundMat.needsUpdate = true; rview.cloudSig = ''; }
+    return;
+  }
+  if (v3 && v3._fast && rview.cloudSig) return;        // 슬라이더 드래그 중엔 옛 그림자 유지 — 굽기는 정식 렌더에서
+  const sig = [S.mo, S.d, S.h, S.mi, S.lat, S.lon, S.north, Math.round(cc * 100), Math.round(groundSizeMM()), Math.round((v3 && v3.fit) || 0)].join(',');
+  if (rview.cloudSig !== sig) {
+    if (rview.cloudTex) rview.cloudTex.dispose();
+    rview.cloudTex = rviewCloudShadowTexture(T, S, sd);
+    rview.groundMat.map = rview.cloudTex;
+    rview.groundMat.needsUpdate = true;
+    rview.cloudSig = sig;
+  }
+}
 // 태양 방향·세기·하늘색을 현재 sunState 로 — sunLight()(소프트웨어 뷰와 같은 원천)를 재사용
 function rviewSyncSun(T) {
   const sl = sunOn() ? sunLight() : null;
@@ -8594,7 +8805,9 @@ function rviewSyncSun(T) {
     }
     rview.scene.environment = rview.envTex;
     rview.scene.environmentIntensity = 1;
+    rviewSyncCloudShadow(T, S, { x: dx / d, y: dy / d, z: dz / d });   // 구름 그림자 (시각 전용)
   } else {
+    rviewSyncCloudShadow(T, S, null);                 // 밤엔 태양 그림자도 구름 그림자도 없다
     rview.sun.intensity = 0;
     rview.hemi.intensity = state.lights.length ? 2 : 40;         // 야간: 광원이 있으면 캄캄하게, 없으면 형태만 보이게
     rview.hemi.color.setHex(0xbdd3ea);
@@ -13875,6 +14088,11 @@ function newDrawing() {
   state.selection.clear();
   state.nextId = 1;
   state.blocks = {}; insertName = null;
+  // 문서 소유 데이터는 전부 비운다 — 재질 라이브러리·광원·측정면이 남으면 '새 도면' 이 아니다
+  // (실측: 새 도면에 이전 도면의 재질 라이브러리가 그대로 남아 있었다 — 전역 재질 검증 중 발견)
+  state.matlib = {};
+  state.lights = []; state.nextLightId = 1;
+  state.sensors = []; state.nextSensorId = 1;
   undoStack.length = 0; redoStack.length = 0;
   state.view = { x: 0, y: 0, scale: 4 };
   renderLayers(); renderLightList(); renderSensorList(); renderProps(); updateStat(); refreshBlockList(); setTool('select'); draw();
@@ -14016,6 +14234,8 @@ window.__CADTEST__ = {
   captureDoc, saveLocal, loadLocal,
   RT_QUALITY, cmdRtQuality, cmdGround, makeGroundMesh, groundSizeMM, GROUND_Z_MM,
   RVIEW_AO, cmdAo, rviewAoRender, rviewLoadFx, cmdCapture,
+  iesCutoffDeg, matGlobalAll, matGlobalSet, matGlobalDelete, matLibShare, matLibUnshare,
+  rviewCloudShadowTexture, rviewSyncCloudShadow, RVIEW_CLOUD_N, MATG_KEY,
   RT_DN, rtSetupDenoise,
   vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
   vpModeMenu, vpSetMode, closeVpMenu, cycleElev,

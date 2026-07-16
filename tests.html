@@ -1490,9 +1490,10 @@ function tests(){
     eqi(C.matKey('목재'), 'wood', '저장된 재질이 사라지면 다시 프리셋 별칭');
 
     // 도면에 저장된다 (남에게 보내도 같은 재질로 보여야 한다)
-    C.state.matlib = { '내돌': { name: '내돌', base: 'stone', color: '#445566' } };
+    // ★setEnts(→reset)가 먼저 — 새 도면이 matlib 을 비우므로(잔존 버그 수정) 세팅은 그 뒤에
     setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', mat: '@내돌', closed: true, points: [[0, 0], [100, 0], [100, 100]] }]);
-    ok(C.drawingPayload().indexOf('내돌') >= 0, '★공유 링크 payload 에 라이브러리가 들어간다');
+    C.state.matlib = { '내돌': { name: '내돌', base: 'stone', color: '#445566' } };
+    ok(C.drawingPayload().indexOf('#445566') >= 0, '★공유 링크 payload 에 라이브러리(항목 내용)가 들어간다');
 
     // 이미지 질감 — 스펙에 img 가 실리고 UV 가 필요하다고 표시된다
     C.state.matlib['내돌'].img = 'data:image/png;base64,AAAA';
@@ -1797,6 +1798,101 @@ function tests(){
     const tex = C.matTextures(fakeT, { tex: 'noise', rough: .5, metal: 0, scale: 600, bump: 0.4, base: 'concrete' }, '#a1b2c3');
     ok(tex && tex.map && tex.map.anisotropy === 8, '★질감 텍스처 anisotropy=8 (스치는 각도 선명)');
     ok(tex.normalMap && tex.normalMap.anisotropy === 8, '★노멀맵도 anisotropy=8');
+  }
+
+  group('퀄리티 4차 — IES 계약 (rt 는 실브라우저로 검증: 도넛 배광 픽셀 재현 2026-07-17)');
+  {
+    // rt 의 IES 는 실브라우저에서 확정: iesProfile 슬롯 0 등록, 좁은 배광 원뿔(중심 229→밖 0),
+    // 도넛 배광(중심 3.1, 45° 링 128.2), 해제 시 균등 복귀. 여기서는 네트워크 없는 계약만.
+    reset();
+    const narrow = { name: 'n30', vAng: [0, 30, 31, 180], cd: [1000, 1000, 0, 0] };
+    const donut = { name: 'dn', vAng: [0, 20, 45, 70, 90, 180], cd: [0, 50, 1000, 50, 0, 0] };
+    const uni = { name: 'u', vAng: [0, 180], cd: [800, 800] };
+    // iesCutoffDeg — 배광이 끝나는 각 (rview 원뿔 근사의 반각)
+    const c1 = C.iesCutoffDeg(narrow);
+    ok(c1 >= 29 && c1 <= 32, `★좁은 배광 컷오프 ≈30° (실측 ${c1}°)`);
+    // 70°(50cd)→90°(0cd) 선형 보간에서 2% 임계(20cd)는 70+30/50×20 = 82°
+    const c2 = C.iesCutoffDeg(donut);
+    ok(c2 >= 80 && c2 <= 84, `도넛 배광 컷오프 ≈82° (실측 ${c2}°)`);
+    eqi(C.iesCutoffDeg(uni), 180, '균등 배광은 180° (원뿔 아님)');
+    // lightSources 가 rview 원뿔 근사에 필요한 필드를 싣는다
+    const S0e = { id: C.state.nextId++, type: 'CIRCLE', layer: '0', cx: 0, cy: 0, r: 100, zo: 2000 };
+    C.state.entities.push(S0e);
+    C.state.selection = new Set([S0e.id]);
+    C.cmdSetAsLight();
+    const L = C.state.lights[0];
+    L.ies = narrow; L.type = 'spot'; L.spotAngleDeg = 45; L.spotPenumbra = 0.4;
+    const g = C.lightSources().find(x => !x.sun);
+    ok(g && g.ies === narrow, 'lightSources 에 ies 가 실린다');
+    eqi(g.type, 'spot', 'type 이 실린다');
+    eqi(g.spotDeg, 45, 'spotDeg 가 실린다');
+    eq(g.spotPen, 0.4, 'spotPen 이 실린다');
+    // ★rviewSig 잠복 버그 회귀 — 밤 씬(소프트웨어 조명 OFF)에서도 광원 특성 변경이 시그니처를 바꾼다
+    //   (v3._lights 는 조명 OFF 면 null — 예전엔 IES 를 바꿔도 렌더링 뷰가 옛 조명을 그대로 보였다)
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    C.state.sun.enabled = false; C.v3.lighting = false; C.v3._lights = null;
+    const s1 = C.rviewSig();
+    L.ies = null;
+    const s2 = C.rviewSig();
+    ok(s1 !== s2, '★IES 해제가 렌더링 뷰 시그니처를 바꾼다 (밤 씬에서도)');
+    L.intensity = (L.intensity || 1000) * 2;
+    ok(C.rviewSig() !== s2, '★세기 변경도 시그니처를 바꾼다');
+  }
+
+  group('퀄리티 4차 — 구름 그림자 (rview 전용 시각 근사) · 새 질감 · 전역 재질');
+  {
+    reset();
+    // 구름 그림자 텍스처 — 가짜 T 로 데이터 로직만 (WebGL 불필요)
+    const fakeT2 = { DataTexture: function (data, w, h) { this.image = { data, width: w, height: h }; },
+      RGBAFormat: 1, UnsignedByteType: 2, LinearFilter: 3, LinearSRGBColorSpace: 'lin' };
+    const S = C.sunState();
+    C.state.sun = Object.assign({}, C.state.sun, { enabled: true, cloud: 50, mo: 6, d: 21, h: 12 });
+    const S2 = C.sunState();
+    const tex = C.rviewCloudShadowTexture(fakeT2, S2, { x: 0.1, y: 0.1, z: 0.99 });
+    const d = tex.image.data;
+    eqi(d.length, C.RVIEW_CLOUD_N * C.RVIEW_CLOUD_N * 4, '텍스처 크기 = RVIEW_CLOUD_N²');
+    let mn = 255, mx = 0;
+    for (let i = 0; i < d.length; i += 4) { if (d[i] < mn) mn = d[i]; if (d[i] > mx) mx = d[i]; }
+    ok(mn < 240 && mx > 250, `★운량 50%: 그림자(어두움)와 맑은 곳이 공존 (${mn}~${mx})`);
+    ok(mn > 20, '완전 검정은 없다 — 감쇠는 직달 비중까지만 (천공광은 남는다)');
+    // 흐릴수록 그림자가 옅어진다 (직달이 확산으로 옮겨가므로) — 물리 방향 계약
+    C.state.sun.cloud = 90;
+    const tex9 = C.rviewCloudShadowTexture(fakeT2, C.sunState(), { x: 0.1, y: 0.1, z: 0.99 });
+    let mn9 = 255;
+    for (let i = 0; i < tex9.image.data.length; i += 4) if (tex9.image.data[i] < mn9) mn9 = tex9.image.data[i];
+    ok(mn9 > mn, `★운량 90% 그림자가 50% 보다 옅다 (${mn9} > ${mn}) — 흐린 날 그림자 실종의 물리`);
+    // 새 질감 3종 — 실제로 그려지고 무늬가 있다
+    for (const kind of ['marble', 'fabric', 'brushed']) {
+      const t = C.matDrawTex(kind, '#c8c4bc', 'color');
+      const img = t.ctx.getImageData(0, 0, 64, 64).data;
+      let vmin = 255, vmax = 0;
+      for (let i = 0; i < img.length; i += 4) { if (img[i] < vmin) vmin = img[i]; if (img[i] > vmax) vmax = img[i]; }
+      ok(vmax - vmin > 8, `질감 ${kind}: 무늬가 있다 (${vmin}~${vmax})`);
+    }
+    eqi(C.matKey('대리석'), 'marble', '별칭 대리석');
+    eqi(C.matKey('패브릭'), 'fabric', '별칭 패브릭');
+    eqi(C.matKey('스텐'), 'steel', '별칭 스텐');
+    ok(C.MAT_PRESETS.marble && C.MAT_PRESETS.fabric && C.MAT_PRESETS.steel, '프리셋 3종 존재');
+    // 전역 재질 — localStorage 왕복 (사용자 데이터 보존: 백업 후 복원)
+    const bak = localStorage.getItem(C.MATG_KEY);
+    try {
+      localStorage.removeItem(C.MATG_KEY);
+      C.state.matlib = { 테스트벽돌: { name: '테스트벽돌', base: 'brick', color: '#123456', scale: 700, rough: .8, metal: 0, img: null } };
+      C.matLibShare('테스트벽돌');
+      ok(!!C.matGlobalAll()['테스트벽돌'], '★공유 → 전역 저장소에 올라간다');
+      // 새 도면 — 문서 라이브러리가 비워지고, 이름만으로 전역에서 가져온다
+      reset();
+      eqi(Object.keys(C.state.matlib || {}).length, 0, '★새 도면은 재질 라이브러리가 빈다 (잔존 버그 회귀)');
+      eqi(C.state.lights.length, 0, '★새 도면은 광원도 빈다');
+      const k = C.matKey('테스트벽돌');
+      eqi(k, '@테스트벽돌', '★이름만으로 전역에서 자동 가져오기');
+      eqi(C.state.matlib['테스트벽돌'].color, '#123456', '★색까지 그대로 (문서로 복사됨 — 자립 문서)');
+      C.matLibUnshare('테스트벽돌');
+      eqi(Object.keys(C.matGlobalAll()).length, 0, '공유해제 → 전역에서 사라진다');
+      ok(!!C.state.matlib['테스트벽돌'], '이미 가져온 도면 사본은 남는다');
+    } finally {
+      if (bak == null) localStorage.removeItem(C.MATG_KEY); else localStorage.setItem(C.MATG_KEY, bak);
+    }
   }
 
   group('렌더 삼각형화 — 감기 방향과 무관하게 윗면 법선은 위를 향한다');
