@@ -1399,6 +1399,63 @@ function tests(){
     ok(mx - mn > 15, '★벽돌 질감이 실제 명암 대비를 만든다');
   }
 
+  group('덮이는 뷰포트 계약 — 렌더링 뷰·레이트레이싱은 자기 칸에만');
+  {
+    // 회귀 방지: #rtcv 는 예전에 inset:0 로 오버레이 '전체' 를 덮었고 카메라는 활성 칸 하나만
+    // 따랐다. 4분할에서 레이트레이싱을 켜면 격자가 통째로 사라지고 종횡비까지 틀어졌다.
+    // (rtEnter/rtResize/rtSyncCamera 어디에도 v3.quad 분기가 없었다)
+    // 이제 rview 와 같은 규약이다: rt.vi 에 묶이고, 그 칸 rect 에만 그리고, 이벤트는 통과시킨다.
+    reset();
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]], bim: { kind: 'column', base: 0, h: 2000 } }]);
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    const V = C.v3;
+    V.quad = false; V.act = 1;
+
+    // 꺼져 있을 때의 계약
+    ok(!C.rt.on, '기본 상태 = 레이트레이싱 꺼짐');
+    eqi(C.rt.vi, -1, '안 붙어 있으면 rt.vi = -1');
+    ok(!C.vpIsRt(0) && !C.vpIsRt(1), '꺼져 있으면 어느 칸도 rt 에 덮이지 않는다');
+    ok(!C.vpIsRendered(1), '렌더링 뷰도 꺼짐');
+
+    // ★덮이는 칸의 판정이 두 모드에 대칭이어야 한다 — render3D 가 이걸로 조명 계산을 건너뛴다
+    C.rt.on = true; C.rt.vi = 1;
+    ok(C.vpIsRt(1), 'rt.vi 칸은 vpIsRt 참');
+    ok(!C.vpIsRt(0) && !C.vpIsRt(2), '다른 칸은 거짓 (자기 칸에만)');
+    C.rt.on = false; C.rt.vi = -1;
+
+    // ★rtWithVp — 활성이 아닌 칸에 걸어도 그 칸의 카메라로 렌더해야 한다.
+    //   v3 는 활성 뷰포트 하나를 전역에 펼쳐놓는 구조(loadVp/saveVp)라 감싸주지 않으면
+    //   활성 칸의 카메라로 그려버린다.
+    V.quad = true;
+    V.views[1].yaw = 1.234; V.views[2].yaw = -0.5;
+    // ★loadVp 로 전역까지 맞춰야 한다. rtWithVp 는 첫 줄에서 saveVp() 로 '살아있는 전역'을
+    // 활성 칸에 보존하는데(맞는 동작이다 — 조작 중인 카메라를 잃으면 안 되니까),
+    // views[] 만 고치고 전역을 안 맞추면 그 saveVp 가 방금 넣은 값을 덮어쓴다. 여기서 한 번 속았다.
+    V.act = 2; C.v3.act = 2;
+    V.yaw = -0.5; V.pitch = 0; V.zoom = 1; V.panX = 0; V.panY = 0;
+    C.rt.vi = 1;
+    let seenYaw = null, seenVp = null;
+    C.rtWithVp(() => { seenYaw = V.yaw; seenVp = V.vp; });
+    eq(seenYaw, 1.234, '★rtWithVp 안에서는 rt 칸(아이소)의 각도가 보인다');
+    eq(seenVp.x, C.vpRect(1).x, '★rtWithVp 안에서는 rt 칸의 뷰포트 rect 가 보인다');
+    eqi(V.act, 2, '★rtWithVp 를 나오면 활성 칸이 원래대로 (전역을 빌렸다 돌려준다)');
+    eq(V.yaw, -0.5, '나오면 활성 칸의 각도로 복원');
+    C.rt.vi = -1;
+
+    // rtWithVp 는 예외가 나도 전역을 되돌려야 한다 — 안 그러면 이후 모든 렌더가 엉뚱한 칸을 본다
+    C.rt.vi = 1;
+    V.act = 2; V.yaw = -0.5;
+    try { C.rtWithVp(() => { throw new Error('boom'); }); } catch (_) {}
+    eqi(V.act, 2, '★rtWithVp 안에서 예외가 나도 활성 칸이 복원된다 (finally)');
+    eq(V.yaw, -0.5, '예외가 나도 각도 복원');
+    C.rt.vi = -1;
+
+    // 평면 칸에는 걸 수 없다 (도면 표시 전용)
+    ok(C.vpIsPlan(0), '0번은 평면 칸');
+    V.quad = false; V.act = 1;
+  }
+
   group('렌더링 뷰 (Rendered) — 명령·노출 계약');
   {
     // 렌더링 뷰 본체(WebGL 픽셀·그림자·컬링)는 실브라우저에서 검증했다 — 여기서는

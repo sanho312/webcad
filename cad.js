@@ -2926,14 +2926,15 @@ function render3D() {
     // 완전히 가려서 아무도 못 본다 — 안 보이는 그림에 178ms 를 태우고 궤도가 6fps 였다.
     // _fast 경로도 피킹 배열(v3.pick)은 그대로 만들므로 선택은 계속 된다.
     // (사용자가 말한 D5 원리 '눈에 안 보이는 부분은 잠시 안 보이게' 가 정확히 여기 필요했다)
-    const covered = vpIsRendered(i);
+    // 렌더링 뷰든 레이트레이싱이든, 덮인 칸의 소프트웨어 조명은 아무도 못 본다 (실측 178.6ms → 13.7ms)
+    const covered = vpIsRendered(i) || vpIsRt(i);
     const keepFast = v3._fast;
     if (covered) v3._fast = true;
     c.save(); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip();
     const res = renderScene(i === v3.act);
     c.restore();
     v3._fast = keepFast;
-    if (covered) vpShowLabel(i, rview.cv); else vpHideLabel(i);
+    if (!covered) vpHideLabel(i);   // 덮인 칸의 이름표는 rviewFrame/rtFrame 이 DOM 으로 올린다
     v3.views[i]._faces = res.faces; v3.views[i]._under = res.under; v3.views[i]._pick = res.pick;
     c.font = `600 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
     c.fillStyle = i === v3.act ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
@@ -2950,6 +2951,7 @@ function render3D() {
   v3.faces = v3.views[v3.act]._faces || []; v3.under = v3.views[v3.act]._under || []; v3.pick = v3.views[v3.act]._pick || [];
   syncPlanCv(); // 평면 칸 위치·크기 동기화 + 2D 엔진 재그림
   rviewFrame(); // 렌더링 뷰가 켜져 있으면 그 뷰포트에 실시간 래스터를 겹친다
+  rtFrame();    // 레이트레이싱이 켜져 있으면 그 뷰포트에 맞춘다 (자기 칸에만)
   if (v3.boxRect) { // 선택 박스 러버밴드 (드래그 중)
     const b = v3.boxRect, crossing = b.x1 < b.x0;
     c.save();
@@ -7113,6 +7115,7 @@ const rt = {
   on: false, mod: null, tracer: null, renderer: null, scene: null, cam: null,
   // denoise: 미완성이라 기본 OFF에 UI도 없다 — 아래 rtSetupDenoise 주석 참고
   cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: false, err: null,
+  vi: -1,                // 이 뷰포트에 묶인다 (-1 = 안 붙음). rview 와 같은 규약 — 자기 칸에만 그린다.
   exposure: 0,           // 0 = 환경에 따라 자동 (rtExposure 참고)
 };
 // WebGL2 지원 여부. 결과를 캐시하고 시험용 컨텍스트는 반드시 반납한다 —
@@ -8244,18 +8247,43 @@ function rtLoop() {
       + (rt.env === 'day' ? ' · 주광' : '')
       );
 }
+// rt 가 붙은 뷰포트의 카메라 파라미터로 잠시 전환해 fn 을 실행한다.
+// v3 는 '활성 뷰포트 하나' 를 전역에 펼쳐놓는 구조(loadVp/saveVp)라, 이렇게 감싸야
+// 활성이 아닌 칸에 레이트레이싱을 걸어도 그 칸의 카메라로 렌더된다.
+function rtWithVp(fn) {
+  if (!v3 || !v3.views || rt.vi == null || rt.vi < 0) return fn();
+  const keepVp = v3.vp, keepAct = v3.act;
+  saveVp(); loadVp(rt.vi); v3.vp = vpRect(rt.vi);
+  try { return fn(); } finally { loadVp(keepAct); v3.vp = keepVp; }
+}
+// 이 뷰포트가 레이트레이싱에 덮여 있나 (vpIsRendered 와 같은 개념)
+const vpIsRt = (i) => !!(rt && rt.on && rt.vi === i);
+// 레이트레이싱 캔버스를 자기 뷰포트 rect 에 맞춘다. render3D 말미에서 불린다.
+function rtFrame() {
+  if (!rt.on || !rt.cv) return;
+  const visible = v3.quad ? (rt.vi >= 0 && rt.vi < 4) : (rt.vi === v3.act);
+  if (!visible || vpIsPlan(rt.vi)) { rt.cv.style.display = 'none'; rt.hud.style.display = 'none'; vpHideLabel(rt.vi); return; }
+  rt.cv.style.display = ''; rt.hud.style.display = '';
+  const rc = vpRectCss(rt.vi);
+  rt.cv.style.left = rc.x + 'px'; rt.cv.style.top = rc.y + 'px';
+  rt.cv.style.width = rc.w + 'px'; rt.cv.style.height = rc.h + 'px';
+  rt.hud.style.right = ''; rt.hud.style.left = (rc.x + rc.w - 130) + 'px'; rt.hud.style.top = (rc.y + 8) + 'px';
+  rtResize();
+  vpShowLabel(rt.vi, rt.cv);
+}
 function rtResize() {
   if (!rt.on || !rt.renderer) return;
-  const vp = v3.vp || { w: v3.cv.width, h: v3.cv.height };
+  // 크기·카메라 모두 'rt 가 붙은 칸' 기준. 활성 칸(v3.vp)을 쓰면 다른 칸을 보고 있을 때 어긋난다.
+  const vp = (v3 && v3.views && rt.vi >= 0) ? vpRect(rt.vi) : (v3.vp || { w: v3.cv.width, h: v3.cv.height });
   const dpr = 1; // 패스트레이싱은 픽셀당 비용이 커서 dpr 배율을 쓰지 않는다
-  rt.cv.style.width = v3.cv.clientWidth + 'px'; rt.cv.style.height = v3.cv.clientHeight + 'px';
-  rt.renderer.setSize(Math.max(1, Math.round(vp.w * dpr)), Math.max(1, Math.round(vp.h * dpr)), false);
-  if (rt.cam) { rtSyncCamera(rt.mod.T, rt.cam); rt.tracer && rt.tracer.updateCamera(); }
+  const w = Math.max(1, Math.round(vp.w * dpr)), h = Math.max(1, Math.round(vp.h * dpr));
+  if (rt.cv.width !== w || rt.cv.height !== h) rt.renderer.setSize(w, h, false);
+  if (rt.cam) rtWithVp(() => { rtSyncCamera(rt.mod.T, rt.cam); rt.tracer && rt.tracer.updateCamera(); });
 }
 // 카메라가 움직이면 누적을 리셋하고 저해상도로 (§2.3). 멈추면 풀 해상도로 다시 누적.
 function rtCameraChanged() {
   if (!rt.on || !rt.tracer) return;
-  rtSyncCamera(rt.mod.T, rt.cam);
+  rtWithVp(() => rtSyncCamera(rt.mod.T, rt.cam));
   rt.tracer.renderScale = 0.25;      // 조작 중 1/4 해상도 → 응답성 유지
   rt.tracer.updateCamera();          // 내부에서 누적 리셋
   clearTimeout(rt._settle);
@@ -8526,17 +8554,23 @@ async function rtEnter() {
     return;
   }
   if (rt.on) { rtExit(); return; }
+  if (vpIsPlan(v3.act)) { logLine('  평면 칸은 도면 표시 전용입니다 — 아이소 등 3D 뷰포트에서 켜주세요.', 'warn'); return; }
   const ov = document.getElementById('bim3d');
   if (!rt.cv) {
     rt.cv = document.createElement('canvas');
     rt.cv.id = 'rtcv';
-    rt.cv.style.cssText = 'position:absolute;inset:0;z-index:19;width:100%;height:100%;';
+    // ★뷰포트 종속 — 예전엔 inset:0 로 오버레이 '전체' 를 덮었다. 4분할에서 레이트레이싱을 켜면
+    // 활성 칸 하나의 카메라로 그린 그림이 4분할 격자를 통째로 덮어쓰고 종횡비까지 틀어졌다.
+    // pointer-events:none — 궤도·팬·선택 이벤트는 밑의 #b3cv 가 그대로 받아야 한다.
+    // (예전엔 이게 없어서 레이트레이싱 중 캔버스가 이벤트를 먹었다 — rview 는 처음부터 none 이었다)
+    rt.cv.style.cssText = 'position:absolute;z-index:19;pointer-events:none;';
     rt.hud = document.createElement('div');
-    rt.hud.style.cssText = 'position:absolute;right:10px;top:8px;z-index:20;font:11px/1.5 var(--mono);'
+    rt.hud.style.cssText = 'position:absolute;z-index:20;font:11px/1.5 var(--mono);'
       + 'padding:4px 9px;border-radius:980px;background:rgba(10,16,32,.72);color:#cfe0ff;pointer-events:none;';
     ov.appendChild(rt.cv); ov.appendChild(rt.hud);
   }
   rt.cv.style.display = ''; rt.hud.style.display = '';
+  rt.vi = v3.act;          // 이 뷰포트에 묶인다 (rview 와 같은 규약)
   rt.on = true;
   try {
     const { T } = await rtLoad();
@@ -8562,10 +8596,13 @@ async function rtEnter() {
   }
 }
 function rtExit() {
+  const was = rt.vi;
   rt.on = false;
   cancelAnimationFrame(rt.raf);
-  if (rt.cv) rt.cv.style.display = 'none';
+  if (rt.cv) { rt.cv.style.display = 'none'; rt.cv.style.outline = ''; }
   if (rt.hud) rt.hud.style.display = 'none';
+  if (was != null && was >= 0) vpHideLabel(was);   // 끄면 3D 렌더러가 자기 캔버스에 이름표를 다시 그린다
+  rt.vi = -1;
   render3D();
 }
 function cmdRaytrace() { rtEnter(); }
@@ -13311,6 +13348,7 @@ window.__CADTEST__ = {
   rviewSkyTexture, RVIEW_SKY_W, RVIEW_SKY_H,
   vpIsRendered, vpShowLabel, vpHideLabel, vpLabelEl,
   markInteract, sunApply, preethamCache,
+  vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
   weatherName,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
