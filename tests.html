@@ -930,41 +930,41 @@ function tests(){
     eq(noon(Object.assign(S(), { mo: 12, d: 21 })).alt, 90 - Math.abs(37.5665 + 23.44), '서울 동지 남중고도 = 28.99°', 0.1);
     eq(C.solarPosition(S()).decl, 23.44, '하지 적위 = +23.44°', 0.1);
     eq(C.solarPosition(Object.assign(S(), { mo: 12, d: 21 })).decl, -23.44, '동지 적위 = -23.44°', 0.1);
-    ok('북반구 남중 방위 = 정남(180°)', Math.abs(noon(S()).az - 180) < 1);
+    ok(Math.abs(noon(S()).az - 180) < 1, '북반구 남중 방위 = 정남(180°)');
     const syd = Object.assign(S(), { lat: -33.8688, lon: 151.2093, tz: 600 });
     eq(noon(syd).alt, 90 - Math.abs(-33.8688 - 23.44), '시드니 하지 남중고도 = 32.69°', 0.1);
-    ok('남반구 남중 방위 = 정북', Math.min(Math.abs(noon(syd).az), Math.abs(noon(syd).az - 360)) < 1);
+    ok(Math.min(Math.abs(noon(syd).az), Math.abs(noon(syd).az - 360)) < 1, '남반구 남중 방위 = 정북');
     // 태양 방향벡터 (기본 진북 = +Y, 동 = +X, 위 = +Z)
     const d = C.sunDirection(Object.assign(S(), { h: Math.floor(C.sunNoonMinutes(S())/60), mi: Math.round(C.sunNoonMinutes(S())%60) }));
-    ok('남중이면 태양이 남쪽(y<0)', d.y < 0);
-    ok('남중이면 동서 성분 없음', Math.abs(d.x) < 0.02);
-    ok('낮이면 태양이 하늘 위(z>0)', d.z > 0);
+    ok(d.y < 0, '남중이면 태양이 남쪽(y<0)');
+    ok(Math.abs(d.x) < 0.02, '남중이면 동서 성분 없음');
+    ok(d.z > 0, '낮이면 태양이 하늘 위(z>0)');
     // 직달 조도 — 교과서: 맑은 날 정오 직달 ≈ 100,000 lx
     const clear = Object.assign(S(), { turbidity: 2 });
     const cn = C.sunNoonMinutes(clear);
     const dni = C.sunDirectIlluminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60) }));
-    ok('맑은 날 남중 직달조도 ≈ 100,000 lx', dni > 90000 && dni < 105000);
-    ok('탁해지면 직달조도가 준다', C.sunDirectIlluminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60), turbidity: 6 })) < dni);
-    ok('해가 지면 직달조도 0', C.sunDirectIlluminance(Object.assign(S(), { h: 2, mi: 0 })) === 0);
+    ok(dni > 90000 && dni < 105000, '맑은 날 남중 직달조도 ≈ 100,000 lx');
+    ok(C.sunDirectIlluminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60), turbidity: 6 })) < dni, '탁해지면 직달조도가 준다');
+    ok(C.sunDirectIlluminance(Object.assign(S(), { h: 2, mi: 0 })) === 0, '해가 지면 직달조도 0');
     // 태양 원반 휘도 ≈ 직달조도 / 입체각 (알려진 값 1.6e9 자릿수)
     const L = C.sunDiskLuminance(Object.assign({}, clear, { h: Math.floor(cn/60), mi: Math.round(cn%60) }));
-    ok('태양 원반 휘도 ≈ 1e9 cd/m² 자릿수', L > 5e8 && L < 3e9);
+    ok(L > 5e8 && L < 3e9, '태양 원반 휘도 ≈ 1e9 cd/m² 자릿수');
     // 대기질량: 천정에서 1, 낮을수록 커진다
     eq(C.sunAirMass(90), 1, '천정 대기질량 = 1', 0.01);
-    ok('고도가 낮으면 대기질량이 커진다', C.sunAirMass(10) > 4);
+    ok(C.sunAirMass(10) > 4, '고도가 낮으면 대기질량이 커진다');
     // 물리 하늘: 천정은 파랗다
     const zen = C.skyRadiance(0, Math.PI/4, Math.PI/4, 3);
-    ok('천정 하늘은 파랑 > 빨강', zen[2] > zen[0]);
-    ok('하늘 휘도가 양수', zen[1] > 0);
+    ok(zen[2] > zen[0], '천정 하늘은 파랑 > 빨강');
+    ok(zen[1] > 0, '하늘 휘도가 양수');
     // 탁도 제한 — Preetham 은 맑은 하늘 모델이라 흐림은 표현 못 한다
     eq(C.skyTurbidity({ turbidity: 1 }), 2, '탁도 하한 2로 제한');
     eq(C.skyTurbidity({ turbidity: 20 }), 6, '탁도 상한 6으로 제한');
     // 진북을 돌리면 방위가 그만큼 돌아간다
     const b0 = C.sunDirection(Object.assign(S(), { h: 15, mi: 0, north: 0 }));
     const b90 = C.sunDirection(Object.assign(S(), { h: 15, mi: 0, north: 90 }));
-    ok('진북을 90° 돌리면 태양 방향도 90° 돈다', Math.abs(b0.alt - b90.alt) < 1e-6 && Math.abs(b0.x - b90.x) > 0.1);
+    ok(Math.abs(b0.alt - b90.alt) < 1e-6 && Math.abs(b0.x - b90.x) > 0.1, '진북을 90° 돌리면 태양 방향도 90° 돈다');
     // 노출 — 주광과 실내는 자동으로 달라야 한다
-    ok('주광 노출이 실내보다 훨씬 작다', C.RT_EXPOSURE_DAY < 1e-3);
+    ok(C.RT_EXPOSURE_DAY < 1e-3, '주광 노출이 실내보다 훨씬 작다');
   }
 
   group('태양 — 3D 뷰 조명 연동');
@@ -972,29 +972,78 @@ function tests(){
     reset();
     const S = C.sunState();
     Object.assign(S, C.sunDefaults(), { mo: 6, d: 21, h: 15, mi: 0, enabled: false });
-    ok('태양은 기본 OFF (기존 화면 불변)', !C.sunOn());
-    ok('꺼져 있으면 광원 목록에 태양이 없다', !C.lightSources().some(g => g.sun));
-    ok('꺼져 있으면 환경광은 야간값', C.litAmbient() < 0.2);
+    ok(!C.sunOn(), '태양은 기본 OFF (기존 화면 불변)');
+    ok(!C.lightSources().some(g => g.sun), '꺼져 있으면 광원 목록에 태양이 없다');
+    ok(C.litAmbient() < 0.2, '꺼져 있으면 환경광은 야간값');
     S.enabled = true;
-    ok('켜면 sunOn() true', C.sunOn());
-    ok('켜면 환경광이 하늘값으로 오른다', C.litAmbient() > 0.2);
+    ok(C.sunOn(), '켜면 sunOn() true');
+    ok(C.litAmbient() > 0.2, '켜면 환경광이 하늘값으로 오른다');
     const sl = C.lightSources().filter(g => g.sun);
-    ok('켜면 광원 목록에 태양이 들어간다', sl.length === 1);
+    ok(sl.length === 1, '켜면 광원 목록에 태양이 들어간다');
     const g = sl[0];
-    ok('태양은 거리 컬링에 안 걸린다', g.far2 === Infinity);
-    ok('태양은 거리감쇠가 사실상 없다 (평행광)', g.range > 1e9);
+    ok(g.far2 === Infinity, '태양은 거리 컬링에 안 걸린다');
+    ok(g.range > 1e9, '태양은 거리감쇠가 사실상 없다 (평행광)');
     // 반그림자: soft = D×0.00925 → 폭 = soft×h/D = h×0.00925 로 D 와 무관
     const V = C.v3;
     const D = Math.hypot(g.x - (V ? V.cx : 0), g.y - (V ? V.cy : 0), g.z - (V ? V.cz : 0));
     eq(g.soft / D, 0.00925, '태양 원반 각지름 = 0.53° (soft/D)', 1e-4);
     // 해가 지면 직사광이 없다
     S.h = 2; S.mi = 0;
-    ok('해가 지평선 아래면 태양 광원이 없다', !C.lightSources().some(x => x.sun));
+    ok(!C.lightSources().some(x => x.sun), '해가 지평선 아래면 태양 광원이 없다');
     // 세기는 물리 직달조도에 비례 — 낮은 해가 더 약하다
     S.h = 12; S.mi = 30; const hi = C.sunLight().power;
     S.h = 18; S.mi = 0;  const lo = C.sunLight().power;
-    ok('해가 낮으면 직사광이 약해진다', lo < hi);
-    ok('정오 태양 power 가 합리적 범위', hi > 0.2 && hi < 1);
+    ok(lo < hi, '해가 낮으면 직사광이 약해진다');
+    ok(hi > 0.2 && hi < 1, '정오 태양 power 가 합리적 범위');
+    S.enabled = false;
+  }
+
+  group('방향별 천공광 (구면조화)');
+  {
+    reset();
+    const S = C.sunState();
+    Object.assign(S, C.sunDefaults(), { mo: 6, d: 21, turbidity: 2, enabled: true });
+    const n = C.sunNoonMinutes(S); S.h = Math.floor(n / 60); S.mi = Math.round(n % 60);
+    const sh = C.skyProjectSH(S);
+    const o = [0, 0, 0];
+    const lum = (x, y, z) => { C.skyIrradiance(sh, x, y, z, o); return 0.2126 * o[0] + 0.7152 * o[1] + 0.0722 * o[2]; };
+    // SH 조도를 무식한 반구 적분과 대조한다 (L2 라 오차 몇 % 는 정상)
+    const K = C.skyCtx(S), rgb = [0, 0, 0];
+    const brute = (nx, ny, nz) => {
+      const NT = 120, NP = 240; let R = 0, G = 0, B = 0;
+      for (let i = 0; i < NT; i++) {
+        const th = (i + 0.5) / NT * Math.PI, st = Math.sin(th), ct = Math.cos(th);
+        const dOm = (Math.PI / NT) * (2 * Math.PI / NP) * st;
+        for (let j = 0; j < NP; j++) {
+          const ph = (j + 0.5) / NP * 2 * Math.PI;
+          const dx = st * Math.cos(ph), dy = st * Math.sin(ph), dz = ct;
+          const c = dx * nx + dy * ny + dz * nz; if (c <= 0) continue;
+          C.skyDirRadiance(K, dx, dy, dz, rgb);
+          R += rgb[0] * c * dOm; G += rgb[1] * c * dOm; B += rgb[2] * c * dOm;
+        }
+      }
+      return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+    };
+    const up = lum(0, 0, 1), bUp = brute(0, 0, 1);
+    ok(Math.abs(up - bUp) / bUp < 0.05, '위쪽 면: SH 조도가 무식한 적분과 5% 안');
+    ok(Math.abs(lum(0, -1, 0) - brute(0, -1, 0)) / brute(0, -1, 0) < 0.05, '남향 벽: SH 조도가 무식한 적분과 5% 안');
+    // ★ 핵심: 방향마다 달라야 한다 (상수 환경광이면 전부 같다)
+    ok(up > lum(0, -1, 0) && up > lum(0, 1, 0), '위쪽 면이 가장 밝다');
+    ok(lum(0, 0, -1) < lum(0, 1, 0), '아래를 보는 면이 가장 어둡다 (지면 반사만)');
+    // 실측(맑은 날 남중): 위 24,161 lx / 아래 9,359 lx = 2.58배. 3배로 잡았다가 실패해서 실측에 맞췄다.
+    ok(up / Math.max(1, lum(0, 0, -1)) > 2, '위:아래 천공광 차이가 2배 이상');
+    ok(lum(0, -1, 0) > lum(0, 1, 0), '남중 때 남향 벽이 북향 벽보다 밝다');
+    // 하늘빛은 파랗고, 지면 반사는 중성에 가깝다
+    C.skyIrradiance(sh, 0, 0, 1, o); const upBR = o[2] / o[0];
+    C.skyIrradiance(sh, 0, 0, -1, o); const dnBR = o[2] / o[0];
+    ok(upBR > 2, '위쪽 면은 파란 하늘빛 (B/R > 2)');
+    ok(dnBR < upBR, '아래 면은 지면 반사라 덜 파랗다');
+    // 조도 → 밝기 환산이 직사광과 같은 자를 쓴다
+    eq(C.shadePerLux() * 100000, C.SUN_LIT_POWER * 2.7, '조도→밝기 계수가 직사광과 일치', 1e-9);
+    // 태양이 꺼지면 예전 야간 환경광
+    S.enabled = false;
+    C.litSky(0, 0, 1);
+    ok(C.litAmbient() < 0.2, '태양 OFF 면 천공광 대신 야간 환경광');
     S.enabled = false;
   }
 

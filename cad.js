@@ -3016,6 +3016,7 @@ function renderScene(isActive) {
   const faces = [];
   // 태양만 켜도 조명 계산이 돌아야 한다 — 안 그러면 sun 을 켜도 화면이 그대로다
   const litOn = v3.lighting || sunOn();
+  v3._sh = skySH();          // 방향별 천공광 — 태양 설정이 그대로면 다시 접지 않는다
   v3._lights = litOn ? lightSources() : null; // 프레임당 1회 광원 수집 (둘 다 OFF면 null → 예전 셰이딩)
   // 그림자용 가림 형상도 프레임당 1회. 삼각형이 상한을 넘으면 그림자만 생략(조명은 유지) — 느려지는 것보다 낫다.
   if (litOn && !v3._fast && v3._lights && v3._lights.length) {
@@ -6220,13 +6221,62 @@ function lightGizmos() {
 // ---------- 실제 광원 (지정한 개체 → 3D 셰이딩) ----------
 // v3.lighting이 켜졌을 때만 동작한다. 꺼져 있으면(기본) 셰이딩 식이 예전 그대로라 기존 화면 불변.
 const NIGHT_AMBIENT = 0.16; // 야간 환경광 — 광원이 닿지 않는 곳의 최소 밝기
-// 태양이 켜지면 하늘이 그늘을 채운다. 맑은 날 확산 천공광은 직달의 약 1/4 이다
-// (실측: 확산 23,689 lx / 직달수평 96,868 lx = 0.245). 직접광 최대치가 dot=1 에서
-// SUN_LIT_POWER×LIT_GAIN 이므로 그 0.245 배를 환경광으로 둔다. 방향별 천공광까지는
-// 모델링하지 않는 근사다 — 이 3D 뷰는 미리보기이고, 물리값은 Raytraced 와 조도 분석이 담당한다.
-const SKY_AMBIENT = 0.30;
 const sunOn = () => !!(state.sun && state.sun.enabled);
-function litAmbient() { return sunOn() ? SKY_AMBIENT : NIGHT_AMBIENT; }
+// 조도(lux) → 이 렌더러의 밝기 단위. 직사광과 같은 자를 쓴다:
+//   직사광 q = dot × SUN_LIT_POWER×(직달/100,000) × LIT_GAIN = (직달×dot) × LIT_GAIN×SUN_LIT_POWER/100,000
+// 그래서 어떤 조도든 이 계수를 곱하면 직사광과 같은 척도가 되고, 천공광/직사광의 '비'가
+// 저절로 물리값과 맞는다. 상수를 따로 맞출 필요가 없다.
+// ★ 함수로 둔 이유: LIT_GAIN·SUN_LIT_POWER 는 아래에서 정의된다. const 로 두면 TDZ 라
+//   로드 시점에 ReferenceError 로 앱 전체가 죽는다(실제로 그렇게 짰다가 잡았다).
+const shadePerLux = () => LIT_GAIN * SUN_LIT_POWER / 100000;
+const LIT_SKY = [0, 0, 0];
+// 면이 받는 천공광. 태양이 꺼져 있으면 예전의 야간 환경광 그대로.
+// 검산: 맑은 날 남중, 위를 보는 면 → 24,161 lx × SHADE_PER_LUX = 0.29
+//       (예전에 쓰던 상수 0.30 과 거의 같다 — 상수가 '평균적으로는' 맞았다는 뜻)
+//       아래를 보는 면 9,359 lx → 0.11 · 북향 벽 17,133 lx → 0.21 · 남향 벽 20,932 lx → 0.25
+// ─── 천공광 가림 ───
+// 이게 없으면 실내에도 하늘빛이 그대로 들어와 방 전체가 균일하게 밝다.
+// 슬릿 하나로 들어온 빛줄기를 보려면 나머지가 어두워야 한다 — 빛의 연출의 핵심.
+// 법선 반구를 코사인 가중으로 훑어 '하늘이 보이는 비율'을 구한다.
+// 고정 표본이라 프레임마다 얼룩이 어른거리지 않는다(난수를 쓰면 흔들린다).
+const SKY_OCC_N = 12;
+const SKY_OCC_DIRS = (() => {
+  const a = [];
+  for (let i = 0; i < SKY_OCC_N; i++) {
+    const r = Math.sqrt((i + 0.5) / SKY_OCC_N);   // 원반 균일 표본 = 코사인 가중 반구
+    const th = i * 2.399963229728653;             // 황금각 — 고르게 퍼진다
+    a.push([r * Math.cos(th), r * Math.sin(th), Math.sqrt(Math.max(0, 1 - r * r))]);
+  }
+  return a;
+})();
+function skyVis(wx, wy, wz, nx, ny, nz) {
+  if (!v3._occ || !v3._occ.length || v3._fast) return 1;
+  // 법선 기준 접선 좌표계 (법선과 평행하지 않은 보조축을 고른다)
+  const ax = Math.abs(nz) < 0.9 ? 0 : 1, az = Math.abs(nz) < 0.9 ? 1 : 0;
+  let ux = ny * az, uy = nz * ax - nx * az, uz = -ny * ax;
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  const vx = ny * uz - nz * uy, vy = nz * ux - nx * uz, vz = nx * uy - ny * ux;
+  const D = Math.max(20000, (v3.fit || 10000) * 4);   // 이보다 멀면 하늘로 본다
+  const ox = wx + nx * 2, oy = wy + ny * 2, oz = wz + nz * 2;  // 그림자 여드름 방지
+  let vis = 0;
+  for (const t of SKY_OCC_DIRS) {
+    const dx = ux * t[0] + vx * t[1] + nx * t[2];
+    const dy = uy * t[0] + vy * t[1] + ny * t[2];
+    const dz = uz * t[0] + vz * t[1] + nz * t[2];
+    if (!shadowed(ox, oy, oz, ox + dx * D, oy + dy * D, oz + dz * D)) vis++;
+  }
+  return vis / SKY_OCC_N;
+}
+function litSky(nx, ny, nz, wx, wy, wz) {
+  // renderScene 이 프레임당 한 번 접어둔다. 그 밖에서 부르면(테스트 등) 그때 접는다.
+  const SH = (typeof v3 !== 'undefined' && v3) ? (v3._sh || skySH()) : null;
+  if (!SH || !sunOn()) { LIT_SKY[0] = LIT_SKY[1] = LIT_SKY[2] = NIGHT_AMBIENT; return; }
+  skyIrradiance(SH, nx, ny, nz, LIT_SKY);
+  let k = shadePerLux();
+  if (wx !== undefined) k *= skyVis(wx, wy, wz, nx, ny, nz);   // 하늘이 가려진 만큼 어둡게
+  LIT_SKY[0] *= k; LIT_SKY[1] *= k; LIT_SKY[2] *= k;
+}
+function litAmbient() { litSky(0, 0, 1); return (LIT_SKY[0] + LIT_SKY[1] + LIT_SKY[2]) / 3; }
 // litFace가 방금 계산한 채널별 밝기 [r, g, b, tinted?]. 반환값(스칼라)과 함께 바로 읽어 쓴다.
 // 루프 안에서 매번 배열을 새로 만들지 않으려고 공용 버퍼를 쓴다 (면 수만큼 호출되는 자리).
 const LIT_RGB = [1, 1, 1, 0];
@@ -6494,10 +6544,17 @@ function visFraction(ox, oy, oz, g, dx, dy, dz, d) {
 // twoSided: 메시는 삼각형 winding을 신뢰할 수 없어 양면 모두 빛을 받게 한다(기존 메시 셰이딩도 abs를 씀).
 function litFace(wx, wy, wz, nx, ny, nz, twoSided) {
   const L = v3 && v3._lights;
-  const AMB = litAmbient();
-  if (!L || !L.length) { LIT_RGB[0] = LIT_RGB[1] = LIT_RGB[2] = AMB; LIT_RGB[3] = 0; return AMB; }
+  // 환경광 = 방향별 천공광. 하늘을 보는 면과 아래를 보는 면이 달라야 형태가 산다.
+  // 양면 면은 카메라 쪽 법선을 모르므로 위쪽 하늘을 받는 것으로 근사한다.
+  litSky(twoSided ? 0 : nx, twoSided ? 0 : ny, twoSided ? 1 : nz, wx, wy, wz);
+  const ar = LIT_SKY[0], ag = LIT_SKY[1], ab = LIT_SKY[2];
+  if (!L || !L.length) {
+    LIT_RGB[0] = ar; LIT_RGB[1] = ag; LIT_RGB[2] = ab;
+    LIT_RGB[3] = (Math.abs(ar - ag) > 0.02 || Math.abs(ag - ab) > 0.02 || Math.abs(ar - ab) > 0.02) ? 1 : 0;
+    return (ar + ag + ab) / 3;
+  }
   // 직접광도 채널별로 쌓는다 — 광원의 색온도(K)가 화면에 나타나려면 스칼라 하나로는 안 된다
-  let sr = AMB, sg = AMB, sb = AMB;
+  let sr = ar, sg = ag, sb = ab;
   for (const g of L) {
     const dx = g.x - wx, dy = g.y - wy, dz = g.z - wz;
     const d2 = dx * dx + dy * dy + dz * dz;
@@ -6555,6 +6612,7 @@ function litCacheSig() {
   // 색(cr/cg/cb)까지 넣어야 한다 — 빠뜨리면 색온도를 바꿔도 캐시가 살아남아 옛 색이 그대로 남는다
   for (const g of (v3._lights || [])) h += `${g.x},${g.y},${g.z},${g.range},${g.power},${g.soft},${g.bounce},`
     + `${(g.cr || 0).toFixed(3)},${(g.cg || 0).toFixed(3)},${(g.cb || 0).toFixed(3)};`;
+  h += 'S' + (v3._shSig || '') + ';';   // 하늘(태양 설정)이 바뀌면 천공광이 달라진다
   h += 'B' + ((v3._bounce || []).length) + ';'; // 2차 광원이 바뀌면 캐시 무효
   h += 'F' + (v3.falseColor ? (v3.fcMax || FC_MAX_DEF) : 0) + ';'; // 조도 표시/스케일이 바뀌면 색이 달라진다
   h += '#';
@@ -6792,6 +6850,91 @@ function cmdExposure(arg) {
 //
 // 표시용 발광 radiance 상한. 광원을 직접 보면 밝게 빛나 보여야 하므로 남겨두되,
 // 에너지는 해석적 광원이 낸다. RT_EXPOSURE 기준으로 이 값이면 하얗게 포화한다.
+// ─── 하늘의 방향별 밝기 ───
+// 아래 두 곳이 이 함수를 공유한다 → 3D 미리보기의 하늘과 Raytraced 의 하늘이 어긋날 수 없다.
+//   ① 3D 뷰의 천공광(SH 투영)   ② Raytraced 환경맵(rtMakeSky)
+// 태양 원반은 여기 넣지 않는다 — 직사광은 따로 다룬다(3D 뷰는 sunLight, RT 는 원반 텍셀).
+function skyCtx(S) {
+  const sd = sunDirection(S);
+  return {
+    sx: sd.x, sy: sd.y, sz: sd.z, alt: sd.alt,
+    thS: Math.max(0, 90 - sd.alt) * SUN_D2R,
+    Tb: skyTurbidity(S), up: sd.alt > 0,
+  };
+}
+// 씬 좌표(Z-up) 방향 하나의 하늘 radiance [cd/m²]
+function skyDirRadiance(K, dx, dy, dz, out) {
+  if (!K.up) { out[0] = 0.006; out[1] = 0.008; out[2] = 0.014; return out; }   // 밤
+  const gamma = Math.acos(Math.max(-1, Math.min(1, dx * K.sx + dy * K.sy + dz * K.sz)));
+  const cz = Math.max(-1, Math.min(1, dz));
+  if (cz < 0) {   // 아래 반구 = 지표가 되반사하는 빛. 이게 있어야 처마 밑·차양 아래가 죽지 않는다.
+    const g = skyRadiance(Math.PI / 2 - 0.01, gamma, K.thS, K.Tb);
+    out[0] = g[0] * SKY_GROUND_ALBEDO; out[1] = g[1] * SKY_GROUND_ALBEDO; out[2] = g[2] * SKY_GROUND_ALBEDO;
+    return out;
+  }
+  const v = skyRadiance(Math.acos(cz), gamma, K.thS, K.Tb);
+  out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+  return out;
+}
+
+// ─── 방향별 천공광 (구면조화 L2) ───
+// 면의 조도는 E(n) = ∫ L(ω)·max(0, n·ω) dω 다. 면마다 반구를 적분하면 못 쓴다.
+// 그래서 하늘을 구면조화 9계수로 한 번 접어두고, 면마다 내적 한 번으로 조도를 얻는다.
+// Ramamoorthi & Hanrahan(2001): 조도는 코사인에 뭉개져 저주파라 L2(9계수)로 오차 ~1%.
+// 이게 있어야 하늘을 보는 바닥, 아래를 보는 처마 밑, 북측 벽이 서로 다른 밝기가 된다 —
+// 상수 환경광은 이 차이를 전부 지워서 형태를 뭉갠다.
+function shBasis(x, y, z, Y) {
+  Y[0] = 0.282095;
+  Y[1] = 0.488603 * y; Y[2] = 0.488603 * z; Y[3] = 0.488603 * x;
+  Y[4] = 1.092548 * x * y; Y[5] = 1.092548 * y * z;
+  Y[6] = 0.315392 * (3 * z * z - 1); Y[7] = 1.092548 * x * z;
+  Y[8] = 0.546274 * (x * x - y * y);
+  return Y;
+}
+// 코사인 커널의 SH 변환값 — l=0: π, l=1: 2π/3, l=2: π/4
+const SH_A = [Math.PI, 2 * Math.PI / 3, 2 * Math.PI / 3, 2 * Math.PI / 3,
+  Math.PI / 4, Math.PI / 4, Math.PI / 4, Math.PI / 4, Math.PI / 4];
+const _shY = new Float64Array(9), _shRGB = [0, 0, 0];
+function skyProjectSH(S) {
+  const K = skyCtx(S);
+  const c = new Float64Array(27);            // 9계수 × RGB
+  const NT = 48, NP = 96;                    // 구면 전체(하늘+지면 반사)를 훑는다
+  for (let i = 0; i < NT; i++) {
+    const th = (i + 0.5) / NT * Math.PI, st = Math.sin(th), ct = Math.cos(th);
+    const dOm = (Math.PI / NT) * (2 * Math.PI / NP) * st;
+    for (let j = 0; j < NP; j++) {
+      const ph = (j + 0.5) / NP * 2 * Math.PI;
+      const dx = st * Math.cos(ph), dy = st * Math.sin(ph), dz = ct;
+      skyDirRadiance(K, dx, dy, dz, _shRGB);
+      shBasis(dx, dy, dz, _shY);
+      for (let k = 0; k < 9; k++) {
+        const w = _shY[k] * dOm;
+        c[k * 3] += _shRGB[0] * w; c[k * 3 + 1] += _shRGB[1] * w; c[k * 3 + 2] += _shRGB[2] * w;
+      }
+    }
+  }
+  return c;
+}
+// 법선 n 이 받는 천공 조도 [lux]
+function skyIrradiance(c, nx, ny, nz, out) {
+  shBasis(nx, ny, nz, _shY);
+  let r = 0, g = 0, b = 0;
+  for (let k = 0; k < 9; k++) {
+    const w = SH_A[k] * _shY[k];
+    r += c[k * 3] * w; g += c[k * 3 + 1] * w; b += c[k * 3 + 2] * w;
+  }
+  out[0] = Math.max(0, r); out[1] = Math.max(0, g); out[2] = Math.max(0, b);
+  return out;
+}
+// 태양 설정이 그대로면 다시 접지 않는다 (48×96 = 4,608 방향 × Preetham)
+function skySH() {
+  if (!sunOn()) return null;
+  const S = sunState();
+  const sig = [S.lat, S.lon, S.tz, S.y, S.mo, S.d, S.h, S.mi, S.north, skyTurbidity(S)].join(',');
+  if (v3._shSig !== sig) { v3._sh = skyProjectSH(S); v3._shSig = sig; }
+  return v3._sh;
+}
+
 // ─── 하늘 → HDR 등장방형 환경맵 ───
 // 태양을 DirectionalLight 로 두지 않고 하늘 텍스처에 원반으로 박는 이유:
 //  · 라이브러리의 DIR_LIGHT 분기는 방향만 넘기고 radius 를 넘기지 않는다(소스 확인) → 델타 광원
@@ -11992,7 +12135,7 @@ window.__CADTEST__ = {
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
   bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE_DAY,
-  renderScene, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, SUN_LIT_POWER, SKY_AMBIENT, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
+  renderScene, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
