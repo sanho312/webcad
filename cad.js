@@ -3035,6 +3035,9 @@ function render3D() {
   const dpr = devicePixelRatio || 1;
   v3.grip = null; v3.gum = null;
   const order = v3.quad ? [0, 1, 2, 3] : [v3.act];
+  // 단일 화면(화면 키우기)에선 다른 칸의 DOM 이름표를 숨긴다 — 루프가 활성 칸만 돌므로
+  // 여기서 안 지우면 4분할 시절 이름표('평면·정면·우측면')가 옛 자리에 계속 떠 있다 (사용자 스크린샷)
+  if (!v3.quad) for (let k = 0; k < 4; k++) if (k !== v3.act) vpHideLabel(k);
   for (const i of order) {
     const r = vpRect(i);
     if (vpIsPlan(i)) { // 평면 칸은 2D 엔진이 #cv 로 그린다 (syncPlanCv). 3D 렌더러는 손대지 않는다.
@@ -8877,6 +8880,24 @@ function rviewAoRender() {
     rview.composer = new fx.EffectComposer(rview.renderer);
     rview._rp = new fx.RenderPass(rview.scene, rview.cam);
     rview._ao = new fx.GTAOPass(rview.scene, rview.cam, c.width, c.height);
+    // ★NaN 가드 (셰이더 런타임 패치) — 라이브러리 GTAO 는 slice 계산에서 normalize(0) 이 나올 수 있다:
+    //   sliceBitangent = normalize(cross(sampleDir, viewDir)) — 둘이 평행하면 0벡터 → NaN
+    //   normalInSlice  = normalize(viewNormal - …)            — 법선이 slice 축과 평행하면 0벡터 → NaN
+    // 방향은 화면 고정 노이즈 타일에서 오므로, NaN 픽셀이 씬과 무관하게 같은 자리에 '검은 삼각형' 으로
+    // 찍힌다 (사용자 스크린샷 — 정투영 + 평평한 대지에서 잘 걸린다). NaN 은 모든 비교가 거짓이라
+    // !(ao >= 0.0) 으로 잡아 '음영 없음(1)' 로 대체한다. 치환 실패(라이브러리 변경) 시엔 원래 동작.
+    // 가드는 slice 누적 단계에 건다 — 최종 ao 에 걸면 늦는다: clamp(NaN, 0, 1) 이 GPU 에서
+    // 0 으로 씻겨 '정상적인 완전 오클루전' 이 되어버린다 (실측 — 최종 가드는 안 걸렸다).
+    // NaN slice 는 '가림 없음(1)' 으로 — 그 방향 하나만 잃고 픽셀은 살아남는다.
+    {
+      const gm = rview._ao.gtaoMaterial;
+      const anchor = 'ao += occlusion;';
+      if (gm && gm.fragmentShader && gm.fragmentShader.indexOf(anchor) >= 0) {
+        gm.fragmentShader = gm.fragmentShader.replace(anchor,
+          'ao += isnan(occlusion) ? 1.0 : occlusion;');
+        gm.needsUpdate = true;
+      }
+    }
     rview.composer.addPass(rview._rp);
     rview.composer.addPass(rview._ao);
     rview.composer.addPass(new fx.OutputPass());

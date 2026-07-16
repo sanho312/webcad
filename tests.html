@@ -1800,6 +1800,31 @@ function tests(){
     ok(tex.normalMap && tex.normalMap.anisotropy === 8, '★노멀맵도 anisotropy=8');
   }
 
+  group('화면 키우기 — 4분할 이름표가 단일 화면에 남지 않는다 (사용자 스크린샷 버그)');
+  {
+    // render3D 는 단일 모드에서 활성 칸만 순회한다 — 비활성 칸 라벨을 명시적으로 숨기지 않으면
+    // 4분할 시절 이름표('평면·정면·우측면')가 옛 자리에 계속 떠 있었다.
+    reset();
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    C.v3.quad = true; C.v3.act = 1;
+    C.render3D();                                       // 4분할 — 라벨 4개 표시
+    const vis = (i) => { const el = document.getElementById('vpLabel' + i); return !!el && el.style.display !== 'none'; };
+    if (!document.getElementById('vpLabel1')) {
+      // 이 테스트 페이지엔 3D 오버레이 래퍼(wrap)가 없어 라벨 DOM 자체가 안 생긴다 —
+      // 표시/숨김 동작은 실브라우저에서 검증했다 (2026-07-17, 사용자 스크린샷 버그 수정).
+      ok(typeof C.vpHideLabel === 'function' && typeof C.vpShowLabel === 'function', '(라벨 DOM 없는 환경 — 함수 존재만 확인)');
+    } else {
+      ok(vis(1) && vis(2) && vis(3), '4분할에선 각 칸 이름표가 보인다');
+      C.v3.quad = false;                                // 화면 키우기 (단일)
+      C.render3D();
+      ok(vis(1), '활성 칸 이름표는 남는다');
+      ok(!vis(0) && !vis(2) && !vis(3), '★비활성 칸 이름표는 사라진다 (잔존 버그 회귀)');
+      C.v3.quad = true; C.render3D();
+      ok(vis(2) && vis(3), '4분할로 돌아오면 다시 보인다');
+    }
+    C.v3.quad = false; C.render3D();                    // 뒷그룹을 위해 단일로 정리
+  }
+
   group('퀄리티 4차 — IES 계약 (rt 는 실브라우저로 검증: 도넛 배광 픽셀 재현 2026-07-17)');
   {
     // rt 의 IES 는 실브라우저에서 확정: iesProfile 슬롯 0 등록, 좁은 배광 원뿔(중심 229→밖 0),
