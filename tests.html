@@ -1399,6 +1399,64 @@ function tests(){
     ok(mx - mn > 15, '★벽돌 질감이 실제 명암 대비를 만든다');
   }
 
+  group('전체 범위는 하나 — 평면 전체보기와 3D 화면맞춤이 같은 곳을 본다');
+  {
+    // 회귀 방지: 예전엔 zoomFit 과 fit3D 가 각자 자기 switch 로 범위를 구했고, 둘 다 다르게 틀렸다.
+    //   fit3D  : LINE/LWPOLYLINE/CIRCLE/ARC 화이트리스트 → 문자·해치·이미지·블록이 빠짐
+    //   zoomFit: MESH 케이스 누락 → STL/OBJ 를 가져오면 2D 전체보기가 그 형상을 못 봄
+    // 같은 도면에 '전체 범위' 가 두 개 나오는 건 평면이 두 벌이던 것과 같은 병이다.
+    reset();
+    setEnts([
+      { id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+        points: [[0, 0], [1000, 0], [1000, 1000], [0, 1000]], bim: { kind: 'slab', top: 0, t: 100 } },
+      { id: 2, type: 'TEXT', layer: '0', x: 9000, y: 0, height: 500, text: '멀리', rotation: 0 },   // fit3D 가 놓치던 것
+      { id: 3, type: 'MESH', layer: '0', name: 'm',                                                  // zoomFit 이 놓치던 것
+        tris: [[[-8000, -8000, 0], [-7000, -8000, 0], [-7000, -7000, 500]]] },
+    ]);
+    const ex = C.modelExtents(false);
+    ok(!!ex, '범위가 나온다');
+    ok(ex.maxX >= 9000, '★문자(x=9000)가 범위에 들어간다');
+    ok(ex.minX <= -8000, '★메시(x=-8000)가 범위에 들어간다 — STL/OBJ 를 놓치면 안 된다');
+
+    // ★두 카메라가 같은 중심을 봐야 한다
+    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    C.v3.quad = false; C.v3.act = 1;
+    C.INSTANT_CMDS.zoom();
+    ok(Math.abs(C.state.view.x - C.v3.cx) < 2, '★평면 전체보기와 3D 화면맞춤의 중심 X 가 같다');
+    ok(Math.abs(C.state.view.y - C.v3.cy) < 2, '★중심 Y 가 같다');
+
+    // 타입별 기여 — 예전 zoomFit 규칙을 유지하는지 (회귀)
+    const pts = (e) => { const o = []; C.entityExtentPts(e, o); return o; };
+    eqi(pts({ type: 'LINE', x1: 1, y1: 2, x2: 3, y2: 4 }).join(','), '1,2,3,4', '선은 두 끝점');
+    eqi(pts({ type: 'CIRCLE', cx: 0, cy: 0, r: 5 }).join(','), '-5,-5,5,5', '원은 반지름 bbox');
+    eqi(pts({ type: 'LWPOLYLINE', points: [[0, 0], [7, 8]] }).join(','), '0,0,7,8', '폴리라인은 전 정점');
+    ok(pts({ type: 'TEXT', x: 0, y: 0, height: 10, text: 'ab' }).length === 4, '문자도 범위에 기여한다');
+    ok(pts({ type: 'MESH', tris: [[[1, 2, 0], [3, 4, 0], [5, 6, 0]]] }).length === 4, '★메시도 범위에 기여한다');
+    // 이상한 개체가 섞여도 터지지 않는다 (DXF 가 별걸 다 준다)
+    eqi(pts({ type: 'UNKNOWN' }).length, 0, '모르는 타입은 조용히 건너뛴다');
+    eqi(pts({ type: 'LWPOLYLINE' }).length, 0, '정점 없는 폴리라인도 안 터진다');
+
+    // robust: 멀리 떨어진 이상점을 잘라낸다 (DXF 에 튄 점 하나가 전체보기를 망친다)
+    const many = [];
+    for (let i = 0; i < 200; i++) many.push({ id: i + 1, type: 'LINE', layer: '0', x1: i, y1: 0, x2: i + 1, y2: 1 });
+    many.push({ id: 999, type: 'LINE', layer: '0', x1: 1e6, y1: 1e6, x2: 1e6, y2: 1e6 });   // 이상점
+    setEnts(many);
+    const raw = C.modelExtents(false), rob = C.modelExtents(true);
+    ok(raw.maxX >= 1e6, '★robust 를 끄면 이상점이 범위에 남는다');
+    ok(rob.maxX < 1e5, '★robust 를 켜면 이상점이 잘린다');
+
+    // fit3D 는 BIM 을 솔리드로 커버하므로 중복 계산하지 않는다
+    reset();
+    setEnts([{ id: 1, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[0, 0], [2000, 0], [2000, 2000], [0, 2000]], bim: { kind: 'column', base: 0, h: 3000 } }]);
+    const exSkip = C.modelExtents(false, (e) => !!e.bim);
+    ok(!exSkip, 'BIM 만 있으면 modelExtents(skip bim) 은 비어 있다 (솔리드가 맡는다)');
+    C.v3.solids = C.bimSolids();
+    C.fit3D();
+    ok(C.v3.hasContent, '★그래도 fit3D 는 내용이 있다고 본다 (솔리드로)');
+    ok(Math.abs(C.v3.cx - 1000) < 1, 'BIM 기둥의 중심을 맞게 잡는다');
+  }
+
   group('덮이는 뷰포트 계약 — 렌더링 뷰·레이트레이싱은 자기 칸에만');
   {
     // 회귀 방지: #rtcv 는 예전에 inset:0 로 오버레이 '전체' 를 덮었고 카메라는 활성 칸 하나만

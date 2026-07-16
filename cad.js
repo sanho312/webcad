@@ -2764,23 +2764,68 @@ function open3D() {
 }
 // 뷰 세그먼트(평면/3D) 표시 동기화
 // 3D 화면 맞춤: 솔리드 + 비 BIM 도형 전체 bbox → 중심·스케일 재계산 (전체보기와 연동)
+// ─── 도면 범위 (전체보기의 유일한 진실) ───
+// 예전엔 2D 전체보기(zoomFit)와 3D 화면맞춤(fit3D)이 각자 자기 switch 를 갖고 있었다.
+// 둘 다 서로 다르게 틀렸다:
+//   fit3D  : LINE/LWPOLYLINE/CIRCLE/ARC 화이트리스트 → 문자·해치·이미지·블록이 범위에서 빠짐
+//   zoomFit: MESH 케이스가 없음 → STL/OBJ 를 가져오면 2D 전체보기가 그 형상을 못 봄
+// 그래서 같은 도면에 대해 평면 칸과 3D 칸의 '전체보기' 가 서로 다른 곳을 봤다.
+// 한쪽만 고치면 반대로 어긋난다 — '평면이 두 벌' 과 같은 병이다. 그래서 원천을 하나로 만든다.
+//
+// 개체 하나가 범위에 기여하는 점들을 out 에 [x,y,x,y,…] 로 밀어 넣는다.
+// LINE/폴리라인/원·호/이미지는 예전 zoomFit 의 규칙을 그대로 유지하고(회귀 방지),
+// 나머지(문자·해치·블록·메시)는 entityBBox 가 맡는다 — 그게 이미 전 타입을 안다.
+function entityExtentPts(e, out) {
+  const push = (x, y) => { if (isFinite(x) && isFinite(y)) { out.push(x); out.push(y); } };
+  switch (e.type) {
+    case 'LINE': push(e.x1, e.y1); push(e.x2, e.y2); return;
+    case 'LWPOLYLINE': if (e.points) for (const q of e.points) push(q[0], q[1]); return;
+    case 'CIRCLE': case 'ARC': push(e.cx - e.r, e.cy - e.r); push(e.cx + e.r, e.cy + e.r); return;
+    case 'IMAGE': for (const q of imgCorners(e)) push(q.x, q.y); return;   // 회전 반영
+    default: {
+      let b = null; try { b = entityBBox(e); } catch (_) {}
+      if (b) { push(b.xmin, b.ymin); push(b.xmax, b.ymax); }
+    }
+  }
+}
+// 도면 전체 범위. robust=true 면 1%/99% 분위수로 이상점을 잘라낸다
+// (DXF 에 멀리 떨어진 점 하나가 섞여 있으면 전체보기가 쓸모없어진다).
+// skip(e) 로 제외 — fit3D 는 BIM 개체를 솔리드가 이미 커버하므로 건너뛴다.
+function modelExtents(robust, skip) {
+  const xs = [], ys = [], buf = [];
+  for (const e of state.entities) {
+    if (skip && skip(e)) continue;
+    buf.length = 0;
+    entityExtentPts(e, buf);
+    for (let i = 0; i < buf.length; i += 2) { xs.push(buf[i]); ys.push(buf[i + 1]); }
+  }
+  if (!xs.length) return null;
+  xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
+  let minX = xs[0], maxX = xs[xs.length - 1], minY = ys[0], maxY = ys[ys.length - 1];
+  if (robust && xs.length >= 50) {
+    const q = (arr, t) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * t)))];
+    const rx0 = q(xs, 0.01), rx1 = q(xs, 0.99), ry0 = q(ys, 0.01), ry1 = q(ys, 0.99);
+    if (rx1 > rx0 && ry1 > ry0) { minX = rx0; maxX = rx1; minY = ry0; maxY = ry1; }
+  }
+  return { minX, maxX, minY, maxY, n: xs.length };
+}
 function fit3D() {
   let xmin = 1e18, xmax = -1e18, ymin = 1e18, ymax = -1e18, zmax = 0, has = 0;
   for (const s of v3.solids) {
     for (const [x, y] of s.poly) { xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); }
     zmax = Math.max(zmax, s.zt ? Math.max(...s.zt) : (s.z1 || 0)); has++;
   }
-  for (const e of state.entities) {
+  // 평면 범위는 2D 전체보기와 같은 함수로 (BIM 은 위에서 솔리드가 이미 커버했다)
+  const ex = modelExtents(false, (e) => !!e.bim);
+  if (ex) {
+    xmin = Math.min(xmin, ex.minX); xmax = Math.max(xmax, ex.maxX);
+    ymin = Math.min(ymin, ex.minY); ymax = Math.max(ymax, ex.maxY);
+    has++;
+  }
+  for (const e of state.entities) {   // z 는 3D 전용이라 여기서만 본다
     if (e.bim) continue;
-    // 전 타입을 entityBBox 로 — 예전엔 LINE/LWPOLYLINE/CIRCLE/ARC 화이트리스트라
-    // TEXT/HATCH/IMAGE/INSERT 가 3D 전체보기 범위에서 빠져 2D zoom 과 다른 extents 를 냈다.
-    // (평면 칸과 3D 칸의 전체보기가 서로 다른 곳을 보는 '호환성 문제'의 뿌리 중 하나)
-    // 부수 수정: 아래 MESH z 스캔은 화이트리스트 탓에 도달 불가능한 죽은 코드였다.
-    let b = null; try { b = entityBBox(e); } catch (_) {}
-    if (!b || !isFinite(b.xmin) || !isFinite(b.xmax)) continue;
-    xmin = Math.min(xmin, b.xmin); xmax = Math.max(xmax, b.xmax); ymin = Math.min(ymin, b.ymin); ymax = Math.max(ymax, b.ymax); has++;
     zmax = Math.max(zmax, e.zo || 0, e.z1 || 0, e.z2 || 0); // 공중에 띄운 도형·3D 선 높이 포함
-    if (e.type === 'MESH' && e.tris) for (const t of e.tris) for (const p of t) zmax = Math.max(zmax, p[2]);
+    if (e.type === 'MESH' && e.tris) for (const t of e.tris) for (const q of t) zmax = Math.max(zmax, q[2]);
   }
   v3.hasContent = has > 0;
   if (!has) { v3.cx = 0; v3.cy = 0; v3.cz = 0; v3.fit = 10000; return; } // 빈 모델: 10m 기준
@@ -8545,7 +8590,7 @@ function cmdRtDenoise() {
 }
 
 async function rtEnter() {
-  if (!v3 || !document.getElementById('bim3d') || document.getElementById('bim3d').style.display === 'none') {
+  if (!v3 || !is3DActive()) {
     logLine('  Raytraced: 3D 작업 뷰에서만 사용합니다 — 먼저 3d 명령으로 여세요.', 'warn'); return;
   }
   if (!rtSupported()) { // §2.4 폴백
@@ -11304,37 +11349,21 @@ function zoomPrev() {
   state.view = v; draw(); logLine('  ✔ 이전 뷰', 'info');
 }
 function zoomFit(robust) {
-  { const ov3 = document.getElementById('bim3d');
-    if (ov3 && ov3.style.display !== 'none' && v3) { // 3D 열림: 3D 화면 맞춤
-      v3.solids = bimSolids(); fit3D();
-      v3.zoom = 1; v3.panX = 0; v3.panY = 0;
-      for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
-      loadVp(v3.act); render3D();
-      // return 하지 않음 — 평면 뷰도 함께 맞춰야 (3D 중 문서 열기 등에서) 복귀 시 화면이 맞음
-    } }
+  // 전체보기는 두 카메라(평면 state.view / 3D v3)를 모두 맞춘다. 범위는 modelExtents 하나로
+  // 계산하므로 둘이 다른 곳을 볼 수 없다 — 예전엔 각자 자기 switch 로 범위를 구해 어긋났다.
+  if (is3DActive() && v3) {           // (예전엔 이 검사를 인라인으로 복제해 뒀다)
+    v3.solids = bimSolids(); fit3D();
+    v3.zoom = 1; v3.panX = 0; v3.panY = 0;
+    for (const w of v3.views) { w.zoom = 1; w.panX = 0; w.panY = 0; }
+    loadVp(v3.act); render3D();
+    // return 하지 않음 — 평면 뷰도 함께 맞춰야 (3D 중 문서 열기 등에서) 복귀 시 화면이 맞음
+  }
   pushViewPrev();
   if (!state.entities.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
-  const xs = [], ys = [];
-  const ext = (x, y) => { if (isFinite(x) && isFinite(y)) { xs.push(x); ys.push(y); } };
-  for (const e of state.entities) {
-    switch (e.type) {
-      case 'LINE': ext(e.x1, e.y1); ext(e.x2, e.y2); break;
-      case 'LWPOLYLINE': e.points.forEach(p => ext(p[0], p[1])); break;
-      case 'CIRCLE': case 'ARC': ext(e.cx - e.r, e.cy - e.r); ext(e.cx + e.r, e.cy + e.r); break;
-      case 'TEXT': ext(e.x, e.y); ext(e.x + e.text.length * e.height * .6, e.y + e.height); break;
-      case 'HATCH': { const bb = boundaryBBox(e.boundary); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
-      case 'IMAGE': for (const p of imgCorners(e)) ext(p.x, p.y); break; // 회전 반영
-      case 'INSERT': { const bb = insertBBox(e); ext(bb.xmin, bb.ymin); ext(bb.xmax, bb.ymax); break; }
-    }
-  }
-  if (!xs.length) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
-  xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
-  let minX = xs[0], maxX = xs[xs.length - 1], minY = ys[0], maxY = ys[ys.length - 1];
-  if (robust && xs.length >= 50) {
-    const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * p)))];
-    const rx0 = q(xs, 0.01), rx1 = q(xs, 0.99), ry0 = q(ys, 0.01), ry1 = q(ys, 0.99);
-    if (rx1 > rx0 && ry1 > ry0) { minX = rx0; maxX = rx1; minY = ry0; maxY = ry1; }
-  }
+  // ★fit3D 와 같은 함수를 쓴다 — 같은 도면에 두 개의 '전체 범위' 가 나오면 안 된다
+  const ex = modelExtents(robust);
+  if (!ex) { state.view = { x: 0, y: 0, scale: 4 }; draw(); return; }
+  const minX = ex.minX, maxX = ex.maxX, minY = ex.minY, maxY = ex.maxY;
   const w = maxX - minX || 1, h = maxY - minY || 1;
   const pad = 1.2;
   if (cv._w > 2 && cv._h > 2) // 창이 0 크기일 때 scale이 0/∞로 깨지는 것 방지
@@ -11880,7 +11909,7 @@ const COMMAND_LIST = [
 ];
 const sugEl = document.getElementById('cmdSuggest');
 let sugMatches = [], sugIndex = -1;
-function is3DView() { const ov = document.getElementById('bim3d'); return !!(ov && ov.style.display !== 'none'); }
+const is3DView = is3DActive;   // 같은 검사가 두 벌이었다 — 이름만 다른 복제였다
 function computeMatches(text) {
   const t = text.trim().toLowerCase();
   if (!t || /^[-@\d.]/.test(t)) return []; // 빈칸/좌표·숫자 입력이면 제안 안 함
@@ -13349,6 +13378,7 @@ window.__CADTEST__ = {
   vpIsRendered, vpShowLabel, vpHideLabel, vpLabelEl,
   markInteract, sunApply, preethamCache,
   vpIsRt, rtFrame, rtWithVp, rtExit, rtResize, rtCameraChanged,
+  modelExtents, entityExtentPts, fit3D, zoomFit, pushViewPrev, zoomPrev,
   weatherName,
   renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
