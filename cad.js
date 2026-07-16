@@ -2823,7 +2823,7 @@ function render3D() {
     c.save(); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip();
     const res = renderScene(i === v3.act);
     c.restore();
-    v3.views[i]._faces = res.faces; v3.views[i]._under = res.under;
+    v3.views[i]._faces = res.faces; v3.views[i]._under = res.under; v3.views[i]._pick = res.pick;
     c.font = `600 ${12 * dpr}px -apple-system,system-ui,sans-serif`;
     c.fillStyle = i === v3.act ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
     c.fillText(v3.views[i].name + (v3.views[i].name in ELEV_YAW ? ' ▾' : ''), r.x + 8 * dpr, r.y + 16 * dpr);
@@ -2834,7 +2834,7 @@ function render3D() {
     }
   }
   loadVp(v3.act); v3.vp = vpRect(v3.act);
-  v3.faces = v3.views[v3.act]._faces; v3.under = v3.views[v3.act]._under;
+  v3.faces = v3.views[v3.act]._faces; v3.under = v3.views[v3.act]._under; v3.pick = v3.views[v3.act]._pick;
   if (v3.boxRect) { // 선택 박스 러버밴드 (드래그 중)
     const b = v3.boxRect, crossing = b.x1 < b.x0;
     c.save();
@@ -3014,6 +3014,13 @@ function zRasterFaces(c, faces, vp, light) {
 function renderScene(isActive) {
   const c = v3.ctx;
   const faces = [];
+  // ★ 피킹 전용 면 목록 — 표시용(faces)과 분리한다.
+  // faces 는 조명 상태에 따라 pushLitPoly 가 면을 잘게 쪼개 넣는다(빛 웅덩이 표현).
+  // 그런데 pick3DAt 이 그 배열을 쓰고 있어서, 태양/조명을 켜면 같은 자리를 클릭해도
+  // 다른 면(fi)이 잡혔다 — extrudesrf 의 면 밀당이 엉뚱한 변을 잡는 원인.
+  // (실측: 기둥 옆면 같은 점 클릭 → 태양 OFF fi=1 / ON fi=0)
+  // pickFaces 는 쪼개기·_fast 와 무관하게 '통짜 면' 만 담는다 → 피킹이 조명에 흔들리지 않는다.
+  const pickFaces = [];
   // 태양만 켜도 조명 계산이 돌아야 한다 — 안 그러면 sun 을 켜도 화면이 그대로다
   const litOn = v3.lighting || sunOn();
   v3._sh = skySH();          // 방향별 천공광 — 태양 설정이 그대로면 다시 접지 않는다
@@ -3028,7 +3035,10 @@ function renderScene(isActive) {
   v3._bounce = (litOn && !v3._fast && v3._occ) ? bounceLights() : null;
   if (litOn) {
     const sg = litCacheSig();
-    if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; v3._litBudget = 1200; } // 형상·광원이 바뀔 때만 재계산 + 예산 리셋
+    // 예산: 그림자 경계 세분의 상한. 다 쓰면 경계 세분만 멈춘다(조명·그림자 자체는 동작).
+    // 태양은 장면 전체에 그림자를 드리우므로 인공조명보다 경계가 훨씬 많다 —
+    // 1200 으로는 벽 20장 장면에서 이미 소진돼(잔량 8) 그림자 기울기가 계단으로 남았다.
+    if (v3._litSig !== sg) { v3._litCache = new Map(); v3._litSig = sg; v3._litBudget = sunOn() ? 4000 : 1200; }
   }
   else { v3._litCache = null; v3._litSig = null; }
   // 바닥 그리드 (z=0, 모델 주변)
@@ -3105,18 +3115,24 @@ function renderScene(isActive) {
       else if (v3.falseColor) { sSh = 1; sFc = falseColor(illuminanceAt(mx, my, midz, onx, ony, 0), v3.fcMax); } // 조도 색표시
       else if (litOn) { sSh = litFace(mx, my, midz, onx, ony, 0, !!s.lit); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
       else sSh = 0.55 + 0.45 * lightA;
-      faces.push({ pts: quad, d: (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4, color: sFc || s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
+      const qd = (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4;
+      faces.push({ pts: quad, d: qd, color: sFc || s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
+      pickFaces.push({ pts: quad, d: qd, eid: s.eid, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
     if (!cull || facesCam(ccx, ccy, tcz, 0, 0, 1)) {  // 상면 (위 향함)
       const mTop = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'top' };
+      const dTop = top.reduce((a, p) => a + p[2], 0) / n;
+      pickFaces.push({ pts: top, d: dTop, eid: s.eid, fk: 'top', fi: null, si: s.seg != null ? s.seg : null, sz0: s.z0 });
       if (litOn && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zt, 1, mTop, s.eid + '|t|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z1), !!s.lit); // 넓은 면에도 빛 웅덩이가 보이게 (조작 중엔 생략)
-      else faces.push({ ...mTop, pts: top, d: top.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 1.0 });
+      else faces.push({ ...mTop, pts: top, d: dTop, shade: s.glow ? 1 : 1.0 });
     }
     if (!cull || facesCam(ccx, ccy, Math.min(...zb), 0, 0, -1)) { // 하면 (아래 향함)
       const mBot = { color: s.color, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'bot' };
+      const dBot = bot.reduce((a, p) => a + p[2], 0) / n;
+      pickFaces.push({ pts: bot, d: dBot, eid: s.eid, fk: 'bot', fi: null, si: s.seg != null ? s.seg : null, sz0: s.z0 });
       if (litOn && !v3._fast && !s.glow) pushLitPoly(faces, s.poly, zb, -1, mBot, s.eid + '|b|' + (s.seg != null ? s.seg : '') + '|' + Math.round(s.z0), !!s.lit);
-      else faces.push({ ...mBot, pts: bot, d: bot.reduce((a, p) => a + p[2], 0) / n, shade: s.glow ? 1 : 0.5 });
+      else faces.push({ ...mBot, pts: bot, d: dBot, shade: s.glow ? 1 : 0.5 });
     }
   }
   // 가져온/불리언 3D 메시 — 삼각형별 법선 셰이딩. 내부 삼각분할선은 감추고 '진짜 모서리'만 표시
@@ -3138,7 +3154,9 @@ function renderScene(isActive) {
         : 0.5 + 0.5 * Math.abs(nx * 0.5 + ny * 0.3 + nz * 0.8));
       const msh3 = (!mfc && litOn && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
       const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
-      faces.push({ pts: P, d: (P[0][2] + P[1][2] + P[2][2]) / 3, color: mfc || mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
+      const dM = (P[0][2] + P[1][2] + P[2][2]) / 3;
+      faces.push({ pts: P, d: dM, color: mfc || mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
+      pickFaces.push({ pts: P, d: dM, eid: e.id, isMesh: true });
     }
   }
   const light = document.documentElement.classList.contains('light');
@@ -3459,7 +3477,7 @@ function renderScene(isActive) {
       c.fillText(`${Math.round(Math.hypot(v3.wallCur[0] - v3.wallP1[0], v3.wallCur[1] - v3.wallP1[1]))}`, (a[0] + b[0]) / 2 + 6, (a[1] + b[1]) / 2 - 6);
     }
   }
-  return { faces, under };
+  return { faces, under, pick: pickFaces };
 }
 // 채널별 밝기로 색을 만든다 (색번짐용). k3 = [kr, kg, kb]
 function shadeColor3(hex, k3) {
@@ -4319,7 +4337,7 @@ function applyBox3D(d) {
   };
   const pts = new Map(), segs = new Map();
   const addP = (m, eid, v) => { let a = m.get(eid); if (!a) { a = []; m.set(eid, a); } a.push(v); };
-  for (const f of (v3.faces || [])) if (f.eid != null) {
+  for (const f of (v3.pick || v3.faces || [])) if (f.eid != null) {
     for (let i = 0; i < f.pts.length; i++) { addP(pts, f.eid, f.pts[i]); addP(segs, f.eid, [f.pts[i], f.pts[(i + 1) % f.pts.length]]); }
   }
   for (const u of (v3.under || [])) {
@@ -4347,7 +4365,9 @@ function pick3D(e, additive) {
 }
 // 클릭 지점의 '면'만 판별 (선택 변경 없음) — extrudesrf 면 재타겟용
 function findFaceAt(px, py) {
-  if (!v3 || !v3.faces) return null;
+  if (!v3) return null;
+  const src = v3.pick || v3.faces;   // 피킹 전용 목록 (조명에 흔들리지 않는다)
+  if (!src) return null;
   const inPoly = (pts) => {
     let inside = false;
     for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
@@ -4356,12 +4376,16 @@ function findFaceAt(px, py) {
     }
     return inside;
   };
-  const f = [...v3.faces].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
+  const f = [...src].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
   return f ? { eid: f.eid, fk: f.fk || null, fi: f.fi != null ? f.fi : null, si: f.si != null ? f.si : null, sz0: f.sz0 != null ? f.sz0 : null } : null;
 }
 // 캔버스 픽셀 좌표로 선택 (테스트/내부용)
 function pick3DAt(px, py, additive) {
-  if (!v3 || !v3.faces) return;
+  if (!v3) return;
+  // 표시용(v3.faces)이 아니라 피킹 전용 목록을 쓴다 — 조명/태양이 켜지면 표시용 면은
+  // pushLitPoly 가 잘게 쪼개서 같은 자리를 클릭해도 다른 면이 잡힌다(extrudesrf 가 깨진 원인).
+  const src = v3.pick || v3.faces;
+  if (!src) return;
   const inPoly = (pts) => {
     let inside = false;
     for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
@@ -4371,7 +4395,7 @@ function pick3DAt(px, py, additive) {
     return inside;
   };
   // 앞(depth 작은) 면부터
-  let hit = [...v3.faces].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
+  let hit = [...src].sort((a, b) => a.d - b.d).find(f => f.eid != null && inPoly(f.pts));
   // 평면 밑그림(비 BIM 라인워크) 픽킹: 투영 경로와의 거리 + 깊이 비교(면보다 앞이면 밑그림 우선)
   if (v3.under && v3.under.length) {
     const tol = 8 * (devicePixelRatio || 1);
@@ -6635,8 +6659,15 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
   }
   const frags = [];
   // 분할 세밀도는 빛의 감쇠 규모에 맞춘다 — 도달거리가 짧으면 더 곱게, 길면 성기게.
-  const rng = Math.min(...(v3._lights || [{ range: 6000 }]).map(g => g.range));
-  const MAX_EDGE = Math.max(800, Math.min(3000, rng / 3)), MIN_EDGE = 250, MAX_DEPTH = 14;
+  // ★ 태양은 평행광이라 '감쇠 거리' 라는 게 없다 — range 에 천문학적 값(D×1e6)을 넣어뒀다.
+  // 그걸 그대로 쓰면 MAX_EDGE 가 상한 3000 에 붙어 바닥이 3m 덩어리로만 쪼개진다
+  // (실측: 12m 바닥이 4×4 격자 → 그림자 기울기가 계단으로 보이고 명암이 뭉갠다).
+  // 그래서 태양이 있으면 '장면 규모' 로 정한다. 감쇠가 없으니 기준이 될 건 화면에 담긴 크기뿐이다.
+  const pl = (v3._lights || []).filter(g => !g.sun);
+  const rng = pl.length ? Math.min(...pl.map(g => g.range)) : 6000;
+  let maxEdge = Math.max(800, Math.min(3000, rng / 3));
+  if ((v3._lights || []).some(g => g.sun)) maxEdge = Math.min(maxEdge, Math.max(300, (v3.fit || 10000) / 12));
+  const MAX_EDGE = maxEdge, MIN_EDGE = 250, MAX_DEPTH = 14;
   // 그림자 경계 세분에는 '전역 예산'을 둔다. 그림자 경계는 계단 함수라 아무리 잘게 나눠도
   // 꼭짓점 밝기 차이가 줄지 않는다 → 예산이 없으면 모든 경계에서 최소 크기까지 무한정 쪼갠다.
   // (실측: 예산 없이 벽 20장 장면에서 조각 13,721개 · soft=0일 때 12.6초)
@@ -12135,7 +12166,7 @@ window.__CADTEST__ = {
   reset: () => { state.blocks = {}; state.views = {}; newDrawing(); },
   // BIM (단면/솔리드 수치 검증용)
   bimSolids, pushLitPoly, lineClipPoly, genSectionView, stairSolids, stairSteps, railingSolids, railingPath, cmdRailingTag, lightEmitters, lightGizmos, renderLightList, cmdSetAsLight, cmdUnsetLight, cmdLighting, cmdRaytrace, rtBuildScene, rtTrisByEntity, rtSyncCamera, rtGeoSig, rtSupported, rtPreview, rtFullRes, rtLightsChanged, litCacheSig, rtSetEnv, cmdRtEnv, cmdRtDenoise, RT_DENOISE_UNTIL, rtExposure, cmdExposure, RT_EXPOSURE_DAY,
-  renderScene, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
+  renderScene, render3D, findFaceAt, sunDefaults, sunState, solarPosition, sunLight, sunOn, renderSunPanel, sunApply, litAmbient, litSky, skyVis, SUN_LIT_POWER, shadePerLux, skyProjectSH, skyIrradiance, skyDirRadiance, skyCtx, skySH, sunDirection, sunNoonMinutes, sunDirectIlluminance, sunDiskLuminance,
   skyRadiance, sunAirMass, rtMakeSky, cmdSun, sunSummary, skyTurbidity, SUN_SOLID_ANGLE, SUN_ANG_RADIUS, rtAddLights, rtEmitterLook, rtRadiance, RT_EMITTER_LOOK, RT_MM, rtLoop, RT_TARGET_SPP, illuminanceAt, falseColor, sensorMeasure, sensorGrid, sensorCSV,
   cmdAddSensorPlane, cmdFalseColor, renderSensorList, FC_MAX_DEF, lightPropRows, renderProps, get undoStack() { return undoStack; }, get rt() { return rt; }, lightSources, litFace,
   kelvinToRGB, lmToPower, lightOfEnt, lightById, pruneLights, LIGHT_PRESETS, shadowOccluders, shadowed, visFraction, bounceLights, rayHit, shadeColor3, pathStations, renderScene,
