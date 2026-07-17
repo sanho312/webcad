@@ -1851,6 +1851,35 @@ function tests(){
     C.v3.quad = false; C.render3D();                    // 뒷그룹을 위해 단일로 정리
   }
 
+  group('퀄리티 6차 — 모서리 표시(edges) · 스튜디오 배경(bg)');
+  {
+    // 픽셀 검증은 실브라우저(2026-07-17): edges 켬 = 윤곽선 963픽셀·LineSegments 1개,
+    // bg 흰색 = rview 255/rt 247 (모델·조명은 불변). 여기서는 네트워크 없는 계약만.
+    reset();
+    if (!C.is3DActive()) C.INSTANT_CMDS['view3d']();
+    // edges
+    ok(C.rview.edges === false, '★모서리 표시 기본 끔 (라이노 Rendered 기본과 동일)');
+    eqi(C.INSTANT_CMDS['edges'], C.cmdEdges, 'edges INSTANT_CMDS 등록');
+    eqi(C.CMD_ALIASES['엣지'], 'edges', '한글 별칭(엣지)');
+    eqi(C.CMD_ALIASES['모서리선'], 'edges', '한글 별칭(모서리선)');
+    const s1 = C.rviewSig();
+    C.cmdEdges('on');
+    ok(C.rview.edges === true, '켬');
+    ok(C.rviewSig() !== s1, '★edges 가 렌더링 뷰 시그니처를 바꾼다 (씬 재빌드)');
+    C.cmdEdges('off');
+    ok(C.rview.edges === false, '끔');
+    C.cmdEdges(''); C.cmdEdges('');                    // 토글 왕복
+    ok(C.rview.edges === false, '인자 없으면 토글');
+    // bg
+    ok(C.rt.bg === 'sky', '★배경 기본 하늘');
+    eqi(C.INSTANT_CMDS['bg'], C.cmdBg, 'bg INSTANT_CMDS 등록');
+    eqi(C.CMD_ALIASES['배경'], 'bg', '한글 별칭(배경)');
+    C.cmdBg('흰색'); eqi(C.rt.bg, 'white', '흰색');
+    C.cmdBg('검정'); eqi(C.rt.bg, 'black', '검정');
+    C.cmdBg('없는값'); eqi(C.rt.bg, 'black', '★모르는 값은 거부(현재 유지)');
+    C.cmdBg('하늘'); eqi(C.rt.bg, 'sky', '하늘 복귀');
+  }
+
   group('렌더 대지 — 줌아웃해도 원반 가장자리가 화면에 안 들어온다 (사용자 스크린샷 버그)');
   {
     // 대지는 렌더 전용 그림자 받이 — 가장자리가 보이면 '만들지 않은 원판' 이 떠 있는 것처럼

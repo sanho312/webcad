@@ -7264,6 +7264,7 @@ const rt = {
   vi: -1,                // 이 뷰포트에 묶인다 (-1 = 안 붙음). rview 와 같은 규약 — 자기 칸에만 그린다.
   q: { spp: 64, bounces: 10, name: '보통' },   // 품질 프리셋 (rtquality)
   autoSave: false,       // finalrender — 수렴(spp 도달)하면 자동으로 PNG 저장
+  bg: 'sky',             // 렌더 배경 (bg 명령): sky(기본) | white(스튜디오) | black — 조명은 그대로, 배경 그림만
   ground: true,          // 렌더 전용 대지 평면 (ground 명령 토글)
   exposure: 0,           // 0 = 환경에 따라 자동 (rtExposure 참고)
 };
@@ -8583,7 +8584,8 @@ const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: n
   // radius·샘플수·시선 보정·3D 거리 게이트·바이어스·디노이즈 강화 8개 축 전부 실측 실패.
   // 디자인 결과물에 불순물은 치명적(사용자) → 기본은 '항상 깨끗', AO 는 ao 명령으로 선택(경고 표시).
   ao: false, fx: null, _fxLoading: false, composer: null, _rp: null, _ao: null, _aoW: 0, _aoH: 0, _aoCfg: '',
-  groundMat: null, groundMesh: null, groundR0: 1, cloudTex: null, cloudSig: '' };   // 구름 그림자 (시각 전용 — 대지 알베도 변조)
+  groundMat: null, groundMesh: null, groundR0: 1, cloudTex: null, cloudSig: '',   // 구름 그림자 (시각 전용 — 대지 알베도 변조)
+  edges: false };   // 모서리 표시 (edges 명령 — 라이노 Rendered 의 모서리 옵션, 기본 끔)
 // 뷰포트에 종속된 캔버스 — rt 의 inset:0 실수(4분할 전체를 덮음)를 반복하지 않는다.
 function rviewCanvas() {
   if (rview.cv) return rview.cv;
@@ -8606,7 +8608,7 @@ function rviewSig() {
       + `${L.type || ''},${L.ies ? (L.ies.name || 'i') + L.ies.cd.length : ''},${L.spotAngleDeg || 0},${L.spotPenumbra == null ? '' : L.spotPenumbra};`;
   }
   ls += 'solo' + (soloLightId || '');
-  return rtGeoSig() + '|' + litCacheSig() + '|' + ls;
+  return rtGeoSig() + '|' + litCacheSig() + '|' + ls + '|E' + (rview.edges ? 1 : 0);
 }
 // 씬 구성 — rtBuildScene 과 같은 삼각형(rtTrisByEntity)에서 출발하되 실시간용 재질/광원.
 // three@0.155+ 물리 단위: DirectionalLight=lux, PointLight=cd → rt 와 같은 노출(rtExposure)을 그대로 쓴다.
@@ -8630,10 +8632,42 @@ function rviewBuildScene(T) {
     } else {
       mat = matBuild(T, ent, o.color, { fast: true });   // ★레이트레이싱과 같은 함수 (투과만 래스터 근사)
     }
+    if (rview.edges) { mat.polygonOffset = true; mat.polygonOffsetFactor = 1; mat.polygonOffsetUnits = 1; }   // 면을 살짝 밀어 모서리 선이 이긴다
     const mesh = new T.Mesh(geo, mat);
     mesh.castShadow = true; mesh.receiveShadow = true;
     mesh.userData.eid = eid;
     scene.add(mesh);
+  }
+  // 모서리 표시(edges 명령) — 라이노 Rendered 의 '모서리' 옵션. 솔리드의 상·하 링과 수직
+  // 모서리 + 메시의 특징 모서리(meshFeat — 내부 삼각형선 제외)만 검은 선으로 얹는다. 표시 전용.
+  if (rview.edges) {
+    const pts = [];
+    const seg = (x1, y1, z1, x2, y2, z2) => pts.push(x1 * RT_MM, y1 * RT_MM, z1 * RT_MM, x2 * RT_MM, y2 * RT_MM, z2 * RT_MM);
+    for (const s of (v3.solids || [])) {
+      const P = s.poly; if (!P || P.length < 3) continue;
+      const zt = s.zt || P.map(() => s.z1), zb = s.zb || P.map(() => s.z0);
+      for (let i = 0; i < P.length; i++) {
+        const j = (i + 1) % P.length;
+        seg(P[i][0], P[i][1], zt[i], P[j][0], P[j][1], zt[j]);   // 윗면 링
+        seg(P[i][0], P[i][1], zb[i], P[j][0], P[j][1], zb[j]);   // 아랫면 링
+        seg(P[i][0], P[i][1], zb[i], P[i][0], P[i][1], zt[i]);   // 수직 모서리
+      }
+    }
+    for (const e of state.entities) {
+      if (e.type !== 'MESH' || !e.tris || !e.tris.length) continue;
+      const lay = getLayer(e.layer); if (lay && !lay.visible) continue;
+      for (const k of meshFeat(e)) {                              // "x,y,z|x,y,z" (0.01 양자화)
+        const [a, b] = k.split('|');
+        const [ax, ay, az] = a.split(',').map(Number);
+        const [bx, by, bz] = b.split(',').map(Number);
+        seg(ax, ay, az, bx, by, bz);
+      }
+    }
+    if (pts.length) {
+      const eg = new T.BufferGeometry();
+      eg.setAttribute('position', new T.Float32BufferAttribute(pts, 3));
+      scene.add(new T.LineSegments(eg, new T.LineBasicMaterial({ color: 0x14161a })));
+    }
   }
   rview.groundMat = null; rview.groundMesh = null; rview.cloudSig = '';
   if (rt.ground) {
@@ -8837,6 +8871,16 @@ function rviewSyncSun(T) {
     rview.scene.background = new T.Color(0x0a0c14);   // 밤: 하늘 텍스처를 구울 이유가 없다
     rview.scene.environment = null;                   // 밤엔 반사할 하늘도 없다
   }
+  // 스튜디오 배경(bg 명령) — 배경 '그림' 만 바꾼다. environment(조명·반사)는 그대로라
+  // 태양·하늘빛 물리는 변하지 않는다. 흰색은 노출·톤맵을 통과해 순백이 되도록 물리 휘도로.
+  if (rt.bg === 'white') {
+    if (!rview._bgWhite) rview._bgWhite = new T.Color();
+    rview._bgWhite.setScalar(3 / rtExposure());       // ACES(3)≈0.96 — 화면에서 거의 순백
+    rview.scene.background = rview._bgWhite;
+  } else if (rt.bg === 'black') {
+    if (!rview._bgBlack) rview._bgBlack = new T.Color(0x000000);
+    rview.scene.background = rview._bgBlack;
+  }
 }
 // 매 프레임 — render3D 끝에서 불린다 (궤도·팬 중에도 render3D 가 돌므로 실시간으로 따라온다)
 function rviewFrame() {
@@ -9005,7 +9049,7 @@ async function cmdRendered() {
     rview.sig = '';                                   // 씬 강제 재빌드
     rview.on = true;
     logLine("  ✔ 렌더링 뷰 — '" + v3.views[rview.vi].name + "' 뷰포트. 태양·조명·그림자가 실시간으로 보입니다. 다시 rendered 로 끕니다.", 'ok');
-    logLine('     시간·계절·날씨(탁도)는 [태양] 패널에서 조절 — 최종 화질 확인은 raytrace.', 'info');
+    logLine('     시간·날씨는 [태양] 패널 · 모서리: edges · 배경: bg 흰색 · 최종 화질: raytrace', 'info');
     render3D();
   } catch (err) {
     rview.err = err;
@@ -9306,11 +9350,47 @@ function rtSetEnv(mode) {
     rt.scene.background = new T.Color(0x000000);
     rt.scene.environmentIntensity = 1;
   }
+  // 스튜디오 배경(bg 명령) — 배경만 교체, environment(조명)는 그대로.
+  // 패스트레이서는 Color 배경을 GradientEquirectTexture 로 받아준다 (소스 확인).
+  if (rt.bg === 'white') {
+    rt.scene.background = new T.Color().setScalar(3 / rtExposure());   // 노출 통과 후 순백
+    rt.scene.backgroundIntensity = 1;
+  } else if (rt.bg === 'black') {
+    rt.scene.background = new T.Color(0x000000);
+    rt.scene.backgroundIntensity = 1;
+  }
   rtApplyExposure();   // 주광 ↔ 검은 환경은 밝기가 2,000배 달라 노출도 함께 바꿔야 한다
   if (rt.tracer) { rt.tracer.updateEnvironment(); rtReset(); }
 }
 // rtenv = 태양 토글. 환경을 따로 토글하면 태양과 진실이 둘이 되어 어긋난다(그래서 그랬다).
 function cmdRtEnv() { cmdSun(); }
+// bg / 배경 — 렌더 배경만 바꾼다 (스튜디오 컷). 조명·반사(environment)는 그대로.
+function cmdBg(arg) {
+  const a = String(arg || '').trim().toLowerCase();
+  const map = { '흰색': 'white', white: 'white', '화이트': 'white', '하늘': 'sky', sky: 'sky', '기본': 'sky', '검정': 'black', black: 'black', '검은색': 'black' };
+  const v = map[a];
+  const ko = { white: '흰색(스튜디오)', black: '검정', sky: '하늘(기본)' };
+  if (!v) {
+    logLine('  사용법: bg 흰색|하늘|검정 — 렌더 배경 그림만 바꿉니다 (태양·하늘빛 조명은 그대로)', 'info');
+    logLine(`  지금: ${ko[rt.bg] || rt.bg}`, 'info');
+    return;
+  }
+  rt.bg = v;
+  logLine(`  ✔ 렌더 배경: ${ko[v]} — 렌더링 뷰·레이트레이싱 공통`, 'ok');
+  if (rt.on) rtSetEnv(rtEnvWanted());   // rt 는 배경 텍스처 갱신 + 재수렴
+  if (typeof v3 !== 'undefined' && v3 && is3DActive()) render3D();
+}
+// edges / 엣지 — 렌더링 뷰에 모서리 선 (라이노 Rendered 의 '모서리 표시' 옵션)
+function cmdEdges(arg) {
+  const a = String(arg || '').trim();
+  if (/^(on|켬)$/i.test(a)) rview.edges = true;
+  else if (/^(off|끔)$/i.test(a)) rview.edges = false;
+  else rview.edges = !rview.edges;
+  logLine(rview.edges ? '  ▷ 모서리 표시 ON — 렌더링 뷰에 윤곽선을 얹습니다 (표시 전용)' : '  ▷ 모서리 표시 OFF', 'info');
+  rview.sig = '';                                     // 씬 재빌드 (rviewSig 에도 포함돼 있다)
+  if (rview.on && typeof v3 !== 'undefined' && v3) render3D();
+  else if (!rview.on) logLine('     렌더링 뷰(rendered)를 켜면 보입니다.', 'info');
+}
 // 태양 설정 요약 한 줄
 function sunSummary() {
   const S = sunState(), p = solarPosition(S);
@@ -10694,6 +10774,8 @@ const INSTANT_CMDS = {
   ao: cmdAo,
   viewcapturetofile: cmdCapture,
   finalrender: cmdFinalRender,
+  bg: cmdBg,
+  edges: cmdEdges,
   rtenv: cmdRtEnv,
   sun: cmdSun,
   ies: cmdIes,
@@ -11076,6 +11158,8 @@ const TOOL_KO = {
   ao: '렌더링 뷰 구석 음영 — 실험적 GTAO 토글·강도(AO)',
   viewcapturetofile: '보이는 렌더를 PNG 저장 · 2~4 배율 고해상도(VIEWCAPTURETOFILE)',
   finalrender: '레이트레이싱 수렴 후 자동 PNG 저장(FINALRENDER)',
+  bg: '렌더 배경 — 흰색·하늘·검정, 조명은 유지(BG)',
+  edges: '렌더링 뷰 모서리 표시 토글(EDGES)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
   ies: 'IES 배광 파일(IES)',
@@ -11151,6 +11235,8 @@ const CMD_ALIASES = {
   viewcapturetofile: 'viewcapturetofile', capture: 'viewcapturetofile', 캡처: 'viewcapturetofile', 렌더저장: 'viewcapturetofile', 화면저장: 'viewcapturetofile',
   // '렌더' 는 예전부터 raytrace 의 별칭 — 기존 습관을 뺏지 않는다 (계약 테스트 있음)
   finalrender: 'finalrender', 최종렌더: 'finalrender', render: 'finalrender',
+  bg: 'bg', 배경: 'bg', background: 'bg',
+  edges: 'edges', 엣지: 'edges', 모서리선: 'edges', 모서리표시: 'edges',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
   ies: 'ies', 배광: 'ies', iesfile: 'ies',
@@ -14349,7 +14435,7 @@ window.__CADTEST__ = {
   markInteract, sunApply, preethamCache,
   captureDoc, saveLocal, loadLocal,
   RT_QUALITY, cmdRtQuality, cmdGround, makeGroundMesh, groundSizeMM, GROUND_Z_MM,
-  RVIEW_AO, cmdAo, rviewAoRender, rviewLoadFx, cmdCapture, cmdFinalRender,
+  RVIEW_AO, cmdAo, rviewAoRender, rviewLoadFx, cmdCapture, cmdFinalRender, cmdBg, cmdEdges,
   iesCutoffDeg, matGlobalAll, matGlobalSet, matGlobalDelete, matLibShare, matLibUnshare,
   rviewCloudShadowTexture, rviewSyncCloudShadow, RVIEW_CLOUD_N, MATG_KEY,
   RT_DN, rtSetupDenoise,
