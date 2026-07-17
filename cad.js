@@ -8490,7 +8490,16 @@ function rtAddLights(T, scene, meshLm) {
 // z 는 대지 기준면(레벨 0) 바로 아래 — 슬래브 윗면(z=0)과 겹치면 z-파이팅이 난다.
 // 도형이 아니다: 선택·스냅·저장 어디에도 없고 렌더 씬에만 존재한다. ground 명령으로 토글.
 const GROUND_Z_MM = -3;
-function groundSizeMM() { return Math.max(60000, ((v3 && v3.fit) || 10000) * 6); }
+function groundSizeMM() {
+  const base = Math.max(60000, ((v3 && v3.fit) || 10000) * 6);
+  if (!v3) return base;
+  // ★현재 뷰가 보는 폭까지 덮는다 — 줌아웃 상태에서 대지의 '가장자리' 가 보이면
+  // 만들지도 않은 원판이 떠 있는 것처럼 보인다 (사용자 스크린샷). 피치가 얕을수록
+  // 지면이 화면 안쪽으로 멀리 보이므로 sin(pitch) 로 나눈다 (입면 근처는 0.25 로 캡).
+  const viewW = (v3.fit * 1.4) / Math.max(v3.zoom || 1, 0.01);
+  const sp = Math.max(0.25, Math.abs(Math.sin(v3.pitch == null ? 1 : v3.pitch)));
+  return Math.max(base, viewW * 2 / sp);
+}
 function makeGroundMesh(T, forRt) {
   const R = groundSizeMM() * RT_MM;
   const geo = new T.CircleGeometry(R, 48);
@@ -8547,7 +8556,11 @@ function rtSyncCamera(T, cam) {
   const k = Math.min(vp.w, vp.h) / (v3.fit * 1.4) * v3.zoom;   // px per mm
   const center = new T.Vector3(v3.cx, v3.cy, v3.cz);
   const target = center.clone().addScaledVector(right, -v3.panX).addScaledVector(up, -v3.panY);
-  const D = Math.max(1, v3.fit * 4);
+  // ★카메라 거리는 시야 폭에도 비례해야 한다 — 고정(fit×4)이면 극단 줌아웃에서 프레임
+  // 하단의 지면이 카메라 '등 뒤' 로 가서 near 클리핑으로 사라진다 (대지 하단이 하늘로 뚫려
+  // 보이던 실측). 정투영이라 거리를 늘려도 그림은 동일하고 절두체만 넓어진다.
+  const viewSpanMM = Math.max(vp.w, vp.h) / k;
+  const D = Math.max(1, v3.fit * 4, viewSpanMM * 2);
   cam.up.copy(up);
   cam.position.copy(target).addScaledVector(fwd, -D).multiplyScalar(RT_MM);
   cam.lookAt(target.clone().multiplyScalar(RT_MM));
@@ -8570,7 +8583,7 @@ const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: n
   // radius·샘플수·시선 보정·3D 거리 게이트·바이어스·디노이즈 강화 8개 축 전부 실측 실패.
   // 디자인 결과물에 불순물은 치명적(사용자) → 기본은 '항상 깨끗', AO 는 ao 명령으로 선택(경고 표시).
   ao: false, fx: null, _fxLoading: false, composer: null, _rp: null, _ao: null, _aoW: 0, _aoH: 0, _aoCfg: '',
-  groundMat: null, cloudTex: null, cloudSig: '' };   // 구름 그림자 (시각 전용 — 대지 알베도 변조)
+  groundMat: null, groundMesh: null, groundR0: 1, cloudTex: null, cloudSig: '' };   // 구름 그림자 (시각 전용 — 대지 알베도 변조)
 // 뷰포트에 종속된 캔버스 — rt 의 inset:0 실수(4분할 전체를 덮음)를 반복하지 않는다.
 function rviewCanvas() {
   if (rview.cv) return rview.cv;
@@ -8622,10 +8635,12 @@ function rviewBuildScene(T) {
     mesh.userData.eid = eid;
     scene.add(mesh);
   }
-  rview.groundMat = null; rview.cloudSig = '';
+  rview.groundMat = null; rview.groundMesh = null; rview.cloudSig = '';
   if (rt.ground) {
     const gm = makeGroundMesh(T, false);                // 대지 — 그림자를 받는다 (rt 와 같은 토글)
     rview.groundMat = gm.material;                      // 구름 그림자는 이 재질의 map(알베도 변조)으로 얹는다
+    rview.groundMesh = gm;                              // 매 프레임 시야를 따라 스케일·이동 (rviewFrame)
+    rview.groundR0 = groundSizeMM() * RT_MM;            // 빌드 시점 반지름(m) — 스케일 기준
     scene.add(gm);
   }
   // 인공 광원 — lightSources()(소프트웨어 뷰·조도 분석과 같은 원천)에서 위치/색/광속을 가져온다.
@@ -8844,6 +8859,22 @@ function rviewFrame() {
   const keepVp = v3.vp, keepAct = v3.act;
   saveVp(); loadVp(rview.vi); v3.vp = vpRect(rview.vi);
   rtSyncCamera(T, rview.cam);
+  // ★대지 시야 추종 — 어떤 줌·팬에서도 대지 가장자리가 화면에 들어오지 않게, 매 프레임
+  // 뷰 중심 아래로 옮기고 시야 대각보다 크게 스케일한다 (가장자리가 보이면 '만들지 않은
+  // 원판' 이 된다 — 사용자 스크린샷). 렌더 전용 메시라 옮겨도 아무것도 어긋나지 않는다.
+  if (rview.groundMesh) {
+    const gm2 = rview.groundMesh;
+    const c2 = Math.cos(v3.yaw), s2 = Math.sin(v3.yaw), sp2 = Math.sin(v3.pitch), cp2 = Math.cos(v3.pitch);
+    // rtSyncCamera 와 같은 식으로 뷰 중심(타깃)을 구한다 (mm)
+    const tx = v3.cx - c2 * v3.panX - s2 * sp2 * v3.panY;
+    const ty = v3.cy + s2 * v3.panX - c2 * sp2 * v3.panY;
+    const halfDiag = Math.hypot(rview.cam.right, rview.cam.top);          // 프레임 반대각 (m)
+    const need = (halfDiag * 2) / Math.max(0.25, Math.abs(sp2));          // 얕은 피치 = 지면이 멀리 보임
+    gm2.scale.setScalar(Math.max(1, need / (rview.groundR0 || 1)));
+    gm2.position.x = tx * RT_MM; gm2.position.y = ty * RT_MM;             // z 는 대지 높이 그대로
+    const camD = Math.max(1, v3.fit * 4) * RT_MM;                          // rtSyncCamera 의 카메라 거리
+    if (rview.cam.far < (camD + need) * 2) { rview.cam.far = (camD + need) * 2; rview.cam.updateProjectionMatrix(); }
+  }
   loadVp(keepAct); v3.vp = keepVp;
   rviewSyncSun(T);
   rview.renderer.toneMappingExposure = rtExposure();
