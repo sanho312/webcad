@@ -794,23 +794,6 @@
     panel.addEventListener('keydown', (e) => e.stopPropagation());
     const head = h('div', { id: 'aiHead' });
     head.appendChild(h('b', null, '🤖 AI 코워커'));
-    const copyBtn = h('button', { title: '대화 전체 복사 — 다른 곳에 붙여넣어 공유' }, '📋');
-    copyBtn.addEventListener('click', async () => {
-      const P = { user: '👤 사용자', ai: '🤖 코워커', tool: '·', err: '⚠ 오류' };
-      const lines = [...msgsEl.querySelectorAll('.aiM')].map(d => {
-        const kind = ['user', 'ai', 'tool', 'err'].find(k => d.classList.contains(k)) || 'ai';
-        return P[kind] + ': ' + d.textContent;
-      });
-      const text = '[WebCAD AI 코워커 대화]\n' + lines.join('\n');
-      try { await navigator.clipboard.writeText(text); addMsg('tool', '📋 대화 ' + lines.length + '줄을 클립보드에 복사했습니다.'); }
-      catch (e) { // 클립보드 권한 폴백
-        const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
-        ta.select(); try { document.execCommand('copy'); addMsg('tool', '📋 대화를 클립보드에 복사했습니다.'); }
-        catch (e2) { addMsg('err', '복사 실패 — 메시지를 드래그로 긁어 Ctrl+C 하세요.'); }
-        ta.remove();
-      }
-    });
-    head.appendChild(copyBtn);
     const modelSel = h('select', { title: '모델' });
     for (const [v, label] of MODELS) { const o = h('option', { value: v }, label); if (v === cfg.model) o.selected = true; modelSel.appendChild(o); }
     modelSel.addEventListener('change', () => { cfg.model = modelSel.value; saveCfg(); });
@@ -825,6 +808,7 @@
     closeBtn.addEventListener('click', () => { panel.style.display = 'none'; });
     head.appendChild(closeBtn);
     panel.appendChild(head);
+    if (window.webcadPopupDrag) window.webcadPopupDrag(panel, head); // 제목줄을 잡고 위치 이동
     // 키 설정
     setupEl = h('div', { id: 'aiSetup' });
     setupEl.innerHTML = `

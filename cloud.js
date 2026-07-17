@@ -72,6 +72,8 @@
     o.querySelector('[data-x]').addEventListener('click', closeDlg);
     o.querySelectorAll('input,textarea').forEach(i => i.addEventListener('keydown', e => e.stopPropagation()));
     document.body.appendChild(o); curDlg = o;
+    const bx = o.querySelector('.cdBox');
+    if (window.webcadPopupDrag && bx) window.webcadPopupDrag(bx, bx.querySelector('h2')); // 제목줄을 잡고 위치 이동
     if (onOpen) onOpen(o);
     return o;
   }

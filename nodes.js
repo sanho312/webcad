@@ -764,6 +764,7 @@
     ctrlBody = el('div', { class: 'bd' });
     ctrl.appendChild(ctrlBody);
     document.body.appendChild(ctrl);
+    if (window.webcadPopupDrag) window.webcadPopupDrag(ctrl, hd); // 제목줄을 잡고 위치 이동
   }
   function updateCtrl() {
     if (!ctrl) return;

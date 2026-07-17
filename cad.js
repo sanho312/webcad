@@ -11827,6 +11827,7 @@ function openColorPop(anchor, current, onPick) {
     (rec.length ? `<div class="cpTtl">최근 사용</div><div class="cpRow">${rec.map(chip).join('')}</div>` : '') +
     `<button class="cpPal" type="button">🎨 팔레트에서 선택…</button>`;
   document.body.appendChild(pop);
+  popupDrag(pop, pop.querySelector('.cpTtl'));
   const r = anchor.getBoundingClientRect();
   pop.style.left = Math.max(8, Math.min(window.innerWidth - pop.offsetWidth - 8, r.left)) + 'px';
   pop.style.top = Math.min(window.innerHeight - pop.offsetHeight - 8, r.bottom + 6) + 'px';
@@ -12425,6 +12426,12 @@ function zoomFit(robust) {
 // ============================================================
 //  키보드
 // ============================================================
+// 텍스트를 드래그로 선택 중인가 — AI 채팅 등에서 글을 긁었을 때 Ctrl+C 는
+// '개체 복사' 가 아니라 브라우저 기본 '텍스트 복사' 로 가야 한다
+function textSelActive() {
+  const s = window.getSelection ? window.getSelection() : null;
+  return !!(s && !s.isCollapsed && String(s));
+}
 window.addEventListener('keydown', (ev) => {
   const key = typeof ev.key === 'string' ? ev.key : ''; // 일부 브라우저 확장·IME가 key 없는 합성 이벤트를 보냄 — undefined 방어
   if (key === 'F8') { ev.preventDefault(); toggleOrtho(); return; }  // 직교 모드(입력창 포커스 중에도 동작)
@@ -12440,7 +12447,7 @@ window.addEventListener('keydown', (ev) => {
   if (ev.ctrlKey && (key.toLowerCase() === 'y' || (ev.shiftKey && key.toLowerCase() === 'z'))) { ev.preventDefault(); redo(); return; }
   if (ev.ctrlKey && key.toLowerCase() === 's') { ev.preventDefault(); saveDXF(); return; }
   if (ev.ctrlKey && key.toLowerCase() === 'a') { ev.preventDefault(); state.entities.forEach(e => { if (onLv(e)) state.selection.add(e.id); }); renderProps(); draw(); return; }
-  if (ev.ctrlKey && key.toLowerCase() === 'c') { ev.preventDefault(); copySelection(); return; }
+  if (ev.ctrlKey && key.toLowerCase() === 'c') { if (textSelActive()) return; ev.preventDefault(); copySelection(); return; }
   if (ev.ctrlKey && key.toLowerCase() === 'v') { ev.preventDefault(); startPaste(); return; }
   switch (key) {
     case 'Escape': if (extrudePend) { extrudePendCancel(); break; } if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); } setTool('select'); state.selection.clear(); renderProps(); draw(); break;
@@ -12455,6 +12462,43 @@ window.addEventListener('keydown', (ev) => {
     case 'm': case 'M': setTool('move'); break;
     case 'f': case 'F': zoomFit(); break;
   }
+});
+
+// ============================================================
+//  팝업 드래그 이동 — 모든 팝업창은 상단(제목줄)을 잡고 자유롭게 옮길 수 있다
+// ============================================================
+function popupDrag(box, handle) {
+  if (!box || !handle || handle._dragBound) return;
+  handle._dragBound = true;
+  handle.style.cursor = 'move';
+  handle.style.touchAction = 'none';
+  handle.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    // 제목줄 위의 버튼·입력 등은 원래 기능 그대로 — 빈 영역과 제목 글자만 손잡이
+    if (ev.target.closest('button,select,input,textarea,a,label')) return;
+    const r = box.getBoundingClientRect();
+    // 중앙정렬(flex)·right/bottom 배치를 뷰포트 좌표 고정으로 바꾼 뒤 움직인다
+    box.style.position = 'fixed';
+    box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
+    box.style.right = 'auto'; box.style.bottom = 'auto';
+    box.style.margin = '0'; box.style.transform = 'none';
+    const dx = ev.clientX - r.left, dy = ev.clientY - r.top;
+    const move = (e) => {
+      // 손잡이가 화면 밖으로 완전히 나가 못 되찾는 일이 없도록 60px은 남긴다
+      const x = Math.min(window.innerWidth - 60, Math.max(60 - r.width, e.clientX - dx));
+      const y = Math.min(window.innerHeight - 30, Math.max(0, e.clientY - dy));
+      box.style.left = x + 'px'; box.style.top = y + 'px';
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+    ev.preventDefault(); ev.stopPropagation();
+  });
+}
+window.webcadPopupDrag = popupDrag; // ai.js·nodes.js·cloud.js 의 팝업도 같은 방식으로
+// index.html 의 정적 다이얼로그들
+['helpDlg', 'arrayDlg', 'saveAsDlg', 'optionsDlg', 'plotDlg'].forEach((id) => {
+  const d = document.getElementById(id); if (!d) return;
+  const bx = d.querySelector('.dlgBox'); if (bx) popupDrag(bx, bx.querySelector('h2'));
 });
 
 // ============================================================
@@ -12698,6 +12742,7 @@ function showHomeScreenHelp() {
     '<div style="text-align:right;margin-top:16px;"><button id="homeHelpClose" style="background:#0071e3;color:#fff;border:none;border-radius:8px;padding:8px 17px;font-size:14px;cursor:pointer;">확인</button></div>' +
     '</div>';
   document.body.appendChild(o);
+  popupDrag(o.firstElementChild, o.querySelector('h2'));
   const close = () => o.remove();
   o.addEventListener('click', (e) => { if (e.target === o) close(); });
   o.querySelector('#homeHelpClose').addEventListener('click', close);
@@ -13006,6 +13051,7 @@ if (cmdInputEl && ALWAYS_FOCUS_CMD) {
   const refocus = () => setTimeout(() => {
     if (document.body.classList.contains('authLocked')) return; // 로그인 게이트 열림
     if (document.querySelector('.dropdown.open')) return;       // 메뉴가 열려 있으면 간섭하지 않음
+    if (textSelActive()) return; // 채팅 텍스트를 긁는 중 — 포커스를 뺏으면 선택이 죽어 Ctrl+C 복사가 안 된다
     // 다른 입력요소(레이어명·옵션·다이얼로그 등)가 포커스를 가져갔으면 뺏지 않음
     const a = document.activeElement;
     if (!a || a === document.body || a.tagName === 'BUTTON' || a.tagName === 'CANVAS')
@@ -13029,7 +13075,7 @@ if (cmdInputEl) {
       if (k === 's') { ev.preventDefault(); ev.stopPropagation(); saveDXF(); return; }
       if (cmdInputEl.value === '') { // 텍스트 편집과 겹치지 않을 때만
         if (k === 'a') { ev.preventDefault(); ev.stopPropagation(); state.entities.forEach(e => { if (onLv(e)) state.selection.add(e.id); }); renderProps(); draw(); return; }
-        if (k === 'c') { ev.preventDefault(); ev.stopPropagation(); copySelection(); return; }
+        if (k === 'c') { if (textSelActive()) return; ev.preventDefault(); ev.stopPropagation(); copySelection(); return; }
         if (k === 'v') { ev.preventDefault(); ev.stopPropagation(); startPaste(); return; }
       }
     }
@@ -13358,6 +13404,7 @@ function showShareResult(url, copied) {
     <div style="text-align:right;margin-top:14px;"><button id="shCopy" style="background:rgba(255,255,255,0.09);color:#fff;border:none;border-radius:8px;padding:8px 15px;cursor:pointer;margin-right:6px;font-size:14px;">복사</button><button id="shClose" style="background:#0071e3;color:#fff;border:none;border-radius:8px;padding:8px 17px;cursor:pointer;font-size:14px;">닫기</button></div>
   </div>`;
   document.body.appendChild(o);
+  popupDrag(o.firstElementChild, o.querySelector('h2'));
   const ta = o.querySelector('textarea');
   o.querySelector('#shCopy').onclick = () => { ta.select(); try { navigator.clipboard.writeText(url); } catch (e) { document.execCommand('copy'); } };
   const close = () => o.remove();

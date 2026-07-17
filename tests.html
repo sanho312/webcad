@@ -2660,6 +2660,71 @@ function tests(){
     reset();
   }
 
+  // ---------- 채팅 복사 · 팝업 드래그 ----------
+  group('채팅 복사 — 텍스트 선택 중 Ctrl+C 는 브라우저 기본 복사에 양보 (개체 복사가 가로채지 않음)');
+  {
+    // 실사용 검증(2026-07-17): 재포커스가 선택을 죽이는 것까지 실브라우저에서 확인.
+    // (mouseup 재포커스 가드는 setTimeout 기반이라 여기선 keydown 양보 계약만 검사)
+    reset();
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const probe = AD.createElement('div');
+    probe.textContent = 'COPYPROBE'; probe.style.cssText = 'user-select:text;-webkit-user-select:text';
+    AD.body.appendChild(probe);
+    const rg = AD.createRange(); rg.selectNodeContents(probe);
+    const sel = AW.getSelection(); sel.removeAllRanges(); sel.addRange(rg);
+    if (AD.activeElement && AD.activeElement.blur) AD.activeElement.blur(); // 포커스=body (말풍선 클릭과 동일)
+    let ev = new AW.KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
+    AD.body.dispatchEvent(ev);
+    ok(!ev.defaultPrevented, '★선택 중 body Ctrl+C = 양보 (브라우저가 텍스트를 복사)');
+    // 명령창(빈 칸)이 포커스를 가진 상태에서도 양보해야 — 자동 재포커스가 이긴 경우
+    const ci = AD.getElementById('cmdInput');
+    if (ci) {
+      ci.value = ''; ci.focus();
+      sel.removeAllRanges(); sel.addRange(rg);           // 크롬은 input 포커스가 선택을 지운다 → 재선택
+      ev = new AW.KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
+      ci.dispatchEvent(ev);
+      ok(!ev.defaultPrevented, '★선택 중 명령창 Ctrl+C 도 양보');
+      ci.blur();
+    }
+    sel.removeAllRanges(); probe.remove();
+    if (AD.activeElement && AD.activeElement.blur) AD.activeElement.blur();
+    ev = new AW.KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
+    AD.body.dispatchEvent(ev);
+    ok(ev.defaultPrevented, '선택이 없으면 Ctrl+C = 개체 복사 (기존 동작 유지)');
+  }
+
+  group('팝업 드래그 — 모든 팝업창은 상단(제목줄)을 잡고 이동');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    ok(typeof AW.webcadPopupDrag === 'function', '★webcadPopupDrag 전역 공개 (ai.js·nodes.js·cloud.js 공용)');
+    const dlgEl = AD.getElementById('saveAsDlg');
+    if (dlgEl) {
+      dlgEl.style.display = 'flex';
+      const bx = dlgEl.querySelector('.dlgBox'), h2 = bx.querySelector('h2');
+      eqi(AW.getComputedStyle(h2).cursor, 'move', '제목줄 커서 = move (잡을 수 있음을 표시)');
+      const r0 = bx.getBoundingClientRect(), hb = h2.getBoundingClientRect();
+      const sx = hb.left + 12, sy = hb.top + 10;
+      h2.dispatchEvent(new AW.PointerEvent('pointerdown', { button: 0, clientX: sx, clientY: sy, bubbles: true, cancelable: true }));
+      AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: sx + 80, clientY: sy + 50 }));
+      AW.dispatchEvent(new AW.PointerEvent('pointerup', {}));
+      const r1 = bx.getBoundingClientRect();
+      eq(Math.round(r1.left - r0.left), 80, '★제목줄 드래그 → X 이동');
+      eq(Math.round(r1.top - r0.top), 50, '★제목줄 드래그 → Y 이동');
+      // 제목줄 위의 버튼·입력은 드래그 손잡이가 아니어야 (helpDlg 검색창 포커스 실측 확인)
+      const bIn = AD.createElement('button'); h2.appendChild(bIn);
+      const r2 = bx.getBoundingClientRect();
+      bIn.dispatchEvent(new AW.PointerEvent('pointerdown', { button: 0, clientX: r2.left + 5, clientY: r2.top + 5, bubbles: true, cancelable: true }));
+      AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: r2.left + 200, clientY: r2.top + 200 }));
+      AW.dispatchEvent(new AW.PointerEvent('pointerup', {}));
+      const r3 = bx.getBoundingClientRect();
+      eq(Math.round(r3.left - r2.left), 0, '버튼에서 시작한 드래그는 이동하지 않음(버튼 기능 보존)');
+      bIn.remove();
+      // 정리 — 드래그가 남긴 고정 좌표 제거 (뒤 그룹·재실행 무영향)
+      ['position', 'left', 'top', 'right', 'bottom', 'margin', 'transform'].forEach(p => { bx.style[p] = ''; });
+      dlgEl.style.display = 'none';
+    } else ok(true, '(saveAsDlg 없는 환경 — 함수 존재만 확인)');
+  }
+
   // ---------- id 충돌 방지 ----------
   group('applyDoc — nextId는 항상 최대 id보다 커야 함 (선택·삭제 오작동 방지)');
   {
