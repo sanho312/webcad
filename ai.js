@@ -709,7 +709,9 @@
   #aiFab:hover{background:#1d2b4f}
   #aiPanel{position:fixed;right:14px;bottom:68px;z-index:9001;width:360px;max-width:calc(100vw - 28px);height:500px;max-height:calc(100vh - 90px);
     display:none;flex-direction:column;background:#111a30;border:1px solid #33406a;border-radius:12px;overflow:hidden;
-    box-shadow:0 10px 34px rgba(0,0,0,.55);font:13px/1.5 -apple-system,system-ui,sans-serif;color:#dbe6ff;}
+    box-shadow:0 10px 34px rgba(0,0,0,.55);font:13px/1.5 -apple-system,system-ui,sans-serif;color:#dbe6ff;
+    user-select:text;-webkit-user-select:text;}  /* 앱 전역 user-select:none 재정의 — 채팅은 드래그로 긁어 복사할 수 있어야 (오류 공유 등) */
+  #aiMsgs .aiM{cursor:text}
   #aiHead{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#16213c;border-bottom:1px solid #2a3760;}
   #aiHead b{flex:1;font-size:13px}
   #aiHead select{background:#0e1730;color:#cfe0ff;border:1px solid #2a3760;border-radius:6px;font-size:11px;padding:2px 4px;max-width:130px}
@@ -787,8 +789,28 @@
     const fab = h('button', { id: 'aiFab', title: 'AI 코워커 (자연어 작도)' }, '🤖');
     fab.addEventListener('click', () => { panel.style.display = panel.style.display === 'flex' ? 'none' : 'flex'; if (panel.style.display === 'flex') inEl.focus(); });
     panel = h('div', { id: 'aiPanel' });
+    // 패널 안의 키 입력은 앱 전역 단축키로 새지 않게 — 채팅 텍스트를 긁어 Ctrl+C 하면
+    // 브라우저 기본 복사가 되어야 한다 (전역 핸들러는 Ctrl+C 를 '개체 복사' 로 가로챈다)
+    panel.addEventListener('keydown', (e) => e.stopPropagation());
     const head = h('div', { id: 'aiHead' });
     head.appendChild(h('b', null, '🤖 AI 코워커'));
+    const copyBtn = h('button', { title: '대화 전체 복사 — 다른 곳에 붙여넣어 공유' }, '📋');
+    copyBtn.addEventListener('click', async () => {
+      const P = { user: '👤 사용자', ai: '🤖 코워커', tool: '·', err: '⚠ 오류' };
+      const lines = [...msgsEl.querySelectorAll('.aiM')].map(d => {
+        const kind = ['user', 'ai', 'tool', 'err'].find(k => d.classList.contains(k)) || 'ai';
+        return P[kind] + ': ' + d.textContent;
+      });
+      const text = '[WebCAD AI 코워커 대화]\n' + lines.join('\n');
+      try { await navigator.clipboard.writeText(text); addMsg('tool', '📋 대화 ' + lines.length + '줄을 클립보드에 복사했습니다.'); }
+      catch (e) { // 클립보드 권한 폴백
+        const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
+        ta.select(); try { document.execCommand('copy'); addMsg('tool', '📋 대화를 클립보드에 복사했습니다.'); }
+        catch (e2) { addMsg('err', '복사 실패 — 메시지를 드래그로 긁어 Ctrl+C 하세요.'); }
+        ta.remove();
+      }
+    });
+    head.appendChild(copyBtn);
     const modelSel = h('select', { title: '모델' });
     for (const [v, label] of MODELS) { const o = h('option', { value: v }, label); if (v === cfg.model) o.selected = true; modelSel.appendChild(o); }
     modelSel.addEventListener('change', () => { cfg.model = modelSel.value; saveCfg(); });
