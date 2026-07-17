@@ -3131,7 +3131,7 @@ function markInteract() {
   requestAnimationFrame(() => { v3._rafPending = false; render3D(); });
 }
 // 스캔라인 래스터: 각 행에서 삼각형과 교차하는 x-구간만 순회 (bbox 낭비 제거 → 얇은 삼각형에서 특히 빠름)
-function zTri(data, zb, W, H, ox, oy, A, B, C, r, g, b) {
+function zTri(data, zb, fb, fid, W, H, ox, oy, A, B, C, r, g, b) {
   const ax = A[0]-ox, ay = A[1]-oy, bx = B[0]-ox, by = B[1]-oy, cx = C[0]-ox, cy = C[1]-oy;
   const area = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
   if (Math.abs(area) < 1e-9) return;
@@ -3162,18 +3162,27 @@ function zTri(data, zb, W, H, ox, oy, A, B, C, r, g, b) {
       if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) continue;
       const z = w0*A[2] + w1*B[2] + w2*C[2];
       const idx = rowBase + x;
-      if (z < zb[idx]) { zb[idx] = z; const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
+      if (z < zb[idx]) { zb[idx] = z; fb[idx] = fid; const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
     }
   }
 }
-function zLine(data, zb, W, H, ox, oy, A, B, r, g, b, eps) {
+function zLine(data, zb, fb, fid, W, H, ox, oy, A, B, r, g, b, eps) {
   const x0 = A[0]-ox, y0 = A[1]-oy, z0 = A[2], x1 = B[0]-ox, y1 = B[1]-oy, z1 = B[2];
   const dx = x1-x0, dy = y1-y0, steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
+  // 은선 판정 — 깊이 관용(eps) 방식은 원리적으로 뚫린다: 실루엣·코너 근처의 비스듬한 면에서
+  // '뒤에 숨은 코너 수직선' 과 표면의 깊이차가 관용 이하로 좁아지는 픽셀 열이 반드시 생긴다
+  // (extrudecrv 벽 모퉁이마다 세로 줄무늬 — 사용자 스크린샷. eps 48→12 축소로도 잔존 실측).
+  // 그래서 깊이 대신 픽셀 소유 면(fb)으로 판정한다: **이 선을 그리는 면(fid)이 그 픽셀
+  // (반올림 오차 보정으로 상하좌우 1px 포함)의 승자일 때만** 그린다. 자기 면이 보이는 곳의
+  // 경계선만 남고, 가려진 선은 어떤 기하에서도 절대 나오지 않는다. (eps 는 이제 안 쓴다)
   for (let s = 0; s <= steps; s++) {
     const t = s/steps, x = Math.round(x0+dx*t), y = Math.round(y0+dy*t);
     if (x < 0 || y < 0 || x >= W || y >= H) continue;
-    const z = z0 + (z1-z0)*t, idx = y*W + x;
-    if (z <= zb[idx] + eps) { const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
+    const idx = y*W + x;
+    const own = fb[idx] === fid
+      || (x > 0 && fb[idx-1] === fid) || (x < W-1 && fb[idx+1] === fid)
+      || (y > 0 && fb[idx-W] === fid) || (y < H-1 && fb[idx+W] === fid);
+    if (own) { const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
   }
 }
 function rgbTriplet(hexOrRgb) {
@@ -3194,7 +3203,11 @@ function zRasterFaces(c, faces, vp, light) {
     const img = c.getImageData(ox, oy, W, H), data = img.data;
     const zb = (v3._zb && v3._zb.length === W*H) ? v3._zb : (v3._zb = new Float32Array(W*H));
     zb.fill(Infinity);
+    // 픽셀 소유 면 버퍼 — 모서리 선의 은선 판정용 (zLine 참고)
+    const fb = (v3._fb && v3._fb.length === W*H) ? v3._fb : (v3._fb = new Int32Array(W*H));
+    fb.fill(-1);
     const cache = v3._rgbCache || (v3._rgbCache = new Map()); // 색상(색+명암) 캐시 — 매 면 정규식 회피
+    let fidSeq = 0;
     for (const f of opaque) {
       const isSel = f.eid != null && state.selection.has(f.eid);
       // sh3 = 채널별 밝기(색번짐). 없으면 예전처럼 스칼라 하나 — 기존 화면 불변.
@@ -3203,10 +3216,17 @@ function zRasterFaces(c, faces, vp, light) {
       let rgb = cache.get(key);
       if (!rgb) { rgb = t3 ? shadeColor3(f.color, f.sh3) : rgbTriplet(isSel ? shadeColor('#0A84FF', 0.6 + 0.4*f.shade) : shadeColor(f.color, f.shade)); cache.set(key, rgb); }
       f._r = rgb[0]; f._g = rgb[1]; f._b = rgb[2]; f._sel = isSel; f._vis = true;
+      f._fid = fidSeq++;
       const P = f.pts;
-      for (let i = 1; i+1 < P.length; i++) zTri(data, zb, W, H, ox, oy, P[0], P[i], P[i+1], rgb[0], rgb[1], rgb[2]);
+      for (let i = 1; i+1 < P.length; i++) zTri(data, zb, fb, f._fid, W, H, ox, oy, P[0], P[i], P[i+1], rgb[0], rgb[1], rgb[2]);
     }
-    const eps = Math.max(1, v3.fit * 0.008);
+    // 모서리 선의 기본 깊이 관용 — '화면 1px 이 담는 세계 mm' 기준.
+    // ★예전 fit×0.008(6m 모델에서 48mm)은 실루엣 근처 비스듬한 면에서 벽 두께(200mm) 안의
+    // 숨은 코너 수직선까지 통과시켰다(extrudecrv 상자 모퉁이마다 세로 줄무늬 — 사용자 스크린샷).
+    // 픽셀 스케일 기준이면 줌과 무관하게 '반올림 오차만큼' 만 관용하고, 가파른 선의 추가 관용은
+    // zLine 이 선 자체의 픽셀당 깊이 변화로 보탠다.
+    const pxMM = (v3.fit * 1.4) / (Math.min(vp.w, vp.h) || 1) / (v3.zoom || 1);
+    const eps = v3._edgeEps != null ? v3._edgeEps : Math.max(0.5, pxMM * 1.0);   // fb 판정이 주력 — eps 는 반올림 보정만
     const [er, eg, eb] = light ? [70, 85, 120] : [12, 18, 36];
     // 내부 이음선 숨김 — 같은 개체(eid)에서 '같은 평면'(shade 동일) 면 2개가 공유하는 변(밴드 분할선:
     // 벽 링 윗면의 마이터 대각선 등)은 그 개체의 '모든' 면에서 그리지 않음.
@@ -3237,7 +3257,7 @@ function zRasterFaces(c, faces, vp, light) {
       for (let i = 0; i < P.length; i++) {
         if (f.fe && !f.fe[i]) continue;
         if (!f.isMesh && f.eid != null && seamHide.has(f.eid + '§' + edgeK(P[i], P[(i + 1) % P.length]))) { seamHidden++; continue; } // 내부 이음선
-        zLine(data, zb, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
+        zLine(data, zb, fb, f._fid, W, H, ox, oy, P[i], P[(i+1)%P.length], R, G, B, eps);
       }
     }
     v3._seamHidden = seamHidden; // 검증용 카운터

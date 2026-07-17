@@ -1880,6 +1880,50 @@ function tests(){
     C.cmdBg('하늘'); eqi(C.rt.bg, 'sky', '하늘 복귀');
   }
 
+  group('작업 뷰 은선 — 벽 모퉁이의 숨은 코너 선이 바깥면을 뚫고 나오지 않는다 (사용자 스크린샷 버그)');
+  {
+    // extrudecrv 벽(밴드 4개)의 모퉁이에서, 앞벽 뒤에 숨은 안쪽 코너 수직선이 바깥면 위에
+    // 세로 줄무늬로 새어나왔다. 원인: zLine 의 깊이 관용(fit×0.008=48mm)이 벽 두께(200mm)
+    // 안의 숨은 선까지 통과 — 관용 축소로도 실루엣 근처에선 원리적으로 뚫린다.
+    // 수정: 픽셀 소유 면(fb) 판정 — 선은 자기 면이 그 픽셀(±1px)의 승자일 때만 그린다.
+    reset();
+    C.state.entities.push({ id: C.state.nextId++, type: 'LWPOLYLINE', layer: '0', closed: true,
+      points: [[0, 0], [6000, 0], [6000, 4000], [0, 4000]], bim: { kind: 'wall', h: 2500, t: 200 } });
+    if (!C.is3DActive()) C.INSTANT_CMDS['view3d']();
+    C.v3.quad = false; C.v3.act = 1;
+    C.v3.solids = C.bimSolids();
+    C.INSTANT_CMDS['zoom']();
+    C.v3.yaw = -0.6; C.v3.pitch = 0.55; C.v3.zoom = 1;
+    C.v3._fast = false; C.render3D();
+    const cv = C.v3.cv, ctx = cv.getContext('2d');
+    const img = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    const W = cv.width;
+    // 이 각도에서 앞벽 뒤에 숨는 안쪽 코너 (벽 중심선 사각이라 안쪽 모서리는 ±100)
+    const p = C.proj3D(100, 100, 1200), sx = Math.round(p[0]);
+    let bad = 0;
+    for (let x = sx - 3; x <= sx + 3; x++) {
+      if (x < 8 || x >= W - 8) continue;
+      let run = 0;
+      for (let y = 0; y < cv.height; y++) {
+        const k = (y * W + x) * 4;
+        const l = 0.2126 * img[k] + 0.7152 * img[k + 1] + 0.0722 * img[k + 2];
+        const kl = (y * W + x - 7) * 4, kr = (y * W + x + 7) * 4;
+        const ll = 0.2126 * img[kl] + 0.7152 * img[kl + 1] + 0.0722 * img[kl + 2];
+        const lr = 0.2126 * img[kr] + 0.7152 * img[kr + 1] + 0.0722 * img[kr + 2];
+        // 좌우가 같은 '면 색'(밝음, 서로 비슷)인데 자기만 어두움 = 면 위 침투 선
+        if (ll > 45 && lr > 45 && Math.abs(ll - lr) < 14 && (ll - l > 18) && (lr - l > 18)) { run++; if (run >= 12) { bad++; break; } }
+        else run = 0;
+      }
+    }
+    ok(bad === 0, `★숨은 안쪽 코너 선이 앞면을 뚫지 않는다 (침투 열 ${bad}개)`);
+    // 정당한 모서리 선은 남아 있다 (선 색 픽셀 존재)
+    let edge = 0;
+    for (let i = 0; i < img.length; i += 4 * 5) {
+      if (Math.abs(img[i] - 12) < 9 && Math.abs(img[i + 1] - 18) < 9 && Math.abs(img[i + 2] - 36) < 12) edge++;
+    }
+    ok(edge > 50, `보이는 모서리 선은 유지된다 (선 픽셀 ${edge})`);
+  }
+
   group('렌더 대지 — 줌아웃해도 원반 가장자리가 화면에 안 들어온다 (사용자 스크린샷 버그)');
   {
     // 대지는 렌더 전용 그림자 받이 — 가장자리가 보이면 '만들지 않은 원판' 이 떠 있는 것처럼
