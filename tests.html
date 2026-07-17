@@ -1774,8 +1774,11 @@ function tests(){
     //  ① 기본 radius 0.25(m)는 건축 스케일에 무반응 — 1.2m 로 키워야 구석이 반응한다.
     //  ② AO 디버그 출력은 ACES 톤맵 상단 압축에 눌려 '전멸'로 보인다 — 판정은 최종 화면 A/B 로만.
     reset();
-    ok(C.rview.ao === true, '★AO 기본 켬 (렌더링 뷰 표시 필터 — rt 에는 안 넣는다, 패스트레이싱은 진짜 GI)');
-    ok(typeof C.cmdAo === 'function' && typeof C.rviewAoRender === 'function', 'ao 명령·렌더 경로 존재');
+    // ★기본 끔 — three 내장 GTAO 는 정투영에서 개활 평면에 얼룩을 만든다 (앱 코드 0줄의
+    // 미니멀 독립 씬에서도 재현 = 라이브러리 고유 한계. 8개 축 파라미터 실측 전부 실패).
+    // 디자인 결과물에 불순물은 치명적 — 기본은 '항상 깨끗', AO 는 ao 명령으로 선택(경고 표시).
+    ok(C.rview.ao === false, '★AO 기본 끔 — 정투영 GTAO 얼룩(라이브러리 한계) 때문. 켜면 얼룩 재발');
+    ok(typeof C.cmdAo === 'function' && typeof C.rviewAoRender === 'function', 'ao 명령·렌더 경로 존재 (선택 사용)');
     ok(C.RVIEW_AO && C.RVIEW_AO.radius >= 0.5 && C.RVIEW_AO.radius <= 3, '★반경 기본값이 건축 스케일(m 단위, 0.5~3)');
     // thickness 1(m) 은 부감 정투영에서 벽 상단↔안쪽 바닥 깊이차가 들어와 개활 바닥에
     // 낫 모양 가짜 음영을 만들었다 (사용자 스크린샷) — 0.25 로 얼룩 88% 감소·구석 AO 유지 실측.
@@ -1803,12 +1806,32 @@ function tests(){
     ok(tex.normalMap && tex.normalMap.anisotropy === 8, '★노멀맵도 anisotropy=8');
   }
 
+  group('퀄리티 5차 — 고해상도 렌더 저장 · finalrender(수렴 시 자동 저장)');
+  {
+    reset();
+    // finalrender — 라이노 Render 흐름 (레이트레이싱 수렴 → 자동 PNG)
+    ok(typeof C.cmdFinalRender === 'function', 'finalrender 존재');
+    eqi(C.INSTANT_CMDS['finalrender'], C.cmdFinalRender, 'INSTANT_CMDS 등록');
+    eqi(C.CMD_ALIASES['최종렌더'], 'finalrender', '한글 별칭(최종렌더)');
+    eqi(C.CMD_ALIASES['render'], 'finalrender', '라이노 이름(render)');
+    ok(C.rt.autoSave === false, '★autoSave 기본 꺼짐 — 불쑥 저장되면 안 된다');
+    // 3D 가 아닌 화면에서는 정중히 거절 (autoSave 를 켜지 않는다) — 앞 그룹이 3D 를 열어뒀을 수
+    // 있으니 닫고 검사 (3D 활성 상태로 부르면 진짜 레이트레이서(CDN)가 켜져 테스트가 오염된다)
+    if (C.is3DActive()) C.close3D();
+    C.cmdFinalRender();
+    ok(C.rt.autoSave === false, '★2D 화면에선 예약하지 않는다');
+    // 고해상도 저장 — 사용법 계약: 배율 범위 밖 인자는 거부 (저장 시도 없이)
+    ok(typeof C.cmdCapture === 'function', 'viewcapturetofile 존재(배율 인자 지원)');
+    C.cmdCapture('9');   // 2~4 밖 → 사용법 안내만 하고 반환 (다운로드 없음 — 테스트에서 저장되면 안 된다)
+    ok(true, '배율 범위 밖 인자는 사용법 안내로 처리 (예외 없음)');
+  }
+
   group('화면 키우기 — 4분할 이름표가 단일 화면에 남지 않는다 (사용자 스크린샷 버그)');
   {
     // render3D 는 단일 모드에서 활성 칸만 순회한다 — 비활성 칸 라벨을 명시적으로 숨기지 않으면
     // 4분할 시절 이름표('평면·정면·우측면')가 옛 자리에 계속 떠 있었다.
     reset();
-    if (!C.v3) C.INSTANT_CMDS['view3d']();
+    if (!C.is3DActive()) C.INSTANT_CMDS['view3d']();    // 앞 그룹(5차)이 3D 를 닫았을 수 있다
     C.v3.quad = true; C.v3.act = 1;
     C.render3D();                                       // 4분할 — 라벨 4개 표시
     const vis = (i) => { const el = document.getElementById('vpLabel' + i); return !!el && el.style.display !== 'none'; };

@@ -7263,6 +7263,7 @@ const rt = {
   cv: null, hud: null, raf: 0, loading: false, geoSig: '', env: 'black', denoise: true, err: null,
   vi: -1,                // 이 뷰포트에 묶인다 (-1 = 안 붙음). rview 와 같은 규약 — 자기 칸에만 그린다.
   q: { spp: 64, bounces: 10, name: '보통' },   // 품질 프리셋 (rtquality)
+  autoSave: false,       // finalrender — 수렴(spp 도달)하면 자동으로 PNG 저장
   ground: true,          // 렌더 전용 대지 평면 (ground 명령 토글)
   exposure: 0,           // 0 = 환경에 따라 자동 (rtExposure 참고)
 };
@@ -8564,7 +8565,11 @@ function rtSyncCamera(T, cam) {
 // 이 뷰는 '보기용' 프리뷰다. 태양 방향·시간·계절·탁도는 [태양] 패널 값을 그대로 따르지만,
 // 조도 수치의 진실은 조도 분석(illuminanceAt)과 Raytraced 가 담당한다.
 const rview = { on: false, vi: -1, renderer: null, scene: null, cam: null, cv: null, sun: null, hemi: null, sig: '', err: null, skyTex: null, skySig: '', pmrem: null, envTex: null, envFrom: null,
-  ao: true, fx: null, _fxLoading: false, composer: null, _rp: null, _ao: null, _aoW: 0, _aoH: 0, _aoCfg: '',   // GTAO — 정투영에서 동작 실측 검증(2026-07-17)
+  // ao 기본 끔 — three 내장 GTAO 는 정투영 카메라에서 개활 평면에 얼룩(가짜 음영)을 만든다.
+  // 앱 코드 0줄의 미니멀 독립 씬에서도 재현(2026-07-17) = 라이브러리 고유 한계. NaN 가드·thickness·
+  // radius·샘플수·시선 보정·3D 거리 게이트·바이어스·디노이즈 강화 8개 축 전부 실측 실패.
+  // 디자인 결과물에 불순물은 치명적(사용자) → 기본은 '항상 깨끗', AO 는 ao 명령으로 선택(경고 표시).
+  ao: false, fx: null, _fxLoading: false, composer: null, _rp: null, _ao: null, _aoW: 0, _aoH: 0, _aoCfg: '',
   groundMat: null, cloudTex: null, cloudSig: '' };   // 구름 그림자 (시각 전용 — 대지 알베도 변조)
 // 뷰포트에 종속된 캔버스 — rt 의 inset:0 실수(4분할 전체를 덮음)를 반복하지 않는다.
 function rviewCanvas() {
@@ -8919,7 +8924,7 @@ function rviewAoRender() {
   }
   rview.composer.render();
 }
-// ao / gtao — 렌더링 뷰 구석 음영 토글·강도
+// ao / gtao — 렌더링 뷰 구석 음영 토글·강도 (실험적 — 기본 끔)
 function cmdAo(arg) {
   const a = String(arg || '').trim();
   if (a) {
@@ -8935,6 +8940,7 @@ function cmdAo(arg) {
     rview.ao = !rview.ao;
     logLine(rview.ao ? '  ▷ AO ON — 구석·모서리 접촉 음영 (렌더링 뷰 전용)' : '  ▷ AO OFF', 'info');
   }
+  if (rview.ao) logLine('     ⚠ 실험적: 정투영 화면공간 AO 는 평평한 면에 얼룩이 생길 수 있습니다 (three.js GTAO 한계 — 최종 결과물은 raytrace 권장)', 'warn');
   if (rview.ao && !rview.fx) rviewLoadFx();
   if (rview.on) render3D();
 }
@@ -9049,7 +9055,14 @@ function rtLoop() {
       : `${s < 1 ? 0 : Math.floor(s)}/${rt.q.spp} spp · 수렴 중…`)
       + (rt.denoise ? ' · 디노이즈' : '')
       + (rt.env === 'day' ? ' · 주광' : '')
+      + (rt.autoSave && s < rt.q.spp ? ' · 완료 시 저장' : '')
       );
+  // finalrender — 수렴한 프레임에서 딱 한 번 저장 (rtReset 으로 다시 돌기 시작하면 플래그는 유지)
+  if (done && rt.autoSave) {
+    rt.autoSave = false;
+    cmdCapture();
+    logLine('  ✔ 최종 렌더 완료 — 자동 저장했습니다 (finalrender)', 'ok');
+  }
 }
 // rt 가 붙은 뷰포트의 카메라 파라미터로 잠시 전환해 fn 을 실행한다.
 // v3 는 '활성 뷰포트 하나' 를 전역에 펼쳐놓는 구조(loadVp/saveVp)라, 이렇게 감싸야
@@ -9400,23 +9413,57 @@ function cmdRtDenoise(arg) {
   logLine(rt.denoise ? '  ▷ 디노이즈 ON — 표시만 매끈하게 (누적 데이터는 그대로)' : '  ▷ 디노이즈 OFF (원본 표시)', 'info');
 }
 
-// viewcapturetofile / capture / 렌더저장 — 지금 보이는 렌더를 PNG 로 저장 (라이노 ViewCaptureToFile)
+// viewcapturetofile / capture / 렌더저장 [2~4] — 지금 보이는 렌더를 PNG 로 저장 (라이노 ViewCaptureToFile)
+//  배율(2~4)을 주면 렌더링 뷰를 그 배율의 오프스크린 해상도로 다시 그려 저장한다 (인쇄·발표용).
 //  ★WebGL 캔버스는 preserveDrawingBuffer 가 없으면 태스크가 끝난 뒤 읽으면 빈 그림이 나온다 —
-//    렌더링 뷰는 rviewFrame() 으로 방금 그린 직후 '같은 태스크 안에서' 2D 캔버스로 복사한다.
-function cmdCapture() {
+//    렌더링 뷰는 '같은 태스크 안에서' 렌더 직후 2D 캔버스로 복사한다.
+function cmdCapture(arg) {
+  const a = String(arg || '').trim();
+  let s = 1;
+  if (a) {
+    const v = parseInt(a, 10);
+    if (isFinite(v) && v >= 2 && v <= 4) s = v;
+    else if (a) { logLine('  사용법: 렌더저장 (그대로) · 렌더저장 2~4 (고해상도 — 렌더링 뷰 전용)', 'warn'); return; }
+  }
   const d = new Date(), p2 = n => String(n).padStart(2, '0');
   const stamp = d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
   const grab = (src, label) => {
     const t = document.createElement('canvas'); t.width = src.width; t.height = src.height;
-    t.getContext('2d').drawImage(src, 0, 0);
+    t.getContext('2d').drawImage(src, 0, 0);            // ★동기 복사 — 이후 원본 크기를 되돌려도 안전
     t.toBlob(b => {
       if (!b) { logLine('  ✗ 캡처 실패 — 캔버스를 읽지 못했습니다.', 'warn'); return; }
       saveBlob(b, 'webcad-render-' + stamp + '.png');
-      logLine('  ✔ ' + label + ' 저장 — webcad-render-' + stamp + '.png (' + src.width + '×' + src.height + ')', 'ok');
+      logLine('  ✔ ' + label + ' 저장 — webcad-render-' + stamp + '.png (' + t.width + '×' + t.height + ')', 'ok');
     }, 'image/png');
   };
-  if (rt.on && rt.cv && rt.cv.style.display !== 'none') { grab(rt.cv, '레이트레이싱'); return; }        // rtcv 는 preserveDrawingBuffer:true
-  if (rview.on && rview.cv && rview.cv.style.display !== 'none') { rviewFrame(); grab(rview.cv, '렌더링 뷰'); return; }
+  if (rt.on && rt.cv && rt.cv.style.display !== 'none') {  // rtcv 는 preserveDrawingBuffer:true
+    grab(rt.cv, '레이트레이싱');
+    if (s > 1) logLine('     레이트레이싱은 누적된 화면 해상도 그대로 저장됩니다 — 고해상도(×2~4)는 렌더링 뷰에서 지원합니다.', 'info');
+    return;
+  }
+  if (rview.on && rview.cv && rview.cv.style.display !== 'none') {
+    if (s > 1) {
+      // 고해상도: 캔버스 내부 해상도만 키워 한 번 렌더 → 복사 → 원상복구 (카메라는 종횡비 동일이라 그대로)
+      const c = rview.cv, kw = c.width, kh = c.height;
+      const sc = Math.max(1, Math.min(s, Math.floor(8192 / Math.max(kw, kh)) || 1));   // GPU 텍스처 상한 보호
+      try {
+        c.width = kw * sc; c.height = kh * sc;
+        rview.renderer.setViewport(0, 0, c.width, c.height);
+        rview._aoW = 0;                                    // AO(선택 사용) 컴포저도 새 크기로
+        if (rview.ao && rview.fx) { try { rviewAoRender(); } catch (e) { rview.renderer.render(rview.scene, rview.cam); } }
+        else rview.renderer.render(rview.scene, rview.cam);
+        grab(c, `렌더링 뷰 ×${sc}`);
+      } finally {
+        c.width = kw; c.height = kh;
+        rview.renderer.setViewport(0, 0, kw, kh);
+        rview._aoW = 0;
+        render3D();                                        // 화면 원상복구
+      }
+      return;
+    }
+    rviewFrame(); grab(rview.cv, '렌더링 뷰');
+    return;
+  }
   if (!is3DActive()) {                                   // 순수 2D 화면 — 도면 그대로
     const c2 = document.getElementById('cv');
     if (c2) { grab(c2, '도면 화면'); return; }
@@ -9479,6 +9526,7 @@ async function rtEnter() {
 function rtExit() {
   const was = rt.vi;
   rt.on = false;
+  rt.autoSave = false;   // finalrender 예약은 세션과 함께 끝난다 — 다음 진입에서 불쑥 저장되면 안 된다
   cancelAnimationFrame(rt.raf);
   if (rt.cv) { rt.cv.style.display = 'none'; rt.cv.style.outline = ''; }
   if (rt.hud) rt.hud.style.display = 'none';
@@ -9487,6 +9535,15 @@ function rtExit() {
   render3D();
 }
 function cmdRaytrace() { rtEnter(); }
+// finalrender / 최종렌더 — 라이노 Render 의 흐름: 레이트레이싱을 돌려 수렴하면 자동으로 PNG 저장.
+// 품질은 rtquality(낮음/보통/높음/최고)를 그대로 따른다 — 발표용이면 먼저 rtquality 높음.
+function cmdFinalRender() {
+  if (!v3 || !is3DActive()) { logLine('  최종 렌더는 3D 화면에서 — view3d 로 열어주세요.', 'warn'); return; }
+  if (vpIsPlan(v3.act) && !rt.on) { logLine('  평면 칸은 도면 표시 전용입니다 — 아이소 등 3D 뷰포트에서 실행하세요.', 'warn'); return; }
+  rt.autoSave = true;
+  logLine(`  ▶ 최종 렌더 — ${rt.q.spp} spp(${rt.q.name}) 수렴 후 자동 저장합니다. 품질 변경: rtquality 높음/최고`, 'info');
+  if (!rt.on) rtEnter();
+}
 
 
 // ============================================================
@@ -10605,6 +10662,7 @@ const INSTANT_CMDS = {
   denoise: cmdRtDenoise,
   ao: cmdAo,
   viewcapturetofile: cmdCapture,
+  finalrender: cmdFinalRender,
   rtenv: cmdRtEnv,
   sun: cmdSun,
   ies: cmdIes,
@@ -10984,8 +11042,9 @@ const TOOL_KO = {
   rtquality: '레이트레이싱 품질 — 낮음/보통/높음/최고(RTQUALITY)',
   ground: '대지 평면 토글 — 렌더 전용(GROUND)',
   denoise: '레이트레이싱 디노이즈 — 표시 스무딩(DENOISE)',
-  ao: '렌더링 뷰 구석 음영 — GTAO 토글·강도(AO)',
-  viewcapturetofile: '보이는 렌더를 PNG 저장(VIEWCAPTURETOFILE)',
+  ao: '렌더링 뷰 구석 음영 — 실험적 GTAO 토글·강도(AO)',
+  viewcapturetofile: '보이는 렌더를 PNG 저장 · 2~4 배율 고해상도(VIEWCAPTURETOFILE)',
+  finalrender: '레이트레이싱 수렴 후 자동 PNG 저장(FINALRENDER)',
   rtenv: '렌더 환경 전환(RTENV)',
   sun: '태양 — 날짜·시각·위치·방위(SUN)',
   ies: 'IES 배광 파일(IES)',
@@ -11059,6 +11118,8 @@ const CMD_ALIASES = {
   denoise: 'denoise', 디노이즈: 'denoise', 노이즈제거: 'denoise',
   ao: 'ao', gtao: 'ao', 구석음영: 'ao', 앰비언트오클루전: 'ao',
   viewcapturetofile: 'viewcapturetofile', capture: 'viewcapturetofile', 캡처: 'viewcapturetofile', 렌더저장: 'viewcapturetofile', 화면저장: 'viewcapturetofile',
+  // '렌더' 는 예전부터 raytrace 의 별칭 — 기존 습관을 뺏지 않는다 (계약 테스트 있음)
+  finalrender: 'finalrender', 최종렌더: 'finalrender', render: 'finalrender',
   rtenv: 'rtenv', 주광: 'rtenv', daylight: 'rtenv', 환경: 'rtenv',
   sun: 'sun', 태양: 'sun', sunlight: 'sun',
   ies: 'ies', 배광: 'ies', iesfile: 'ies',
@@ -14257,7 +14318,7 @@ window.__CADTEST__ = {
   markInteract, sunApply, preethamCache,
   captureDoc, saveLocal, loadLocal,
   RT_QUALITY, cmdRtQuality, cmdGround, makeGroundMesh, groundSizeMM, GROUND_Z_MM,
-  RVIEW_AO, cmdAo, rviewAoRender, rviewLoadFx, cmdCapture,
+  RVIEW_AO, cmdAo, rviewAoRender, rviewLoadFx, cmdCapture, cmdFinalRender,
   iesCutoffDeg, matGlobalAll, matGlobalSet, matGlobalDelete, matLibShare, matLibUnshare,
   rviewCloudShadowTexture, rviewSyncCloudShadow, RVIEW_CLOUD_N, MATG_KEY,
   RT_DN, rtSetupDenoise,
