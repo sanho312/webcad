@@ -14492,6 +14492,9 @@ window.WEBCAD_AI_BRIDGE = {
   entityBBox, entityLength, polyArea,
   translateEntity, applyTransform, T_rotate, move3DEnt, gumRotate, meshSphere, meshCone,
   runBoolean, isBoolable, bimSolids,
+  genSectionView,   // 입면/단면 자동 생성 (AI make_views 도구)
+  renderLayers,     // 레이어 정리 후 패널 갱신 (AI organize_layers 도구)
+  switchDoc, getCurDoc: () => curDoc, getDocName: () => currentFileName,   // 입면/단면은 새 탭에 생성 — 봇이 원본 탭으로 복귀할 때 사용
   is3D: is3DActive,
   refresh: () => {
     renderLayers(); renderLightList(); renderSensorList(); renderProps(); draw(); updateStat();
