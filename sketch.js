@@ -163,12 +163,14 @@ function undoSk() {
   const op = SK.undo.pop(); if (!op) return;
   if (op.t === 'add') SK.strokes = SK.strokes.filter(s => s.id !== op.s.id);
   else if (op.t === 'del') SK.strokes.push(...op.ss);
+  else if (op.t === 'rep') SK.strokes = JSON.parse(JSON.stringify(op.before));
   SK.redo.push(op); SK.rev++; saveSoon();
 }
 function redoSk() {
   const op = SK.redo.pop(); if (!op) return;
   if (op.t === 'add') SK.strokes.push(op.s);
   else if (op.t === 'del') { const ids = new Set(op.ss.map(s => s.id)); SK.strokes = SK.strokes.filter(s => !ids.has(s.id)); }
+  else if (op.t === 'rep') SK.strokes = JSON.parse(JSON.stringify(op.after));
   SK.undo.push(op); SK.rev++; saveSoon();
 }
 
@@ -426,6 +428,53 @@ function commitRecog() {
   return nAdded;
 }
 
+// ---------- 🏠 건물 만들기 (Phase 3 해석 파이프라인) ----------
+// 스케일 보정(프로그램) → 역할 판정(규칙, 키 있으면 AI 가 요약 JSON 만 보고 보정)
+// → BIM 생성(프로그램). 손그림은 그대로 남는다.
+function scaleStrokes(k) {
+  const before = JSON.parse(JSON.stringify(SK.strokes));
+  for (const s of SK.strokes) { s.hw *= k; s.pts = s.pts.map(p => [p[0] * k, p[1] * k, p[2]]); }
+  pushOp({ t: 'rep', before, after: JSON.parse(JSON.stringify(SK.strokes)) });
+  SK.rev++; saveSoon();
+}
+function fitView() {
+  const all = SK.strokes.flatMap(s => s.pts);
+  if (!all.length) return;
+  let x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
+  for (const p of all) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+  const v = V(), W = cv._w || ovRect.w, H = cv._h || ovRect.h;
+  v.x = (x0 + x1) / 2; v.y = (y0 + y1) / 2;
+  v.scale = Math.min(W / Math.max(1, (x1 - x0) * 1.3), H / Math.max(1, (y1 - y0) * 1.3));
+  appDraw();
+}
+let building = false;
+async function buildBuilding() {
+  const BF = window.WEBCAD_BIMIFY;
+  if (!preview || !BF || building) return null;
+  building = true;
+  try {
+    infoTxt.textContent = '🏠 해석 중…';
+    // ① 스케일 보정 — 화면 감각으로 작게 그린 스케치를 건축 스케일로 (스트로크도 함께 → 정합 유지)
+    let anal = preview;
+    const k = BF.calcScale(anal);
+    if (k !== 1) {
+      scaleStrokes(k);                             // (changed 아님 — 미리보기는 직접 재계산)
+      anal = window.WEBCAD_PREP.analyze(SK.strokes);
+      B.logLine && B.logLine(`  📐 스케일 보정 ×${k} — 스케치를 건축 스케일로 확대했습니다.`, 'info');
+    }
+    // ② 역할 판정 — 규칙 우선, API 키가 있으면 AI 가 요약만 보고 보정 (이미지 전송 없음)
+    const { roles, usedAI } = await BF.classify(anal);
+    // ③ 생성 — 전부 프로그램
+    const counts = BF.build(anal, roles);
+    preview = null; SK.rev++; infoEl.style.display = 'none';
+    fitView();
+    const KO = { wall: '벽', door: '문', window: '창', column: '기둥', furniture: '가구', slab: '슬래브' };
+    const parts = Object.entries(counts).filter(([, n]) => n > 0).map(([kk, n]) => KO[kk] + ' ' + n);
+    B.logLine && B.logLine(`  🏠 손그림 → 건물 생성: ${parts.join(' · ')} (${usedAI ? 'AI 역할 판정' : '규칙 판정 — AI 키 없음'}). 3D(view3d)로 확인해 보세요. 손그림은 그대로 남아 있습니다.`, 'ok');
+    return counts;
+  } finally { building = false; }
+}
+
 // ---------- 모드 전환 ----------
 function enter() {
   if (SK.on) return;
@@ -551,8 +600,16 @@ infoEl.style.cssText = 'position:absolute;left:50%;top:64px;transform:translateX
   + 'font:12.5px -apple-system,system-ui,sans-serif;color:#bfeaff;box-shadow:0 6px 20px rgba(0,0,0,.4);';
 const infoTxt = document.createElement('span');
 infoEl.appendChild(infoTxt);
+const infoBim = document.createElement('button');
+infoBim.textContent = '🏠 건물로';
+infoBim.title = '역할 판정(벽·문·기둥·가구) 후 BIM 생성 — API 키가 있으면 AI 가 요약만 보고 판단(이미지 전송 없음), 없으면 규칙 판단';
+infoBim.style.cssText = 'height:30px;border:none;border-radius:8px;background:#3aa66a;color:#06331c;'
+  + 'font-weight:700;font-size:12.5px;cursor:pointer;padding:0 12px;';
+infoBim.addEventListener('click', buildBuilding);
+infoEl.appendChild(infoBim);
 const infoOk = document.createElement('button');
-infoOk.textContent = 'CAD 만들기';
+infoOk.textContent = 'CAD 선만';
+infoOk.title = '역할 판정 없이 인식된 기하만 CAD 개체로';
 infoOk.style.cssText = 'height:30px;border:none;border-radius:8px;background:#35d0ff;color:#06233a;'
   + 'font-weight:700;font-size:12.5px;cursor:pointer;padding:0 12px;';
 infoOk.addEventListener('click', commitRecog);
@@ -583,5 +640,5 @@ requestAnimationFrame(tick);
 
 // 외부/테스트 훅 — Phase 2 전처리 엔진이 이 데이터를 읽는다
 window.WEBCAD_SKETCH = { SK, enter, exit, setTool, undoSk, redoSk, redraw, syncNow, saveNow, loadNow, w2s, s2w,
-  recognize, commitRecog, closePreview, getPreview: () => preview };
+  recognize, commitRecog, closePreview, getPreview: () => preview, buildBuilding, fitView };
 })();
