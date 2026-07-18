@@ -14543,6 +14543,7 @@ window.WEBCAD_AI_BRIDGE = {
   renderLayers,     // 레이어 정리 후 패널 갱신 (AI organize_layers 도구)
   switchDoc, getCurDoc: () => curDoc, getDocName: () => currentFileName,   // 입면/단면은 새 탭에 생성 — 봇이 원본 탭으로 복귀할 때 사용
   is3D: is3DActive,
+  draw,             // 가벼운 2D 재그리기 — 스케치 엔진(sketch.js)의 팬/줌이 매 프레임 사용 (refresh 는 패널까지 다시 그려 무겁다)
   refresh: () => {
     renderLayers(); renderLightList(); renderSensorList(); renderProps(); draw(); updateStat();
     if (is3DActive() && typeof v3 !== 'undefined' && v3) { v3.solids = bimSolids(); render3D(); }

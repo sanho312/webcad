@@ -2660,6 +2660,74 @@ function tests(){
     reset();
   }
 
+  // ---------- 스케치 엔진 (새 철학 Phase 1) ----------
+  group('스케치 엔진 1단계 — 필압 보존·팜 리젝션·월드 정합·undo·지우개·영속');
+  {
+    // 철학: 손그림은 끝까지 손그림 — 원본 점열(좌표+필압)이 그대로 저장되어야
+    // Phase 2 전처리 엔진의 입력이 된다. AI 사용 0.
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const S = AW.WEBCAD_SKETCH;
+    ok(!!S, '★WEBCAD_SKETCH 모듈 로드');
+    if (S) {
+      const skcv = AD.getElementById('skcv');
+      ok(!!skcv && !!AD.getElementById('btnSketch'), '오버레이 캔버스 + 상단바 ✏️ 진입 버튼');
+      const key = S.SK.docKey, bak = AW.localStorage.getItem(key); // 사용자 스케치 보호
+      S.SK.strokes.length = 0; S.SK.penSeen = false; S.SK.rev++;
+      S.enter(); S.syncNow();
+      eqi(AW.getComputedStyle(skcv).pointerEvents, 'auto', '스케치 모드 = 오버레이가 입력을 받음');
+      const r = skcv.getBoundingClientRect();
+      const pd = (type, x, y, p, id, pt) => skcv.dispatchEvent(new AW.PointerEvent(type, {
+        pointerId: id, pointerType: pt || 'pen', pressure: p, clientX: r.left + x, clientY: r.top + y,
+        buttons: 1, button: 0, bubbles: true, cancelable: true, isPrimary: true }));
+      pd('pointerdown', 80, 80, 0.2, 901);
+      pd('pointermove', 130, 95, 0.6, 901);
+      pd('pointermove', 180, 120, 0.9, 901);
+      pd('pointerup', 180, 120, 0.9, 901);
+      eqi(S.SK.strokes.length, 1, '★펜 스트로크 생성');
+      const st = S.SK.strokes[0];
+      ok(st.pts.length >= 3, '점열 보존 (' + st.pts.length + '점)');
+      eq(st.pts[0][2], 0.2, '★필압 시작 보존', 0.02);
+      eq(st.pts[st.pts.length - 1][2], 0.9, '★필압 끝 보존', 0.02);
+      const back = S.w2s(st.pts[0][0], st.pts[0][1]);
+      eq(back[0], 80, '★월드 좌표 저장 — 화면 x 왕복', 1.2);
+      eq(back[1], 80, '  화면 y 왕복', 1.2);
+      // 잉크 픽셀이 실제로 찍혔나
+      S.syncNow();
+      {
+        const dpr = AW.devicePixelRatio || 1, gg = skcv.getContext('2d');
+        const d = gg.getImageData(Math.max(0, Math.round(130 * dpr) - 2), Math.max(0, Math.round(95 * dpr) - 2), 6, 6).data;
+        let m = 0; for (let i = 3; i < d.length; i += 4) m = Math.max(m, d[i]);
+        ok(m > 0, '★잉크 픽셀 렌더 (α=' + m + ')');
+      }
+      // 팜 리젝션 — 펜 사용 후 손가락 한 개는 그리지 않는다
+      pd('pointerdown', 120, 140, 0.5, 902, 'touch');
+      pd('pointermove', 160, 150, 0.5, 902, 'touch');
+      pd('pointerup', 160, 150, 0.5, 902, 'touch');
+      eqi(S.SK.strokes.length, 1, '★팜 리젝션 — 펜 사용 후 한 손가락 무시');
+      // 지우개 + 전용 undo/redo (CAD undo 와 독립)
+      S.setTool('eraser');
+      pd('pointerdown', 130, 95, 0.5, 903);
+      pd('pointerup', 130, 95, 0.5, 903);
+      eqi(S.SK.strokes.length, 0, '★지우개 — 스트로크 단위 제거');
+      S.undoSk(); eqi(S.SK.strokes.length, 1, 'undo → 지우기 복원');
+      S.undoSk(); eqi(S.SK.strokes.length, 0, 'undo → 그리기 취소');
+      S.redoSk(); eqi(S.SK.strokes.length, 1, 'redo → 재생성');
+      // 영속 왕복 (문서별 localStorage)
+      S.saveNow();
+      S.SK.strokes.length = 0;
+      S.loadNow();
+      eqi(S.SK.strokes.length, 1, '★영속 — 저장/복원 왕복');
+      // 종료: CAD 입력 원복 + Sketch Layer 는 계속 표시(공존 철학)
+      S.setTool('pen'); S.exit(); S.syncNow();
+      eqi(AW.getComputedStyle(skcv).pointerEvents, 'none', '종료 = CAD 입력 원복');
+      ok(S.SK.visible, 'Sketch Layer 는 종료 후에도 표시(CAD 와 공존)');
+      // 정리 — 사용자 스케치 복구
+      S.SK.strokes.length = 0; S.SK.rev++;
+      if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
+      S.loadNow(); S.syncNow();
+    }
+  }
+
   // ---------- 채팅 복사 · 팝업 드래그 ----------
   group('채팅 복사 — 텍스트 선택 중 Ctrl+C 는 브라우저 기본 복사에 양보 (개체 복사가 가로채지 않음)');
   {
