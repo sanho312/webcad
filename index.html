@@ -10,6 +10,27 @@
 <meta name="apple-mobile-web-app-title" content="WebCAD">
 <meta name="theme-color" content="#0a1020">
 <link rel="manifest" href="manifest.json">
+<!-- iPad: meta 의 user-scalable=no 를 iOS Safari 가 무시하고 페이지 자체가 핀치 줌 되어
+     상단 토글이 안 눌리는 문제 — 페이지 줌 제스처를 직접 차단 (캔버스 줌은 앱이 처리) -->
+<script>
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('gesturechange', function (e) { e.preventDefault(); }, { passive: false });
+  // 더블탭 페이지 줌 차단 (버튼 더블탭이 화면을 확대해 버리는 것 방지)
+  var __lastTouchEnd = 0;
+  document.addEventListener('touchend', function (e) {
+    var now = Date.now();
+    if (now - __lastTouchEnd < 300 && e.cancelable && !(e.target && e.target.closest && e.target.closest('#skcv,canvas'))) e.preventDefault();
+    __lastTouchEnd = now;
+  }, { passive: false });
+</script>
+<style>
+  /* 터치 기기: 탭 지연·더블탭 줌 없이 즉시 반응 + 손가락 크기 타깃 */
+  button, select, input, label, .tbtn, .miniBtn { touch-action: manipulation; }
+  @media (pointer: coarse) {
+    #topbar .tbtn, #topbar select { min-height: 38px; }
+    #topbar { row-gap: 4px; }
+  }
+</style>
 <link rel="icon" href="icon.svg">
 <link rel="apple-touch-icon" href="icon.svg">
 <title>WebCAD — DXF 편집기</title>
@@ -900,10 +921,11 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260717y"></script>
-<script src="prep.js?v=3"></script>
-<script src="bimify.js?v=2"></script>
-<script src="sketch.js?v=6"></script>
+<script src="cad.js?v=20260717z"></script>
+<script src="prep.js?v=4"></script>
+<script src="bimify.js?v=3"></script>
+<script src="sketch.js?v=7"></script>
+<script src="cmdpop.js?v=1"></script>
 <script src="ai.js?v=12"></script>
 <script src="nodes.js?v=11"></script>
 <script src="auth-config.js?v=2"></script>

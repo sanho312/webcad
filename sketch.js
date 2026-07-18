@@ -21,17 +21,27 @@ const appDraw = () => { (B.draw || B.refresh)(); };
 const SK = {
   on: false,          // 스케치 모드(입력 잠금) — 꺼져 있어도 Sketch Layer 는 항상 보인다
   visible: true,
-  tool: 'pen',        // pen | eraser
+  tool: 'pen',        // pen(그리기) | eraser
+  brush: 'pen',       // pen | pencil | marker — 브러시 종류
+  layer: '',          // CAD 레이어와 동일 연동 (색 일치) — 빈 값이면 현재 CAD 레이어
   color: '#e6e1d3',   // 연필 느낌의 기본 잉크
   sizePx: 4,          // 화면 기준 굵기(px) — 그리는 순간의 줌으로 월드 굵기 확정(종이에 잉크)
-  strokes: [],        // {id, color, hw(월드 반폭 mm), pts:[[x(mm), y(mm), p(필압)], ...]}
+  strokes: [],        // {id, color, hw(월드 반폭 mm), brush, layer, pts:[[x, y, p], ...]}
   nextId: 1,
   undo: [], redo: [], // 스트로크 단위 (CAD undo 와 독립 — 드로잉 앱 방식)
   penSeen: false,     // 펜이 한 번이라도 감지되면 손가락은 내비게이션 전용(팜 리젝션)
+  snap: true,         // 스트로크 시작/끝을 CAD 개체·다른 스트로크 끝점에 흡착
   rev: 0,             // 내용 변경 카운터 (rAF 뷰 동기화용)
   docKey: '',
 };
-const wf = (p) => 0.25 + 1.5 * (p || 0.5);   // 필압 → 폭 배율 (p=0.5 에서 1.0)
+// 브러시 특성 — 폭 배율 곡선(필압), 폭 계수, 투명도
+const BRUSH = {
+  pen:    { wf: (p) => 0.25 + 1.5 * (p || 0.5), wmul: 1.0, alpha: 1 },
+  pencil: { wf: (p) => 0.25 + 1.5 * (p || 0.5), wmul: 0.6, alpha: 0.85 },
+  marker: { wf: (p) => 0.7 + 0.6 * (p || 0.5), wmul: 2.3, alpha: 0.45 },
+};
+const brushOf = (s) => BRUSH[s.brush] || BRUSH.pen;
+const wf = (p) => BRUSH.pen.wf(p);           // (구버전 스트로크 호환)
 const rnd1 = (n) => Math.round(n * 10) / 10; // 저장 절약: 0.1mm
 
 // ---------- 오버레이 캔버스 (#cv 를 그대로 따라간다 — 4분할 평면 칸 포함) ----------
@@ -58,23 +68,58 @@ function s2w(sx, sy) {
 }
 
 // ---------- 렌더링 ----------
-// 필압 가변폭: 인접 점 사이를 둥근 캡 선분으로 잇는다. 잉크색이 불투명이라 겹침 자국이 없다.
-function drawStroke(ctx2, s) {
-  const k = V().scale;
+// 필압 가변폭: 인접 점 사이를 둥근 캡 선분으로 잇는다.
+// 반투명 브러시(연필·마커)는 겹침 얼룩이 없도록 임시 캔버스에 불투명으로 그린 뒤 통째로 합성한다.
+const tmpCv = document.createElement('canvas');
+const tg = tmpCv.getContext('2d');
+function strokeCore(ctx2, s, k) {
+  const B2 = brushOf(s);
   const pts = s.pts;
   ctx2.strokeStyle = s.color; ctx2.fillStyle = s.color;
   ctx2.lineCap = 'round'; ctx2.lineJoin = 'round';
   if (pts.length === 1) {
     const [x, y] = w2s(pts[0][0], pts[0][1]);
-    ctx2.beginPath(); ctx2.arc(x, y, Math.max(0.4, s.hw * wf(pts[0][2]) * k), 0, 6.2832); ctx2.fill();
+    ctx2.beginPath(); ctx2.arc(x, y, Math.max(0.4, s.hw * B2.wf(pts[0][2]) * B2.wmul * k), 0, 6.2832); ctx2.fill();
     return;
   }
   for (let i = 1; i < pts.length; i++) drawSeg(ctx2, s, pts[i - 1], pts[i], k);
 }
+function drawStroke(ctx2, s) {
+  const k = V().scale;
+  const alpha = brushOf(s).alpha;
+  if (alpha >= 1 || ctx2 !== g) { strokeCore(ctx2, s, k); return; }
+  // 반투명: 임시 캔버스에 스트로크 영역만 불투명으로 → 알파 합성 (겹침 자국 없음)
+  const dpr = window.devicePixelRatio || 1;
+  if (tmpCv.width !== skcv.width || tmpCv.height !== skcv.height) { tmpCv.width = skcv.width; tmpCv.height = skcv.height; }
+  tg.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // 스트로크 화면 bbox (여유 = 최대 굵기)
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const p of s.pts) { const q = w2s(p[0], p[1]); if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+  const pad = s.hw * 4 * k + 4;
+  x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  tg.clearRect(x0, y0, x1 - x0, y1 - y0);
+  strokeCore(tg, s, k);
+  ctx2.save();
+  ctx2.globalAlpha = alpha;
+  ctx2.setTransform(1, 0, 0, 1, 0, 0);
+  const rx0 = Math.max(0, Math.floor(x0 * dpr)), ry0 = Math.max(0, Math.floor(y0 * dpr));
+  const rw = Math.min(skcv.width - rx0, Math.ceil((x1 - x0) * dpr)), rh = Math.min(skcv.height - ry0, Math.ceil((y1 - y0) * dpr));
+  if (rw > 0 && rh > 0) ctx2.drawImage(tmpCv, rx0, ry0, rw, rh, rx0, ry0, rw, rh);
+  ctx2.restore();
+  const dpr2 = window.devicePixelRatio || 1;
+  ctx2.setTransform(dpr2, 0, 0, dpr2, 0, 0);
+}
 function drawSeg(ctx2, s, a, b, k) {
+  const B2 = brushOf(s);
   const [ax, ay] = w2s(a[0], a[1]), [bx, by] = w2s(b[0], b[1]);
-  ctx2.lineWidth = Math.max(0.5, s.hw * (wf(a[2]) + wf(b[2])) * k); // 반폭 × (배율a+배율b) = 평균 지름
+  ctx2.lineWidth = Math.max(0.5, s.hw * (B2.wf(a[2]) + B2.wf(b[2])) * B2.wmul * k);
   ctx2.beginPath(); ctx2.moveTo(ax, ay); ctx2.lineTo(bx, by); ctx2.stroke();
+}
+// 레이어 표시 상태 (CAD 레이어와 동일 연동 — 꺼진 레이어의 스케치도 숨긴다)
+function layerVisible(name) {
+  if (!name) return true;
+  const l = B.state.layers.find(x => x.name === name);
+  return !l || l.visible !== false;
 }
 let eraseCursor = null; // {x, y} 오버레이 로컬 px — 지우개 원 표시
 let preview = null;     // ✨ 인식 결과 (WEBCAD_PREP.analyze) — 스케치가 바뀌면 무효
@@ -123,7 +168,7 @@ function redraw() {
   g.clearRect(0, 0, r.w, r.h);
   if (!SK.visible) return;
   g.strokeStyle = '#000'; // 초기화
-  for (const s of SK.strokes) drawStroke(g, s);
+  for (const s of SK.strokes) if (layerVisible(s.layer)) drawStroke(g, s);
   if (live) drawStroke(g, live);
   if (preview) drawPreview();
   if (eraseCursor) {
@@ -168,8 +213,10 @@ function tick() {
       SK.rev++; saveNow();
     } else { pendingImport = null; loadNow(); }
   }
+  // CAD 레이어의 표시/색 변경도 스케치 렌더에 반영 (동일 연동)
+  const lsig = B.state.layers.map(l => l.name + (l.visible === false ? 0 : 1) + l.color).join(',');
   const sig = [v.x, v.y, v.scale, r.x, r.y, r.w, r.h, hidden, SK.visible, SK.rev,
-    window.devicePixelRatio || 1].join('|');
+    window.devicePixelRatio || 1, lsig].join('|');
   if (sig !== lastSig) { lastSig = sig; syncNow(); }
   requestAnimationFrame(tick);
 }
@@ -230,13 +277,45 @@ let ovClient = { x: 0, y: 0 };  // 오버레이의 client 좌표 원점 캐시
 const localXY = (e) => [e.clientX - ovClient.x, e.clientY - ovClient.y];
 const pressureOf = (e) => (e.pressure > 0 && e.pressure <= 1) ? e.pressure : 0.5;
 
+// ---------- 스냅 — 스트로크 시작/끝을 CAD 개체·다른 스트로크 끝점에 흡착 (자유 작업 연결)
+const SNAP_PX = 10;
+let snapPts = null; // [ [wx, wy], ... ] — 스트로크 시작 시 수집
+function collectSnapPts() {
+  const out = [];
+  const ents = B.state.entities;
+  const n = Math.min(ents.length, 4000);
+  for (let i = 0; i < n; i++) {
+    const e = ents[i];
+    if (e.type === 'LINE') { out.push([e.x1, e.y1], [e.x2, e.y2]); }
+    else if (e.type === 'LWPOLYLINE' && e.points) for (const p of e.points) out.push([p[0], p[1]]);
+    else if (e.type === 'CIRCLE' || e.type === 'ARC') out.push([e.cx, e.cy]);
+  }
+  for (const s of SK.strokes) {
+    if (s.pts.length) { const a = s.pts[0], b = s.pts[s.pts.length - 1]; out.push([a[0], a[1]], [b[0], b[1]]); }
+  }
+  return out;
+}
+function snapWorld(wx, wy) {
+  if (!SK.snap || !snapPts) return null;
+  const rW = SNAP_PX / V().scale;
+  let best = null, bd = rW;
+  for (const p of snapPts) {
+    const d = Math.hypot(p[0] - wx, p[1] - wy);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
 function startStroke(e) {
   const [sx, sy] = localXY(e);
   livePid = e.pointerId; livePtype = e.pointerType;
   try { skcv.setPointerCapture(e.pointerId); } catch (err) {}
   if (SK.tool === 'eraser') { erasing = []; eraseCursor = { x: sx, y: sy }; eraseAt(sx, sy); return; }
-  const [wx, wy] = s2w(sx, sy);
+  let [wx, wy] = s2w(sx, sy);
+  snapPts = collectSnapPts();
+  const sp = snapWorld(wx, wy);
+  if (sp) { wx = sp[0]; wy = sp[1]; }
   live = { id: SK.nextId++, color: SK.color, hw: (SK.sizePx / 2) / V().scale,
+    brush: SK.brush, layer: SK.layer || ((B.state && B.state.currentLayer) || ''),
     pts: [[wx, wy, pressureOf(e)]] };
   lastPt = { x: sx, y: sy, p: pressureOf(e) };
 }
@@ -260,13 +339,17 @@ function extendStroke(e) {
 }
 function finishStroke() {
   if (live && live.pts.length) {
+    // 끝점 스냅 — 벽 끝·다른 스트로크 끝에 정확히 붙는다
+    const lp = live.pts[live.pts.length - 1];
+    const sp = snapWorld(lp[0], lp[1]);
+    if (sp) { lp[0] = sp[0]; lp[1] = sp[1]; }
     // 저장은 원본 그대로(반올림만) — 손그림 데이터가 전처리 엔진의 입력이 된다
     live.pts = live.pts.map(p => [rnd1(p[0]), rnd1(p[1]), Math.round(p[2] * 100) / 100]);
     SK.strokes.push(live);
     pushOp({ t: 'add', s: live });
     changed();
   }
-  live = null; livePid = null; lastPt = null;
+  live = null; livePid = null; lastPt = null; snapPts = null;
 }
 function cancelLive() { live = null; livePid = null; lastPt = null; erasing = null; eraseCursor = null; }
 
@@ -441,9 +524,17 @@ function commitRecog() {
     nAdded++;
   }
   B.refresh();
-  B.logLine && B.logLine(`  ✨ 스케치 인식 → CAD ${nAdded}개 생성('스케치 인식' 레이어). 손그림은 그대로 남습니다.`, 'ok');
+  clearConverted();
+  B.logLine && B.logLine(`  ✨ 스케치 인식 → CAD ${nAdded}개 생성('스케치 인식' 레이어). 스케치 선은 정리했습니다 (Ctrl+Z 로 복원).`, 'ok');
   closePreview();
   return nAdded;
+}
+// 변환이 끝난 스케치 선은 지운다 — 도면과 겹쳐 헷갈리지 않게 (스케치 Ctrl+Z 로 복원 가능)
+function clearConverted() {
+  if (!SK.strokes.length) return;
+  pushOp({ t: 'del', ss: SK.strokes.slice() });
+  SK.strokes = [];
+  SK.rev++; saveSoon();
 }
 
 // ---------- 🏠 건물 만들기 (Phase 3 해석 파이프라인) ----------
@@ -486,40 +577,33 @@ async function buildBuilding() {
     const counts = BF.build(anal, roles);
     preview = null; SK.rev++; infoEl.style.display = 'none';
     fitView();
+    clearConverted();
     const KO = { wall: '벽', door: '문', window: '창', column: '기둥', furniture: '가구', slab: '슬래브' };
     const parts = Object.entries(counts).filter(([, n]) => n > 0).map(([kk, n]) => KO[kk] + ' ' + n);
-    B.logLine && B.logLine(`  🏠 손그림 → 건물 생성: ${parts.join(' · ')} (${usedAI ? 'AI 역할 판정' : '규칙 판정 — AI 키 없음'}). 3D(view3d)로 확인해 보세요. 손그림은 그대로 남아 있습니다.`, 'ok');
+    B.logLine && B.logLine(`  🏠 손그림 → 건물 생성: ${parts.join(' · ')} (${usedAI ? 'AI 역할 판정' : '규칙 판정 — AI 키 없음'}). 스케치 선은 정리했습니다(Ctrl+Z 복원). 3D(view3d)로 확인해 보세요.`, 'ok');
     return counts;
   } finally { building = false; }
 }
 
-// ---------- 모드 전환 — 펜 전용 셸 (Procreate 문법: 크롬을 치우고 종이만) ----------
-// CAD 는 백엔드로 물러난다. 상단바·도구·명령창·속성패널·상태바 전부 숨김 — 드로잉 앱 화면.
-const penCss = document.createElement('style');
-penCss.textContent = `
-  body.skPen #topbar, body.skPen #toolbar, body.skPen #console,
-  body.skPen #side, body.skPen #statusBar { display: none !important; }
-`;
-document.head.appendChild(penCss);
+// ---------- 모드 전환 — 스케치는 별도 화면이 아니다 (사용자 피드백) ----------
+// CAD 화면 그대로 위에서 그린다. 4분할이면 평면 칸 위에서 — 3D 와 나란히 보며 스케치.
 function enter() {
   if (SK.on) return;
-  if (B.is3D && B.is3D()) { const b = document.getElementById('vwPlan'); if (b) b.click(); } // 스케치는 평면 위에서
+  // 평면 칸이 아예 없으면(3D 단일 화면) 평면으로 — 스케치 입력면은 평면 좌표계다
+  if (B.is3D && B.is3D() && cv.style.display === 'none') { const b = document.getElementById('vwPlan'); if (b) b.click(); }
   SK.on = true;
-  document.body.classList.add('skPen');
-  window.dispatchEvent(new Event('resize'));       // 캔버스가 전체 화면을 다시 차지하게
   skcv.style.pointerEvents = 'auto';
   skcv.style.cursor = 'crosshair';
   bar.style.display = 'flex';
   entryBtn.style.background = 'var(--accent)'; entryBtn.style.color = '#fff';
-  B.logLine && B.logLine('  ✏️ 스케치 모드 — 펜: 그리기 · 두 손가락: 이동/확대 · Esc/완료: CAD 화면으로', 'info');
+  refreshLayerSel();
+  B.logLine && B.logLine('  ✏️ 스케치 — 펜: 그리기 · 두 손가락: 이동/확대 · 시작/끝점은 CAD 에 스냅 · Esc/완료: 종료', 'info');
 }
 function exit() {
   if (!SK.on) return;
   SK.on = false;
   cancelLive();
   closePreview();
-  document.body.classList.remove('skPen');
-  window.dispatchEvent(new Event('resize'));
   skcv.style.pointerEvents = 'none';
   bar.style.display = 'none';
   entryBtn.style.background = ''; entryBtn.style.color = '';
@@ -528,12 +612,27 @@ function exit() {
 function setTool(tool) {
   SK.tool = tool;
   eraseCursor = null;
+  const active = tool === 'eraser' ? 'eraser' : SK.brush;
   for (const [t, btn] of Object.entries(toolBtns)) {
-    btn.style.background = t === tool ? 'var(--accent,#0A84FF)' : 'transparent';
-    btn.style.color = t === tool ? '#fff' : 'var(--ink,#cfe0ff)';
+    btn.style.background = t === active ? 'var(--accent,#0A84FF)' : 'transparent';
+    btn.style.color = t === active ? '#fff' : 'var(--ink,#cfe0ff)';
   }
   skcv.style.cursor = 'crosshair';
 }
+function setBrush(b2) { SK.brush = b2; SK.tool = 'pen'; rememberPref(); setTool('pen'); }
+// 레이어별 펜 종류·색 기억 — "각 레이어에 펜·색이 지정되면 효율이 높아진다"
+let skPrefs = {};
+try { skPrefs = JSON.parse(localStorage.getItem('webcad_sketch_prefs') || '{}'); } catch (e) {}
+function rememberPref() {
+  const ly = SK.layer || (B.state && B.state.currentLayer) || '';
+  if (!ly) return;
+  skPrefs[ly] = { brush: SK.brush, color: SK.color };
+  try { localStorage.setItem('webcad_sketch_prefs', JSON.stringify(skPrefs)); } catch (e) {}
+}
+const layerColorOf = (name) => {
+  const l = B.state.layers.find(x => x.name === name);
+  return (l && l.color) || SK.color;
+};
 
 // ---------- UI — 드로잉 앱 문법 (Procreate 참고: 큰 터치 타깃, 최소 크롬) ----------
 const SWATCHES = ['#e6e1d3', '#ffffff', '#16161a', '#e04f4f', '#3a7bd5', '#3aa66a', '#e0a33a', '#9c6bd5'];
@@ -557,9 +656,44 @@ grip.textContent = '⠿'; grip.title = '툴바 이동';
 grip.style.cssText = 'font-size:15px;color:#6d7ea8;padding:0 2px;';
 bar.appendChild(grip);
 const toolBtns = {};
-toolBtns.pen = mkBtn('✏️', '펜 (B)', () => setTool('pen'));
+toolBtns.pen = mkBtn('🖋', '펜 (B) — 또렷한 잉크', () => setBrush('pen'));
+toolBtns.pencil = mkBtn('✏️', '연필 — 가늘고 연하게', () => setBrush('pencil'));
+toolBtns.marker = mkBtn('🖍', '마커 — 굵고 반투명', () => setBrush('marker'));
 toolBtns.eraser = mkBtn('⌫', '지우개 — 스트로크 단위 (E)', () => setTool('eraser'));
-bar.appendChild(toolBtns.pen); bar.appendChild(toolBtns.eraser);
+bar.appendChild(toolBtns.pen); bar.appendChild(toolBtns.pencil);
+bar.appendChild(toolBtns.marker); bar.appendChild(toolBtns.eraser);
+// 레이어 — CAD 레이어와 동일 연동 (평면·3D·스케치가 같은 레이어·같은 색)
+const layWrap = document.createElement('span');
+layWrap.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 4px;';
+const layDot = document.createElement('span');
+layDot.style.cssText = 'width:12px;height:12px;border-radius:3px;background:#888;flex:0 0 auto;';
+const laySel = document.createElement('select');
+laySel.title = '스케치 레이어 — CAD 레이어와 연동되어 색이 일치합니다 (레이어별 펜·색 기억)';
+laySel.style.cssText = 'background:#0e1730;color:#cfe0ff;border:1px solid #2a3760;border-radius:8px;'
+  + 'font-size:12px;padding:6px 6px;max-width:110px;height:34px;';
+function refreshLayerSel() {
+  const cur = SK.layer || (B.state && B.state.currentLayer) || '';
+  laySel.innerHTML = '';
+  for (const l of B.state.layers) {
+    const o = document.createElement('option');
+    o.value = l.name; o.textContent = l.name;
+    if (l.name === cur) o.selected = true;
+    laySel.appendChild(o);
+  }
+  SK.layer = cur;
+  layDot.style.background = layerColorOf(cur);
+}
+laySel.addEventListener('change', () => {
+  SK.layer = laySel.value;
+  const p = skPrefs[SK.layer];
+  SK.brush = (p && p.brush) || SK.brush;
+  SK.color = (p && p.color) || layerColorOf(SK.layer);   // 기본 = 레이어 색 (일치)
+  customC.value = /^#[0-9a-fA-F]{6}$/.test(SK.color) ? SK.color : customC.value;
+  layDot.style.background = layerColorOf(SK.layer);
+  setTool('pen'); markColor();
+});
+layWrap.appendChild(layDot); layWrap.appendChild(laySel);
+bar.appendChild(layWrap);
 // 색
 const swBox = document.createElement('span');
 swBox.style.cssText = 'display:flex;gap:4px;align-items:center;padding:0 4px;';
@@ -569,13 +703,13 @@ for (const c of SWATCHES) {
   s.style.cssText = `width:22px;height:22px;border-radius:50%;background:${c};cursor:pointer;`
     + 'border:2px solid transparent;box-sizing:border-box;';
   s.title = c;
-  s.addEventListener('click', () => { SK.color = c; setTool('pen'); markColor(); });
+  s.addEventListener('click', () => { SK.color = c; setTool('pen'); markColor(); rememberPref(); });
   swBox.appendChild(s); swEls.push([c, s]);
 }
 const customC = document.createElement('input');
 customC.type = 'color'; customC.value = '#e6e1d3'; customC.title = '다른 색';
 customC.style.cssText = 'width:26px;height:26px;border:none;background:none;cursor:pointer;padding:0;';
-customC.addEventListener('input', () => { SK.color = customC.value; setTool('pen'); markColor(); });
+customC.addEventListener('input', () => { SK.color = customC.value; setTool('pen'); markColor(); rememberPref(); });
 swBox.appendChild(customC);
 bar.appendChild(swBox);
 function markColor() {

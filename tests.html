@@ -2806,7 +2806,8 @@ function tests(){
       eqi(n, 4, '★CAD 만들기 → 개체 4 생성');
       ok(C2.state.entities.slice(before).every(e => e.layer === '스케치 인식'), "  '스케치 인식' 레이어");
       ok(!!C2.state.layers.find(l => l.name === '스케치 인식'), '  레이어 자동 생성');
-      eqi(S.SK.strokes.length, 4, '★손그림은 그대로 남는다 (Sketch Layer 보존)');
+      eqi(S.SK.strokes.length, 0, '★변환 후 스케치 선 자동 정리 (피드백 ① — 도면과 안 겹침)');
+      S.undoSk(); eqi(S.SK.strokes.length, 4, '  스케치 Ctrl+Z 로 손그림 복원'); S.redoSk();
       ok(!S.getPreview(), '커밋 후 미리보기 해제');
       // 정리
       S.SK.strokes.length = 0; S.SK.rev++;
@@ -2925,18 +2926,86 @@ function tests(){
       eqi(S.SK.strokes.length, 2, '★스케치 복원 (파일과 함께 산다)');
       ok(S.SK.strokes[0].pts[1][2] === 0.8 && S.SK.strokes[1].color === '#e04f4f', '  필압·색 보존');
       ok(/0\s*\r?\nSECTION\s*\r?\n\s*2\s*\r?\nHEADER/.test(dxf) && /0\s*\r?\nEOF/.test(dxf), 'DXF 구조 회귀 (HEADER·EOF)');
-      // 펜 전용 셸 — 크롬 숨김/복원
+      // 스케치 = 별도 화면 아님 (피드백 ④ 로 크롬 숨김 정책 폐기 — CAD 화면 위에서 그린다)
       S.SK.strokes = []; S.SK.rev++;
       S.enter();
       const disp = (id) => AW.getComputedStyle(AD.getElementById(id)).display;
-      ok(disp('topbar') === 'none' && disp('side') === 'none' && disp('console') === 'none' && disp('statusBar') === 'none',
-        '★펜 모드 = 앱 크롬 전면 숨김 (드로잉 앱 화면)');
+      ok(disp('topbar') !== 'none' && disp('side') !== 'none' && disp('statusBar') !== 'none',
+        '★스케치 모드에서도 CAD 크롬 유지 (별도 화면 아님)');
       S.exit();
-      ok(disp('topbar') !== 'none' && disp('side') !== 'none', '종료 = CAD 화면 복원');
+      ok(disp('topbar') !== 'none' && disp('side') !== 'none', '종료 후에도 동일');
       // 정리
       if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
       S.loadNow(); reset();
     } else ok(!!S, '(모듈 확인)');
+  }
+
+  // ---------- 피드백 6종 (2026-07-18) ----------
+  group('피드백 6종 — 변환 후 정리 · 터치 · 레이어/브러시 · 스냅 통합 · 커서 명령창');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const S = AW.WEBCAD_SKETCH, BF = AW.WEBCAD_BIMIFY, CP = AW.WEBCAD_CMDPOP;
+    reset();
+    // ⑥ 크롬 제거 + 커서 명령창
+    ok(!!CP, '★커서 명령창 모듈 로드');
+    const disp = (id) => AW.getComputedStyle(AD.getElementById(id)).display;
+    ok(disp('toolbar') === 'none' && disp('console') === 'none', '★왼쪽 도구창·명령 콘솔 제거');
+    AD.body.classList.remove('authLocked');
+    AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: 600, clientY: 300 }));
+    AW.dispatchEvent(new AW.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+    ok(CP.isOpen(), '★스페이스 = 커서 옆 명령창 열림');
+    ok(CP.pop.getBoundingClientRect().right <= 600, '  커서의 왼쪽에 위치');
+    ok(AD.activeElement === AD.getElementById('cmdInput'), '  입력 포커스');
+    CP.hide(); ok(!CP.isOpen(), '닫힘');
+    // ② 터치 — 즉시 반응 CSS
+    eqi(AW.getComputedStyle(AD.getElementById('btnFile')).touchAction, 'manipulation', '★버튼 touch-action=manipulation (더블탭 줌 차단)');
+    // ③ 브러시 3종 + 레이어 연동
+    ok(S && ['pen', 'pencil', 'marker'].every(b => !!AW.WEBCAD_SKETCH), '모듈 확인');
+    if (S && BF) {
+      const key = S.SK.docKey, bak = AW.localStorage.getItem(key);
+      AW.WEBCAD_AI_BRIDGE.ensureLayer('벽', '#cfc7ba'); AW.WEBCAD_AI_BRIDGE.ensureLayer('가구', '#7fb28a');
+      S.SK.strokes.length = 0; S.SK.rev++;
+      const seg = (x1, y1, x2, y2) => Array.from({ length: 25 }, (_, i) => [x1 + (x2 - x1) * i / 24 + Math.sin(i) * 4, y1 + (y2 - y1) * i / 24 + Math.cos(i) * 4, 0.5]);
+      // 레이어 = 의도: '벽' 레이어의 짧은 선(1m 미만이라 규칙으론 가구였을 것)도 벽으로
+      S.SK.strokes.push({ id: 1, color: '#cfc7ba', hw: 5, brush: 'pen', layer: '벽', pts: seg(0, 0, 800, 5) });
+      S.SK.strokes.push({ id: 2, color: '#7fb28a', hw: 5, brush: 'marker', layer: '가구', pts: seg(100, 500, 2500, 520) });
+      S.SK.rev++;
+      const anal = AW.WEBCAD_PREP.analyze(S.SK.strokes);
+      const roles = BF.heuristic(anal);
+      eqi(roles[1], 'wall', '★레이어 이름 = 의도 (벽 레이어 → wall, 규칙보다 우선)');
+      eqi(roles[2], 'furniture', '  가구 레이어 → furniture');
+      ok(anal.shapes[0].layer === '벽', '전처리 요약에 레이어 전달');
+      // ① 변환 후 스케치 정리 + 스케치 undo 복원
+      S.recognize();
+      const nB = C.state.entities.length;
+      const nAdd = S.commitRecog();
+      ok(nAdd >= 2 && C.state.entities.length === nB + nAdd, 'CAD 생성');
+      eqi(S.SK.strokes.length, 0, '★변환 후 스케치 선 자동 정리 (도면과 안 겹침)');
+      S.undoSk();
+      eqi(S.SK.strokes.length, 2, '  스케치 Ctrl+Z = 손그림 복원');
+      // ④ 통합: 스케치 모드가 크롬을 숨기지 않음 + CAD 끝점 스냅
+      S.SK.strokes.length = 0; S.SK.rev++;
+      S.enter(); S.syncNow();
+      ok(disp('topbar') !== 'none' && disp('side') !== 'none', '★스케치는 별도 화면이 아니다 (CAD 화면 위에서)');
+      C.state.entities.push({ id: C.state.nextId++, type: 'LINE', layer: '0', x1: 0, y1: 0, x2: 3000, y2: 0 });
+      const skcv2 = AD.getElementById('skcv');
+      const rr = skcv2.getBoundingClientRect();
+      const p0 = S.w2s(3000, 0);   // 선 끝점의 화면 좌표
+      const pd2 = (type, x, y) => skcv2.dispatchEvent(new AW.PointerEvent(type, { pointerId: 77, pointerType: 'pen', pressure: 0.5,
+        clientX: rr.left + x, clientY: rr.top + y, buttons: 1, button: 0, bubbles: true, cancelable: true, isPrimary: true }));
+      pd2('pointerdown', p0[0] + 5, p0[1] - 4);
+      pd2('pointermove', p0[0] + 150, p0[1] + 80);
+      pd2('pointerup', p0[0] + 150, p0[1] + 80);
+      const st2 = S.SK.strokes[0];
+      ok(st2 && Math.abs(st2.pts[0][0] - 3000) < 0.6 && Math.abs(st2.pts[0][1]) < 0.6, '★스트로크 시작점이 CAD 끝점에 스냅');
+      // 브러시 상수 계약
+      ok(AW.WEBCAD_SKETCH.SK && st2.brush, '스트로크에 브러시 기록');
+      S.exit();
+      S.SK.strokes.length = 0; S.SK.rev++;
+      if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
+      S.loadNow();
+    }
+    reset();
   }
 
   // ---------- 채팅 복사 · 팝업 드래그 ----------

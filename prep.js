@@ -107,7 +107,7 @@ function fitStroke(stroke, opts) {
   const raw = stroke.pts.map(p => [p[0], p[1]]);
   const avgP = stroke.pts.reduce((s, p) => s + (p[2] || 0.5), 0) / stroke.pts.length;
   const widthMM = Math.round(stroke.hw * 2 * (0.25 + 1.5 * avgP) * 10) / 10;
-  const base = { strokeId: stroke.id, color: stroke.color, widthMM };
+  const base = { strokeId: stroke.id, color: stroke.color, widthMM, layer: stroke.layer || '' };
   const bb = bboxOf(raw);
   if (raw.length < 2 || bb.diag < opts.dotMax) return { ...base, kind: 'dot', at: [(bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2], bbox: bb };
   const eps = Math.min(80, Math.max(1, bb.diag * 0.02));
@@ -369,7 +369,7 @@ function analyze(strokes, userOpts) {
   const summary = {
     unit: 'mm',
     shapes: shapes.map(s => ({
-      kind: s.kind, color: s.color, strokeWidthMM: s.widthMM, closed: !!s.closed,
+      kind: s.kind, color: s.color, layer: s.layer || undefined, strokeWidthMM: s.widthMM, closed: !!s.closed,
       lengthMM: s.lengthMM ? Math.round(s.lengthMM) : undefined,
       sizeMM: s.bbox ? [Math.round(s.bbox.w), Math.round(s.bbox.h)] : undefined,
       centerMM: s.bbox ? [Math.round(s.bbox.x0 + s.bbox.w / 2), Math.round(s.bbox.y0 + s.bbox.h / 2)] : undefined,

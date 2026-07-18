@@ -189,6 +189,14 @@ function vpLabelEl(i) {
       const w = v3.views[vi];
       if (w && (w.name in ELEV_YAW)) cycleElev(vi);
     });
+    // 더블클릭 — 이 뷰를 메인으로 확대 ↔ 4분할 복귀 (라이노 뷰 제목 더블클릭과 동일)
+    el.addEventListener('dblclick', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const vi = el._vi; if (vi == null || !v3) return;
+      if (v3.act !== vi) { saveVp(); v3.act = vi; loadVp(vi); }
+      v3.quad = !v3.quad;
+      render3D(); saveV3Layout();
+    });
     // 우클릭 — 이름표 밑에 표시 모드 선택창
     el.addEventListener('contextmenu', (ev) => {
       ev.preventDefault(); ev.stopPropagation();

@@ -61,8 +61,12 @@ function heuristic(analysis) {
     return ends.some(p => lines.some(l => l !== s && (dist(p, l.a) <= tol || dist(p, l.b) <= tol
       || perpInfo(p, l.a[0], l.a[1], l.b[0], l.b[1]).d <= tol)));
   };
+  // 레이어 이름이 곧 의도 — 스케치 레이어가 지정돼 있으면 최우선 (AI 도 규칙도 필요 없다)
+  const LAYER_ROLE = { '벽': 'wall', '기둥': 'column', '가구': 'furniture', '문': 'door',
+    '창': 'window', '개구부': 'door', '슬래브': 'wall', '치수': 'ignore', '문자': 'ignore', '밑그림': 'ignore' };
   for (const s of shapes) {
     let role = 'furniture';
+    if (s.layer && LAYER_ROLE[s.layer]) { roles[s.strokeId] = s.kind === 'dot' ? 'ignore' : LAYER_ROLE[s.layer]; continue; }
     if (s.kind === 'dot') role = 'ignore';
     else if (s.kind === 'circle') role = s.r <= 400 ? 'column' : (s.r >= 1000 ? 'wall' : 'furniture'); // 큰 원 = 원형 방(곡선 벽)
     else if (s.kind === 'arc') {
