@@ -3117,6 +3117,12 @@ function tests(){
       // 마우스는 영향 없음
       AW.dispatchEvent(new AW.PointerEvent('pointermove', { pointerType: 'mouse', buttons: 0, clientX: r.left + 220, clientY: r.top + 160, bubbles: true }));
       ok(PH.dot.style.display === 'none', '마우스 이동은 펜 커서를 만들지 않음');
+      // 진단 (hovertest) — 이벤트 통계 + 패널 토글
+      ok(PH.stats && typeof PH.stats.hover === 'number' && typeof C.INSTANT_CMDS.hovertest === 'function', '★hovertest 진단 등록 (이벤트 통계)');
+      PH.diag();
+      ok([...AD.querySelectorAll('div')].some(d => d.textContent.includes('펜슬 호버 진단')), '  진단 패널 열림');
+      PH.diag();
+      ok(![...AD.querySelectorAll('div')].some(d => d.style.position === 'fixed' && d.textContent.includes('펜슬 호버 진단')), '  다시 실행 = 닫힘');
     }
     reset();
   }

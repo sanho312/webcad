@@ -10805,6 +10805,10 @@ function selectSimilar() {
 }
 // 도구 전환 없이 즉시 실행되는 명령들
 const INSTANT_CMDS = {
+  hovertest: () => { // 펜슬 호버 진단 (hover.js) — 이벤트가 오는지 기기에서 직접 확인
+    if (window.WEBCAD_PENHOVER && window.WEBCAD_PENHOVER.diag) window.WEBCAD_PENHOVER.diag();
+    else logLine('  호버 모듈이 로드되지 않았습니다.', 'warn');
+  },
   explode: cmdExplode,
   join: cmdJoin,
   block: cmdBlock,
@@ -11234,6 +11238,7 @@ const TOOL_KO = {
 };
 
 const CMD_ALIASES = {
+  hovertest: 'hovertest', 호버테스트: 'hovertest',
   line: 'line', l: 'line', pline: 'pline', pl: 'pline', polyline: 'pline',
   spline: 'spline', spl: 'spline', 자유곡선: 'spline', 스플라인: 'spline',
   curve: 'spline', interpcrv: 'spline', // 라이노에서 자유곡선을 부르는 이름
