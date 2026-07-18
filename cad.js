@@ -13206,6 +13206,17 @@ function buildDXFText() {
       for (let i = 0; i < js.length; i += 200) g(999, 'WCX' + js.slice(i, i + 200));
     }
   }
+  // 손그림 스케치(Sketch Layer) — 새 철학: 손그림은 파일과 함께 산다.
+  // WCX 와 같은 999 주석 방식(WSK) — 다른 CAD 는 주석을 무시하므로 호환 무해.
+  // 스트로크가 없으면 아무것도 쓰지 않는다 (기존 파일 출력 완전 불변).
+  try {
+    const skS = window.WEBCAD_SKETCH && window.WEBCAD_SKETCH.SK.strokes;
+    if (skS && skS.length) {
+      const js2 = JSON.stringify({ v: 1, strokes: skS });
+      if (js2.length < 2e6) for (let i = 0; i < js2.length; i += 200) g(999, 'WSK' + js2.slice(i, i + 200));
+      else logLine('  스케치가 너무 커서 DXF 에 담지 못했습니다 (브라우저 저장은 유지).', 'warn');
+    }
+  } catch (eSk) { console.warn('스케치 DXF 기록 실패(무시):', eSk); }
 
   // HEADER — AC1021(R2007): UTF-8이라 한글 레이어명 안전
   g(0, 'SECTION'); g(2, 'HEADER');
@@ -13770,6 +13781,14 @@ function loadDXF(text) {
     // 레이어 확정 이후에 호출해야 한다 — 이미지 복원이 레이어를 참조/추가하는데,
     // 앞서 호출하면 바로 아래 state.layers 대입에 덮여 사라진다.
     try { applyWcxExt(text); } catch (e2) { console.warn('WCX 확장 복원 실패(무시):', e2); }
+    try { // 손그림 스케치 복원 (999 WSK) — 파일에 담긴 스케치가 있으면 Sketch Layer 로
+      let skJs = '';
+      for (const m of text.matchAll(/^\s*999\s*\r?\n(WSK[^\r\n]*)/gm)) skJs += m[1].slice(3);
+      if (skJs && window.WEBCAD_SKETCH) {
+        const d = JSON.parse(skJs);
+        if (d && Array.isArray(d.strokes)) window.WEBCAD_SKETCH.importStrokes(d.strokes);
+      }
+    } catch (e3) { console.warn('스케치 복원 실패(무시):', e3); }
     state.blocks = result.blocks || {}; insertName = null;
     state.nextId = state.entities.reduce((m, e) => Math.max(m, e.id || 0), 0) + 1;
     state.selection.clear();

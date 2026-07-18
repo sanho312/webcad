@@ -2876,6 +2876,69 @@ function tests(){
     }
   }
 
+  // ---------- 스케치 4단계: 창 규칙 · 곡선 벽 · DXF 왕복 · 펜 셸 ----------
+  group('스케치 4단계 — 창 규칙 · 곡선 벽(호·원) · 스케치 DXF 왕복 · 펜 전용 셸');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const S = AW.WEBCAD_SKETCH, P = AW.WEBCAD_PREP, BF = AW.WEBCAD_BIMIFY;
+    if (S && P && BF) {
+      reset();
+      const key = S.SK.docKey, bak = AW.localStorage.getItem(key);
+      const seg = (x1, y1, x2, y2) => Array.from({ length: 25 }, (_, i) => [x1 + (x2 - x1) * i / 24, y1 + (y2 - y1) * i / 24, 0.5]);
+      const jig = (pts, s2) => pts.map((p, i) => [p[0] + Math.sin(i * 2 + s2) * 6, p[1] + Math.cos(i * 1.3 + s2) * 6, 0.5]);
+      // 창 규칙 + 곡선 벽 분류
+      const strokes = [
+        { id: 1, color: '#e6e1d3', hw: 8, pts: jig(seg(0, 0, 6000, 20), 1) },
+        { id: 2, color: '#e6e1d3', hw: 8, pts: jig(seg(6020, 30, 5990, 4000), 2) },
+        { id: 3, color: '#e6e1d3', hw: 8, pts: jig(seg(5980, 4030, 20, 4010), 3) },
+        { id: 4, color: '#e6e1d3', hw: 8, pts: jig(seg(-10, 3990, 10, 30), 4) },
+        { id: 5, color: '#3a7bd5', hw: 6, pts: jig(seg(1500, 5, 2700, 12), 5) },   // 벽 몸통 위 짧은 평행선
+      ];
+      const bigArc = []; for (let i = 0; i <= 24; i++) { const t2 = Math.PI + i / 24 * Math.PI / 2; bigArc.push([9000 + Math.cos(t2) * 3000, 2000 + Math.sin(t2) * 3000, 0.5]); }
+      strokes.push({ id: 6, color: '#e6e1d3', hw: 8, pts: jig(bigArc, 6) });
+      const bigCir = []; for (let i = 0; i <= 40; i++) { const t2 = i / 40 * Math.PI * 2.05; bigCir.push([12000 + Math.cos(t2) * 1500, 5000 + Math.sin(t2) * 1500, 0.5]); }
+      strokes.push({ id: 7, color: '#e6e1d3', hw: 8, pts: jig(bigCir, 7) });
+      const anal = P.analyze(strokes);
+      const roles = BF.heuristic(anal);
+      eqi(roles[5], 'window', '★벽 위 짧은 평행선 → 창');
+      eqi(roles[6], 'wall', '★큰 호(1.5m+) → 곡선 벽');
+      eqi(roles[7], 'wall', '★큰 원(r≥1m) → 원형 방 벽');
+      const before = C.state.entities.length;
+      const counts = BF.build(anal, roles);
+      eqi(counts.window, 1, '창 1 생성');
+      const win = C.state.entities.slice(before).find(e => e.bim && e.bim.kind === 'opening' && e.bim.ot === 'window');
+      ok(win && win.bim.sill === 900, '  창 sill 900');
+      ok(counts.wall >= 30, '★곡선 벽 테셀레이션 (벽 분절 ' + counts.wall + ')');
+      eqi(counts.slab, 2, '★슬래브 2 — 사각 방 + 원형 방(다각 근사)');
+      C.state.entities.length = before; // 정리
+      // 스케치 DXF 왕복 (999 WSK)
+      S.SK.strokes = [
+        { id: 1, color: '#e6e1d3', hw: 3, pts: [[0, 0, 0.3], [100.5, 50.2, 0.8]] },
+        { id: 2, color: '#e04f4f', hw: 2, pts: [[10, 10, 0.5], [20, 30, 0.6], [40, 44, 0.7]] },
+      ];
+      S.SK.rev++;
+      const dxf = C.buildDXFText();
+      ok(/999\s*\r?\nWSK/.test(dxf), '★스트로크가 있으면 DXF 에 999 WSK 블록');
+      S.SK.strokes = []; S.SK.rev++;
+      ok(!/999\s*\r?\nWSK/.test(C.buildDXFText()), '★없으면 WSK 없음 — 기존 파일 출력 불변');
+      ok(C.loadDXF(dxf), 'DXF 불러오기 성공');
+      eqi(S.SK.strokes.length, 2, '★스케치 복원 (파일과 함께 산다)');
+      ok(S.SK.strokes[0].pts[1][2] === 0.8 && S.SK.strokes[1].color === '#e04f4f', '  필압·색 보존');
+      ok(/0\s*\r?\nSECTION\s*\r?\n\s*2\s*\r?\nHEADER/.test(dxf) && /0\s*\r?\nEOF/.test(dxf), 'DXF 구조 회귀 (HEADER·EOF)');
+      // 펜 전용 셸 — 크롬 숨김/복원
+      S.SK.strokes = []; S.SK.rev++;
+      S.enter();
+      const disp = (id) => AW.getComputedStyle(AD.getElementById(id)).display;
+      ok(disp('topbar') === 'none' && disp('side') === 'none' && disp('console') === 'none' && disp('statusBar') === 'none',
+        '★펜 모드 = 앱 크롬 전면 숨김 (드로잉 앱 화면)');
+      S.exit();
+      ok(disp('topbar') !== 'none' && disp('side') !== 'none', '종료 = CAD 화면 복원');
+      // 정리
+      if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
+      S.loadNow(); reset();
+    } else ok(!!S, '(모듈 확인)');
+  }
+
   // ---------- 채팅 복사 · 팝업 드래그 ----------
   group('채팅 복사 — 텍스트 선택 중 Ctrl+C 는 브라우저 기본 복사에 양보 (개체 복사가 가로채지 않음)');
   {

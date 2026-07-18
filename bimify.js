@@ -64,16 +64,23 @@ function heuristic(analysis) {
   for (const s of shapes) {
     let role = 'furniture';
     if (s.kind === 'dot') role = 'ignore';
-    else if (s.kind === 'circle') role = s.r <= 400 ? 'column' : 'furniture';
+    else if (s.kind === 'circle') role = s.r <= 400 ? 'column' : (s.r >= 1000 ? 'wall' : 'furniture'); // 큰 원 = 원형 방(곡선 벽)
     else if (s.kind === 'arc') {
-      // 문 호: 중심(경첩)과 끝점이 벽 후보 선 근처
+      // 문 호: 중심(경첩)과 끝점이 벽 후보 선 근처. 문이 아니면서 긴 호(1.5m+) = 곡선 벽
       const c = [s.cx, s.cy];
-      role = (nearLine(c, 2) || (nearLine(s.a, 1.5) && nearLine(s.b, 3))) ? 'door' : 'furniture';
+      if (nearLine(c, 2) || (nearLine(s.a, 1.5) && nearLine(s.b, 3))) role = 'door';
+      else role = (s.lengthMM || 0) >= 1500 ? 'wall' : 'furniture';
     } else if (s.kind === 'rect' || s.kind === 'polygon' || (s.kind === 'curve' && s.closed)) {
       const area = polyArea(s.pts);
       role = area >= 4e6 ? 'wall' : (area <= 0.16e6 ? 'column' : 'furniture');
     } else if (s.kind === 'line' || s.kind === 'polyline') {
-      role = ((s.lengthMM || 0) >= 1000 && (connected(s) || analysis.regions.length)) ? 'wall' : 'furniture';
+      // 창: 벽 후보 선의 '몸통 위'에 올린 짧은 평행선 (두 끝점 모두 다른 긴 선 근처)
+      const isWin = s.kind === 'line' && s.lengthMM >= 300 && s.lengthMM <= 2500 && lines.some(l => l !== s
+        && (l.lengthMM || 0) > s.lengthMM * 1.8
+        && perpInfo(s.a, l.a[0], l.a[1], l.b[0], l.b[1]).d <= tol
+        && perpInfo(s.b, l.a[0], l.a[1], l.b[0], l.b[1]).d <= tol);
+      if (isWin) role = 'window';
+      else role = ((s.lengthMM || 0) >= 1000 && (connected(s) || analysis.regions.length)) ? 'wall' : 'furniture';
     } else role = 'furniture';                     // 열린 자유곡선
     roles[s.strokeId] = role;
   }
@@ -160,8 +167,28 @@ function build(analysis, roles, opts) {
       if (s.kind === 'line') addWallSeg(s.a, s.b);
       else if (s.kind === 'rect' || s.kind === 'polygon')
         for (let i = 0; i < s.pts.length; i++) addWallSeg(s.pts[i], s.pts[(i + 1) % s.pts.length]);
-      else if (s.kind === 'polyline' || s.kind === 'curve')
+      else if (s.kind === 'polyline' || s.kind === 'curve') {
         for (let i = 1; i < s.pts.length; i++) addWallSeg(s.pts[i - 1], s.pts[i]);
+        if (s.closed) addWallSeg(s.pts[s.pts.length - 1], s.pts[0]);   // 닫힌 자유곡선 벽은 마지막 변도
+      } else if (s.kind === 'arc') {                                   // 곡선 벽: 호를 짧은 벽으로 테셀레이션
+        const sweep = ((s.endAngle - s.startAngle) % 360 + 360) % 360 || 360;
+        const n = Math.min(48, Math.max(4, Math.ceil(sweep / 12)));
+        let prev = null;
+        for (let i = 0; i <= n; i++) {
+          const a = (s.startAngle + sweep * i / n) * Math.PI / 180;
+          const p = [s.cx + Math.cos(a) * s.r, s.cy + Math.sin(a) * s.r];
+          if (prev) addWallSeg(prev, p);
+          prev = p;
+        }
+      } else if (s.kind === 'circle') {                                // 원형 방
+        let prev = null;
+        for (let i = 0; i <= 24; i++) {
+          const a = i / 24 * 2 * Math.PI;
+          const p = [s.cx + Math.cos(a) * s.r, s.cy + Math.sin(a) * s.r];
+          if (prev) addWallSeg(prev, p);
+          prev = p;
+        }
+      }
       continue;
     }
     if (role === 'door' || role === 'window') { later.push([role, s]); continue; }
@@ -223,10 +250,15 @@ function build(analysis, roles, opts) {
       : { kind: 'opening', ot: 'window', h: 1200, sill: 900, t: o.wallT };
     counts[role]++;
   }
-  // 바닥 슬래브 — 닫힌 영역마다 (프로그램 자동, AI 불필요)
+  // 바닥 슬래브 — 닫힌 영역마다 (프로그램 자동, AI 불필요). 원형 방은 다각 근사.
   for (const r of analysis.regions) {
-    if (!r.pts || r.pts.length < 3) continue;
-    const e = br.addEntity({ type: 'LWPOLYLINE', layer: '슬래브', points: r.pts.map(p => [p[0], p[1]]), closed: true });
+    let pts = r.pts;
+    if (!pts && r.circle && roles[(r.shapeIds || [])[0]] === 'wall') {
+      pts = [];
+      for (let i = 0; i < 24; i++) { const a = i / 24 * 2 * Math.PI; pts.push([r.circle.cx + Math.cos(a) * r.circle.r, r.circle.cy + Math.sin(a) * r.circle.r]); }
+    }
+    if (!pts || pts.length < 3) continue;
+    const e = br.addEntity({ type: 'LWPOLYLINE', layer: '슬래브', points: pts.map(p => [p[0], p[1]]), closed: true });
     e.bim = { kind: 'slab', t: o.slabT, top: 0 };
     counts.slab++;
   }

@@ -144,12 +144,30 @@ function syncNow() {
   skcv.style.display = hidden ? 'none' : '';
   redraw();
 }
+let pendingImport = null;   // DXF 에서 온 스케치 — 파일명 확정(문서 키 전환) 시 우선 적용
+function importStrokes(arr) {
+  const deep = JSON.parse(JSON.stringify(arr));
+  pendingImport = { strokes: deep, until: performance.now() + 3000 };
+  SK.strokes = JSON.parse(JSON.stringify(deep));   // 이름이 안 바뀌는 열기(같은 키)도 즉시 반영
+  SK.nextId = Math.max(0, ...SK.strokes.map(s => s.id || 0)) + 1;
+  SK.undo.length = 0; SK.redo.length = 0;
+  cancelLive(); SK.rev++; saveNow();
+}
 function tick() {
   const v = V();
   const r = cvRect();
   const hidden = cv.style.display === 'none';
   const dk = 'webcad_sketch::' + ((B.getDocName && B.getDocName()) || '무제');
-  if (dk !== SK.docKey) { SK.docKey = dk; loadNow(); }
+  if (dk !== SK.docKey) {
+    SK.docKey = dk;
+    if (pendingImport && performance.now() < pendingImport.until) {
+      // DXF 열기 직후 파일명이 바뀐 경우 — localStorage 복원이 파일 스케치를 덮지 않게
+      SK.strokes = pendingImport.strokes; pendingImport = null;
+      SK.nextId = Math.max(0, ...SK.strokes.map(s => s.id || 0)) + 1;
+      SK.undo.length = 0; SK.redo.length = 0;
+      SK.rev++; saveNow();
+    } else { pendingImport = null; loadNow(); }
+  }
   const sig = [v.x, v.y, v.scale, r.x, r.y, r.w, r.h, hidden, SK.visible, SK.rev,
     window.devicePixelRatio || 1].join('|');
   if (sig !== lastSig) { lastSig = sig; syncNow(); }
@@ -475,22 +493,33 @@ async function buildBuilding() {
   } finally { building = false; }
 }
 
-// ---------- 모드 전환 ----------
+// ---------- 모드 전환 — 펜 전용 셸 (Procreate 문법: 크롬을 치우고 종이만) ----------
+// CAD 는 백엔드로 물러난다. 상단바·도구·명령창·속성패널·상태바 전부 숨김 — 드로잉 앱 화면.
+const penCss = document.createElement('style');
+penCss.textContent = `
+  body.skPen #topbar, body.skPen #toolbar, body.skPen #console,
+  body.skPen #side, body.skPen #statusBar { display: none !important; }
+`;
+document.head.appendChild(penCss);
 function enter() {
   if (SK.on) return;
   if (B.is3D && B.is3D()) { const b = document.getElementById('vwPlan'); if (b) b.click(); } // 스케치는 평면 위에서
   SK.on = true;
+  document.body.classList.add('skPen');
+  window.dispatchEvent(new Event('resize'));       // 캔버스가 전체 화면을 다시 차지하게
   skcv.style.pointerEvents = 'auto';
   skcv.style.cursor = 'crosshair';
   bar.style.display = 'flex';
   entryBtn.style.background = 'var(--accent)'; entryBtn.style.color = '#fff';
-  B.logLine && B.logLine('  ✏️ 스케치 모드 — 펜: 그리기 · 두 손가락: 이동/확대 · Esc: 완료', 'info');
+  B.logLine && B.logLine('  ✏️ 스케치 모드 — 펜: 그리기 · 두 손가락: 이동/확대 · Esc/완료: CAD 화면으로', 'info');
 }
 function exit() {
   if (!SK.on) return;
   SK.on = false;
   cancelLive();
   closePreview();
+  document.body.classList.remove('skPen');
+  window.dispatchEvent(new Event('resize'));
   skcv.style.pointerEvents = 'none';
   bar.style.display = 'none';
   entryBtn.style.background = ''; entryBtn.style.color = '';
@@ -640,5 +669,5 @@ requestAnimationFrame(tick);
 
 // 외부/테스트 훅 — Phase 2 전처리 엔진이 이 데이터를 읽는다
 window.WEBCAD_SKETCH = { SK, enter, exit, setTool, undoSk, redoSk, redraw, syncNow, saveNow, loadNow, w2s, s2w,
-  recognize, commitRecog, closePreview, getPreview: () => preview, buildBuilding, fitView };
+  recognize, commitRecog, closePreview, getPreview: () => preview, buildBuilding, fitView, importStrokes };
 })();
