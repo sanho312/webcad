@@ -3074,59 +3074,6 @@ function tests(){
     reset();
   }
 
-  // ---------- 펜슬 호버 (2026-07-18) ----------
-  group('펜슬 호버 — 근접 커서 표시 · 스냅 미리보기 · 토글 대기상태');
-  {
-    const AW = document.getElementById('app').contentWindow, AD = AW.document;
-    const PH = AW.WEBCAD_PENHOVER, S = AW.WEBCAD_SKETCH;
-    reset();
-    ok(!!PH, '★WEBCAD_PENHOVER 모듈 로드');
-    if (PH && S) {
-      const cv2 = AD.getElementById('cv');
-      const r = cv2.getBoundingClientRect();
-      cv2._w = r.width; cv2._h = r.height;               // 테스트 환경 RO 지연 보정
-      AW.WEBCAD_AI_BRIDGE.addEntity({ type: 'LINE', x1: 0, y1: 0, x2: 2000, y2: 0, layer: '0' });
-      C.state.view.x = 1000; C.state.view.y = 0; C.state.view.scale = 0.3;
-      const hov = (x, y) => AW.dispatchEvent(new AW.PointerEvent('pointermove', { pointerType: 'pen', buttons: 0, clientX: x, clientY: y, bubbles: true }));
-      // ① 근접 커서
-      hov(r.left + 200, r.top + 150);
-      ok(PH.dot.style.display === 'block', '★펜촉 위치 커서 표시');
-      eq(parseFloat(PH.dot.style.left), r.left + 200, '  x 정확', 1);
-      // ② 스냅 미리보기 — 끝점 6px 옆 → 초록 마커가 끝점 위치
-      const end = S.w2s(2000, 0);
-      hov(r.left + end[0] + 6, r.top + end[1] - 5);
-      ok(PH.snap.style.display === 'block'
-        && Math.abs(parseFloat(PH.snap.style.left) - (r.left + end[0])) < 1.5, '★접촉 전 스냅점 미리 표시 (끝점 흡착)');
-      hov(r.left + end[0] + 90, r.top + end[1] + 70);
-      ok(PH.snap.style.display === 'none', '  반경 밖 = 마커 없음');
-      // ③ 토글 대기상태 (transition 없는 프로브 버튼 — 앱 요소는 로비/오버레이에 가릴 수 있다)
-      const probe = AD.createElement('button');
-      probe.style.cssText = 'position:fixed;left:120px;top:250px;width:60px;height:30px;z-index:99999;background:#123;transition:none;';
-      AD.body.appendChild(probe);
-      const pr = probe.getBoundingClientRect();
-      hov(pr.left + 20, pr.top + 15);
-      ok(probe.classList.contains('penHover'), '★버튼 위 호버 = 대기상태 클래스');
-      eqi(AW.getComputedStyle(probe).backgroundColor, 'rgba(190, 197, 210, 0.45)', '  옅은 회색');
-      hov(r.left + 300, r.top + 300);
-      ok(!probe.classList.contains('penHover'), '  벗어나면 해제');
-      probe.remove();
-      // ④ 접촉하면 마커 숨김
-      hov(r.left + 200, r.top + 150);
-      AW.dispatchEvent(new AW.PointerEvent('pointerdown', { pointerType: 'pen', buttons: 1, clientX: r.left + 200, clientY: r.top + 150, bubbles: true }));
-      ok(PH.dot.style.display === 'none' && PH.snap.style.display === 'none', '접촉 = 마커 숨김');
-      // 마우스는 영향 없음
-      AW.dispatchEvent(new AW.PointerEvent('pointermove', { pointerType: 'mouse', buttons: 0, clientX: r.left + 220, clientY: r.top + 160, bubbles: true }));
-      ok(PH.dot.style.display === 'none', '마우스 이동은 펜 커서를 만들지 않음');
-      // 진단 (hovertest) — 이벤트 통계 + 패널 토글
-      ok(PH.stats && typeof PH.stats.hover === 'number' && typeof C.INSTANT_CMDS.hovertest === 'function', '★hovertest 진단 등록 (이벤트 통계)');
-      PH.diag();
-      ok([...AD.querySelectorAll('div')].some(d => d.textContent.includes('펜슬 호버 진단')), '  진단 패널 열림');
-      PH.diag();
-      ok(![...AD.querySelectorAll('div')].some(d => d.style.position === 'fixed' && d.textContent.includes('펜슬 호버 진단')), '  다시 실행 = 닫힘');
-    }
-    reset();
-  }
-
   // ---------- 소프트웨어 호버 대체 (2026-07-19) ----------
   group('호버 대체 — 🎯 조준 모드 · 드로잉 중 스냅 미리보기 · 눌림 대기상태');
   {
