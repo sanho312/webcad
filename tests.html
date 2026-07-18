@@ -2728,6 +2728,93 @@ function tests(){
     }
   }
 
+  // ---------- 전처리 엔진 (새 철학 Phase 2, AI 0) ----------
+  group('전처리 엔진 — 손그림 → 직선·원·호·사각 인식 + 직교 정리 + 닫힌 영역 + 요약');
+  {
+    // 손그림 시뮬: 미세 흔들림(±8mm) + 실제 손이 내는 끝점 벌어짐(gap)을 재현한다.
+    const AW = document.getElementById('app').contentWindow;
+    const P = AW.WEBCAD_PREP;
+    ok(!!P, '★WEBCAD_PREP 모듈 로드');
+    if (P) {
+      let sid = 1;
+      const mk = (pts) => ({ id: sid++, color: '#e6e1d3', hw: 3,
+        pts: pts.map((p, i) => [p[0] + Math.sin(i * 1.7 + sid) * 8, p[1] + Math.cos(i * 1.1 + sid * 2) * 8, 0.5]) });
+      const seg = (x1, y1, x2, y2, n) => { n = n || 30; return Array.from({ length: n + 1 }, (_, i) => [x1 + (x2 - x1) * i / n, y1 + (y2 - y1) * i / n]); };
+      // 직선 + 직교 정리
+      let a = P.analyze([mk(seg(0, 0, 2000, 30))]);
+      eqi(a.shapes[0].kind, 'line', '★흔들리는 선 → 직선');
+      ok(a.shapes[0].ortho && Math.abs(a.shapes[0].a[1] - a.shapes[0].b[1]) < 0.01, '★수평 직교 정리');
+      eq(a.shapes[0].lengthMM, 2000, '길이 근사', 60);
+      // 한 획 사각형 (끝 gap 120mm) → rect + 자기 영역
+      const sq = [...seg(0, 0, 4000, 20, 25), ...seg(4000, 20, 3980, 3000, 20), ...seg(3980, 3000, 10, 2980, 25), ...seg(10, 2980, 20, 120, 20)];
+      a = P.analyze([mk(sq)]);
+      eqi(a.shapes[0].kind, 'rect', '★한 획 사각형 → rect (직교 스냅)');
+      eqi(a.regions.length, 1, '  자기 닫힘 영역 1');
+      eq(a.regions[0].areaMM2 / 1e6, 12, '  면적 ≈ 12㎡ (4×3m)', 0.8);
+      // 원
+      const cir = Array.from({ length: 40 }, (_, i) => { const t = i / 39 * Math.PI * 2.05; return [Math.cos(t) * 800, Math.sin(t) * 800]; });
+      a = P.analyze([mk(cir)]);
+      eqi(a.shapes[0].kind, 'circle', '★원 인식');
+      eq(a.shapes[0].r, 800, '  반지름', 40);
+      // 호 (반원)
+      const half = Array.from({ length: 20 }, (_, i) => { const t = i / 19 * Math.PI; return [Math.cos(t) * 600, Math.sin(t) * 600]; });
+      a = P.analyze([mk(half)]);
+      eqi(a.shapes[0].kind, 'arc', '★반원 → 호');
+      // L자 → 꺾은선 (호로 오인 금지 — 90° 꺾임)
+      a = P.analyze([mk([...seg(0, 0, 2000, 10), ...seg(2000, 10, 2020, 1500)])]);
+      eqi(a.shapes[0].kind, 'polyline', 'L자 → 꺾은선 (호 오인 없음)');
+      // 별도 4획 방 → 끝점 병합으로 닫힌 영역
+      const st4 = [mk(seg(0, 0, 3950, 25)), mk(seg(4010, 60, 3980, 2960)), mk(seg(3950, 3010, 40, 2990)), mk(seg(-20, 2950, 15, 55))];
+      a = P.analyze(st4);
+      ok(a.shapes.every(s => s.kind === 'line'), '4획 전부 직선 (호 오인 없음)');
+      eqi(a.regions.length, 1, '★4획 끝점 병합 → 닫힌 영역 1');
+      eq(a.regions[0].areaMM2 / 1e6, 11.8, '  면적 ≈ 12㎡', 0.9);
+      // T자 칸막이 → 두 방 (몸통 접합 분할)
+      a = P.analyze([...st4.map(s => ({ ...s })), mk(seg(2000, 20, 1990, 2985))]);
+      eqi(a.regions.length, 2, '★T자 칸막이 → 닫힌 영역 2 (몸통 접합 분할)');
+      eq(a.regions.reduce((x, r) => x + r.areaMM2, 0) / 1e6, 11.7, '  두 방 면적 합', 0.9);
+      // 구조화 요약 — Phase 3 에서 AI 에 보낼 데이터 (이미지 없음)
+      ok(a.summary && a.summary.unit === 'mm' && a.summary.shapes.length === 5 && a.summary.regions.length === 2,
+        '★구조화 요약 생성 (unit·shapes·regions)');
+      ok(JSON.stringify(a.summary).length < 2000, '  요약은 콤팩트 (이미지 전송 대비 수백 토큰)');
+    }
+  }
+
+  group('스케치 ✨ 인식 UI — 미리보기 → CAD 만들기 (손그림 보존)');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const S = AW.WEBCAD_SKETCH, C2 = T;
+    if (S && AW.WEBCAD_PREP) {
+      reset();
+      const key = S.SK.docKey, bak = AW.localStorage.getItem(key);
+      S.SK.strokes.length = 0; S.SK.rev++;
+      // 프로그램적으로 스트로크 주입 (월드 mm)
+      const jig = (pts) => pts.map((p, i) => [p[0] + Math.sin(i * 2.1) * 6, p[1] + Math.cos(i * 1.3) * 6, 0.5]);
+      const seg = (x1, y1, x2, y2) => Array.from({ length: 25 }, (_, i) => [x1 + (x2 - x1) * i / 24, y1 + (y2 - y1) * i / 24]);
+      S.SK.strokes.push(
+        { id: 9001, color: '#e6e1d3', hw: 10, pts: jig(seg(0, 0, 4000, 20)) },
+        { id: 9002, color: '#e6e1d3', hw: 10, pts: jig(seg(4020, 40, 3990, 2970)) },
+        { id: 9003, color: '#e6e1d3', hw: 10, pts: jig(seg(3960, 3010, 30, 2990)) },
+        { id: 9004, color: '#e6e1d3', hw: 10, pts: jig(seg(-10, 2960, 10, 40)) });
+      S.SK.rev++;
+      const pv = S.recognize();
+      ok(!!pv && pv.shapes.length === 4, '★인식 실행 → 도형 4');
+      eqi(pv.regions.length, 1, '  닫힌 영역 1');
+      ok(AD.getElementById('skInfo').style.display === 'flex', '결과 칩 표시');
+      const before = C2.state.entities.length;
+      const n = S.commitRecog();
+      eqi(n, 4, '★CAD 만들기 → 개체 4 생성');
+      ok(C2.state.entities.slice(before).every(e => e.layer === '스케치 인식'), "  '스케치 인식' 레이어");
+      ok(!!C2.state.layers.find(l => l.name === '스케치 인식'), '  레이어 자동 생성');
+      eqi(S.SK.strokes.length, 4, '★손그림은 그대로 남는다 (Sketch Layer 보존)');
+      ok(!S.getPreview(), '커밋 후 미리보기 해제');
+      // 정리
+      S.SK.strokes.length = 0; S.SK.rev++;
+      if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
+      S.loadNow(); reset();
+    } else ok(!!S, '(모듈 없음 — 로드만 확인)');
+  }
+
   // ---------- 채팅 복사 · 팝업 드래그 ----------
   group('채팅 복사 — 텍스트 선택 중 Ctrl+C 는 브라우저 기본 복사에 양보 (개체 복사가 가로채지 않음)');
   {

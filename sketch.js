@@ -77,6 +77,43 @@ function drawSeg(ctx2, s, a, b, k) {
   ctx2.beginPath(); ctx2.moveTo(ax, ay); ctx2.lineTo(bx, by); ctx2.stroke();
 }
 let eraseCursor = null; // {x, y} 오버레이 로컬 px — 지우개 원 표시
+let preview = null;     // ✨ 인식 결과 (WEBCAD_PREP.analyze) — 스케치가 바뀌면 무효
+// 면적 표기 — 크기에 맞는 단위 (건축 스케일 ㎡, 소축척 스케치는 ㎠/㎟)
+const fmtArea = (mm2) => mm2 >= 1e5 ? (mm2 / 1e6).toFixed(2) + '㎡'
+  : (mm2 >= 1e3 ? Math.round(mm2 / 100) + '㎠' : Math.round(mm2) + '㎟');
+function drawPreview() {
+  const k = V().scale;
+  g.save();
+  g.fillStyle = 'rgba(53,208,255,.10)';
+  for (const r of preview.regions) {                 // 닫힌 영역 채움
+    if (r.circle) { const c = w2s(r.circle.cx, r.circle.cy); g.beginPath(); g.arc(c[0], c[1], r.circle.r * k, 0, 6.2832); g.fill(); }
+    else { g.beginPath(); r.pts.forEach((p, i) => { const q = w2s(p[0], p[1]); i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]); }); g.closePath(); g.fill(); }
+  }
+  g.strokeStyle = '#35d0ff'; g.lineWidth = 1.5; g.setLineDash([7, 4]);
+  for (const s of preview.shapes) {                  // 인식 기하 (점선)
+    g.beginPath();
+    if (s.kind === 'line') { const a = w2s(s.a[0], s.a[1]), b = w2s(s.b[0], s.b[1]); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); }
+    else if (s.kind === 'circle') { const c = w2s(s.cx, s.cy); g.arc(c[0], c[1], s.r * k, 0, 6.2832); }
+    else if (s.kind === 'arc') {                     // cad.js ARC 표기와 동일한 화면 각 변환
+      const c = w2s(s.cx, s.cy);
+      g.arc(c[0], c[1], s.r * k, -s.endAngle * Math.PI / 180, -s.startAngle * Math.PI / 180);
+    } else if (s.pts) {
+      s.pts.forEach((p, i) => { const q = w2s(p[0], p[1]); i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]); });
+      if (s.closed || s.kind === 'rect' || s.kind === 'polygon') g.closePath();
+    } else { continue; }
+    g.stroke();
+  }
+  g.setLineDash([]);
+  g.fillStyle = '#7fe3ff'; g.font = '12px -apple-system,system-ui,sans-serif'; g.textAlign = 'center';
+  for (const r of preview.regions) {                 // 면적 라벨
+    let cx = 0, cy = 0;
+    if (r.circle) { cx = r.circle.cx; cy = r.circle.cy; }
+    else { for (const p of r.pts) { cx += p[0]; cy += p[1]; } cx /= r.pts.length; cy /= r.pts.length; }
+    const q = w2s(cx, cy);
+    g.fillText(fmtArea(r.areaMM2), q[0], q[1]);
+  }
+  g.restore();
+}
 function redraw() {
   const r = ovRect;
   const dpr = window.devicePixelRatio || 1;
@@ -88,6 +125,7 @@ function redraw() {
   g.strokeStyle = '#000'; // 초기화
   for (const s of SK.strokes) drawStroke(g, s);
   if (live) drawStroke(g, live);
+  if (preview) drawPreview();
   if (eraseCursor) {
     g.lineWidth = 1; g.strokeStyle = 'rgba(255,120,120,.9)';
     g.beginPath(); g.arc(eraseCursor.x, eraseCursor.y, eraseRadiusPx(), 0, 6.2832); g.stroke();
@@ -120,7 +158,7 @@ function tick() {
 
 // ---------- 변경/실행취소 ----------
 function pushOp(op) { SK.undo.push(op); if (SK.undo.length > 100) SK.undo.shift(); SK.redo.length = 0; }
-function changed() { SK.rev++; saveSoon(); }
+function changed() { SK.rev++; closePreview(); saveSoon(); }
 function undoSk() {
   const op = SK.undo.pop(); if (!op) return;
   if (op.t === 'add') SK.strokes = SK.strokes.filter(s => s.id !== op.s.id);
@@ -341,13 +379,52 @@ window.addEventListener('keydown', (e) => {
   const k = (typeof e.key === 'string' ? e.key : '').toLowerCase();
   if (e.ctrlKey && k === 'z' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); undoSk(); return; }
   if (e.ctrlKey && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); e.stopPropagation(); redoSk(); return; }
-  if (e.key === 'Escape') { e.stopPropagation(); exit(); return; }
+  if (e.key === 'Escape') { e.stopPropagation(); if (preview) closePreview(); else exit(); return; }
   if (!e.ctrlKey && !e.metaKey && !e.altKey) {
     if (k === 'b') { e.stopPropagation(); setTool('pen'); return; }
     if (k === 'e') { e.stopPropagation(); setTool('eraser'); return; }
   }
   e.stopPropagation(); // 스케치 모드에선 나머지 앱 단축키(글자→명령창 점프 등)를 잠근다
 }, true);
+
+// ---------- ✨ 인식 (Phase 2 전처리 엔진 — AI 0) ----------
+function closePreview() { if (preview) { preview = null; SK.rev++; } if (infoEl) infoEl.style.display = 'none'; }
+function recognize() {
+  if (!window.WEBCAD_PREP) { B.logLine && B.logLine('  전처리 엔진(prep.js)이 로드되지 않았습니다.', 'warn'); return null; }
+  if (!SK.strokes.length) { B.logLine && B.logLine('  인식할 스케치가 없습니다 — 먼저 펜으로 그려주세요.', 'warn'); return null; }
+  preview = window.WEBCAD_PREP.analyze(SK.strokes);
+  SK.rev++;
+  const KN = { line: '선', polyline: '꺾은선', rect: '사각형', polygon: '다각형', circle: '원', arc: '호', curve: '곡선', dot: '점' };
+  const parts = Object.entries(preview.counts).map(([k, n]) => (KN[k] || k) + ' ' + n);
+  const areaSum = preview.regions.reduce((a, r) => a + r.areaMM2, 0);
+  infoTxt.textContent = '✨ ' + parts.join(' · ')
+    + (preview.regions.length ? ` · 닫힌 영역 ${preview.regions.length}개 (${fmtArea(areaSum)})` : ' · 닫힌 영역 없음');
+  infoEl.style.display = 'flex';
+  return preview;
+}
+function commitRecog() {
+  if (!preview) return 0;
+  B.pushUndo();
+  B.ensureLayer('스케치 인식', '#35d0ff');
+  let nAdded = 0;
+  for (const s of preview.shapes) {
+    let e = null;
+    if (s.kind === 'line') e = { type: 'LINE', x1: s.a[0], y1: s.a[1], x2: s.b[0], y2: s.b[1] };
+    else if (s.kind === 'rect' || s.kind === 'polygon') e = { type: 'LWPOLYLINE', points: s.pts.map(p => [p[0], p[1]]), closed: true };
+    else if (s.kind === 'polyline' || s.kind === 'curve') e = { type: 'LWPOLYLINE', points: s.pts.map(p => [p[0], p[1]]), closed: !!s.closed };
+    else if (s.kind === 'circle') e = { type: 'CIRCLE', cx: s.cx, cy: s.cy, r: s.r };
+    else if (s.kind === 'arc') e = { type: 'ARC', cx: s.cx, cy: s.cy, r: s.r, startAngle: s.startAngle, endAngle: s.endAngle };
+    if (!e) continue;                                  // dot 등은 건너뜀
+    e.layer = '스케치 인식';
+    const ent = B.addEntity(e);
+    ent.color = s.color;                               // 스트로크 색 유지 — Phase 3 의미 판단의 단서
+    nAdded++;
+  }
+  B.refresh();
+  B.logLine && B.logLine(`  ✨ 스케치 인식 → CAD ${nAdded}개 생성('스케치 인식' 레이어). 손그림은 그대로 남습니다.`, 'ok');
+  closePreview();
+  return nAdded;
+}
 
 // ---------- 모드 전환 ----------
 function enter() {
@@ -364,6 +441,7 @@ function exit() {
   if (!SK.on) return;
   SK.on = false;
   cancelLive();
+  closePreview();
   skcv.style.pointerEvents = 'none';
   bar.style.display = 'none';
   entryBtn.style.background = ''; entryBtn.style.color = '';
@@ -444,6 +522,8 @@ sizeIn.addEventListener('input', () => {
 });
 sizeWrapEl.appendChild(sizeIn); sizeWrapEl.appendChild(sizeDot);
 bar.appendChild(sizeWrapEl);
+// ✨ 인식 — 손그림 → 기하 (전처리 엔진, AI 0)
+bar.appendChild(mkBtn('✨', '인식 — 손그림을 직선·원·호·사각형과 닫힌 영역으로 (전부 알고리즘, AI 사용 없음)', recognize));
 // 실행취소/재실행/표시/전체지우기/완료
 bar.appendChild(mkBtn('↶', '스케치 실행 취소 (Ctrl+Z)', undoSk));
 bar.appendChild(mkBtn('↷', '다시 실행 (Ctrl+Y)', redoSk));
@@ -462,6 +542,28 @@ doneBtn.style.fontSize = '13px'; doneBtn.style.fontWeight = '700';
 bar.appendChild(doneBtn);
 wrap.appendChild(bar);
 if (window.webcadPopupDrag) window.webcadPopupDrag(bar, grip);
+// ✨ 인식 결과 칩 — 미리보기 상태에서 [CAD 만들기 / 닫기]
+const infoEl = document.createElement('div');
+infoEl.id = 'skInfo';
+infoEl.style.cssText = 'position:absolute;left:50%;top:64px;transform:translateX(-50%);z-index:30;'
+  + 'display:none;align-items:center;gap:8px;padding:6px 12px;border-radius:12px;'
+  + 'background:rgba(13,40,58,.94);border:1px solid rgba(53,208,255,.5);'
+  + 'font:12.5px -apple-system,system-ui,sans-serif;color:#bfeaff;box-shadow:0 6px 20px rgba(0,0,0,.4);';
+const infoTxt = document.createElement('span');
+infoEl.appendChild(infoTxt);
+const infoOk = document.createElement('button');
+infoOk.textContent = 'CAD 만들기';
+infoOk.style.cssText = 'height:30px;border:none;border-radius:8px;background:#35d0ff;color:#06233a;'
+  + 'font-weight:700;font-size:12.5px;cursor:pointer;padding:0 12px;';
+infoOk.addEventListener('click', commitRecog);
+infoEl.appendChild(infoOk);
+const infoX = document.createElement('button');
+infoX.textContent = '닫기';
+infoX.style.cssText = 'height:30px;border:1px solid rgba(53,208,255,.4);border-radius:8px;background:transparent;'
+  + 'color:#bfeaff;font-size:12.5px;cursor:pointer;padding:0 10px;';
+infoX.addEventListener('click', closePreview);
+infoEl.appendChild(infoX);
+wrap.appendChild(infoEl);
 setTool('pen'); markColor();
 
 // 상단바 진입 버튼
@@ -480,5 +582,6 @@ loadNow();
 requestAnimationFrame(tick);
 
 // 외부/테스트 훅 — Phase 2 전처리 엔진이 이 데이터를 읽는다
-window.WEBCAD_SKETCH = { SK, enter, exit, setTool, undoSk, redoSk, redraw, syncNow, saveNow, loadNow, w2s, s2w };
+window.WEBCAD_SKETCH = { SK, enter, exit, setTool, undoSk, redoSk, redraw, syncNow, saveNow, loadNow, w2s, s2w,
+  recognize, commitRecog, closePreview, getPreview: () => preview };
 })();
