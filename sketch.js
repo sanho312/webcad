@@ -31,6 +31,7 @@ const SK = {
   undo: [], redo: [], // 스트로크 단위 (CAD undo 와 독립 — 드로잉 앱 방식)
   penSeen: false,     // 펜이 한 번이라도 감지되면 손가락은 내비게이션 전용(팜 리젝션)
   snap: true,         // 스트로크 시작/끝을 CAD 개체·다른 스트로크 끝점에 흡착
+  aim: false,         // 🎯 조준 모드 — 접촉해도 그리지 않고 위치·스냅만 표시 (호버 미지원 기기 대체)
   rev: 0,             // 내용 변경 카운터 (rAF 뷰 동기화용)
   docKey: '',
 };
@@ -267,6 +268,7 @@ function loadNow() {
 
 // ---------- 입력 ----------
 let live = null;            // 진행 중 스트로크
+let aiming = null;          // 🎯 조준 중 (그리지 않음)
 let livePid = null, livePtype = '';
 let lastPt = null;          // 마지막 채택 점 (스크린 px, 씨닝용)
 let erasing = null;         // 지우개 드래그 — 지운 스트로크 모음(undo 1건)
@@ -374,6 +376,10 @@ function beautifyStroke(s) {
     const sweep = ((shape.endAngle - shape.startAngle) % 360 + 360) % 360 || 360;
     const n = Math.max(8, Math.round(sweep / 5));
     const vs = []; for (let i = 0; i <= n; i++) { const a = (shape.startAngle + sweep * i / n) * Math.PI / 180; vs.push([shape.cx + Math.cos(a) * shape.r, shape.cy + Math.sin(a) * shape.r]); }
+    // ★ARC 는 반시계 규약이라 시계 방향으로 그린 호는 점열이 뒤집힌다 — 원래 진행 방향(a→b) 복원
+    // (뒤집힌 채 두면 끝점 스냅·필압이 반대 끝에 붙는다)
+    if (shape.a && Math.hypot(vs[0][0] - shape.a[0], vs[0][1] - shape.a[1])
+      > Math.hypot(vs[vs.length - 1][0] - shape.a[0], vs[vs.length - 1][1] - shape.a[1])) vs.reverse();
     emitPath(vs, false);
   } else { // 자유곡선 — 등간격 리샘플 + 이동평균 2회 (미세 울퉁불퉁 제거, 형태 유지)
     const raw = s.pts;
@@ -445,10 +451,30 @@ function hoverSnap(clientX, clientY) {
   const q = w2s(best[0], best[1]);
   return { x: r.left + q[0], y: r.top + q[1], world: best };
 }
+// 조준/드로잉 스냅 미리보기 마커 (hover.js 의 마커를 빌려 쓴다)
+function showAimAt(e) {
+  const PH = window.WEBCAD_PENHOVER; if (!PH) return;
+  PH.showDot(e.clientX, e.clientY);
+  const [sx, sy] = localXY(e);
+  const [wx, wy] = s2w(sx, sy);
+  const sp = snapWorld(wx, wy);
+  if (sp) { const q = w2s(sp[0], sp[1]); PH.showSnap(ovClient.x + q[0], ovClient.y + q[1]); }
+  else PH.hideSnap();
+}
+function hideAimMarkers() {
+  const PH = window.WEBCAD_PENHOVER;
+  if (PH) { PH.hideDot(); PH.hideSnap(); }
+}
 function startStroke(e) {
   const [sx, sy] = localXY(e);
   livePid = e.pointerId; livePtype = e.pointerType;
   try { skcv.setPointerCapture(e.pointerId); } catch (err) {}
+  if (SK.aim) {                                        // 🎯 조준: 그리지 않고 위치·스냅만
+    aiming = true;
+    snapPts = collectSnapPts();
+    showAimAt(e);
+    return;
+  }
   if (SK.tool === 'eraser') { erasing = []; eraseCursor = { x: sx, y: sy }; eraseAt(sx, sy); return; }
   let [wx, wy] = s2w(sx, sy);
   snapPts = collectSnapPts();
@@ -491,8 +517,9 @@ function finishStroke() {
     changed();
   }
   live = null; livePid = null; lastPt = null; snapPts = null;
+  const PH = window.WEBCAD_PENHOVER; if (PH) PH.hideSnap();
 }
-function cancelLive() { live = null; livePid = null; lastPt = null; erasing = null; eraseCursor = null; }
+function cancelLive() { live = null; livePid = null; lastPt = null; erasing = null; eraseCursor = null; aiming = null; hideAimMarkers(); }
 
 function eraseAt(sx, sy) {
   const rW = eraseRadiusPx() / V().scale; // 월드 반경
@@ -586,8 +613,19 @@ skcv.addEventListener('pointermove', (e) => {
   }
   if (e.pointerId !== livePid) return;
   e.preventDefault();
+  if (aiming) { showAimAt(e); return; }                // 🎯 조준: 마커만 따라간다
   if (erasing) { const [sx, sy] = localXY(e); eraseCursor = { x: sx, y: sy }; eraseAt(sx, sy); redraw(); return; }
-  if (live) extendStroke(e);
+  if (live) {
+    extendStroke(e);
+    // 지금 떼면 흡착될 지점을 실시간 표시 — 호버 미지원 기기에서도 떼기 전에 확인
+    const PH = window.WEBCAD_PENHOVER;
+    if (PH && live) {
+      const lp = live.pts[live.pts.length - 1];
+      const sp = snapWorld(lp[0], lp[1]);
+      if (sp) { const q = w2s(sp[0], sp[1]); PH.showSnap(ovClient.x + q[0], ovClient.y + q[1]); }
+      else PH.hideSnap();
+    }
+  }
 });
 function pointerEnd(e) {
   if (e.pointerType === 'touch') {
@@ -596,6 +634,7 @@ function pointerEnd(e) {
   }
   if (mousePan && e.pointerType === 'mouse') mousePan = null;
   if (e.pointerId !== livePid) return;
+  if (aiming) { aiming = null; hideAimMarkers(); livePid = null; snapPts = null; return; }
   if (erasing) {
     if (erasing.length) { pushOp({ t: 'del', ss: erasing }); changed(); }
     erasing = null; eraseCursor = null; livePid = null; redraw(); return;
@@ -875,6 +914,13 @@ sizeIn.addEventListener('input', () => {
 });
 sizeWrapEl.appendChild(sizeIn); sizeWrapEl.appendChild(sizeDot);
 bar.appendChild(sizeWrapEl);
+// 🎯 조준 모드 — 호버 미지원 기기(M1 이하 iPad)의 대체: 대고 움직여도 그려지지 않는다
+const aimBtn = mkBtn('🎯', '조준 모드 — 펜을 대고 움직여도 그려지지 않고 위치·스냅점만 표시 (호버 미지원 기기 대체). 다시 누르면 그리기 복귀', () => {
+  SK.aim = !SK.aim;
+  aimBtn.style.background = SK.aim ? 'var(--accent,#0A84FF)' : 'transparent';
+  aimBtn.style.color = SK.aim ? '#fff' : 'var(--ink,#cfe0ff)';
+});
+bar.appendChild(aimBtn);
 // 📐 상시 자동 보정 토글 (기본 켬)
 const beautBtn = mkBtn('📐', '자동 보정 — 직선은 곧게, 곡선은 매끈하게 (손떨림 제거). 끄면 원본 그대로', () => {
   SK.beautify = SK.beautify === false ? true : false;

@@ -20,6 +20,10 @@ css.textContent = `
   #penSnap{position:fixed;z-index:80;width:12px;height:12px;margin:-6px 0 0 -6px;
     border:2px solid #3aa66a;background:rgba(58,166,106,.15);pointer-events:none;display:none;}
   .penHover{background:rgba(190,197,210,.45) !important;outline:1px solid rgba(190,197,210,.6);}
+  /* 호버 미지원 기기(M1 이하) 대체: 누르고 있는 동안 = 대기상태 회색.
+     릴리즈로 실행, 손가락을 밀어 벗어나면 취소 — '누르기 전 확인'의 터치판 */
+  button:active, select:active, .tbtn:active, .miniBtn:active, .pTab:active, .cp:active, label:active{
+    background:rgba(190,197,210,.45) !important;outline:1px solid rgba(190,197,210,.6);}
 `;
 document.head.appendChild(css);
 const dot = document.createElement('div'); dot.id = 'penDot'; document.body.appendChild(dot);
@@ -106,5 +110,12 @@ window.addEventListener('pointerdown', (e) => {
   if (e.pointerType === 'pen') { stats.contact++; hideAll(); maybeWarnNoHover(); }
 }, { passive: true, capture: true });
 window.addEventListener('pointerleave', (e) => { if (e.pointerType === 'pen') hideAll(); }, { passive: true, capture: true });
-window.WEBCAD_PENHOVER = { dot, snap, hide: hideAll, current: () => hoverEl, stats, diag };
+document.addEventListener('touchstart', () => {}, { passive: true }); // iOS Safari 에서 :active 를 살리는 관례
+// 스케치 조준/드로잉 스냅 미리보기가 같은 마커를 빌려 쓴다 (호버 미지원 기기 대체)
+function showDot(x, y) { dot.style.display = 'block'; dot.style.left = x + 'px'; dot.style.top = y + 'px'; }
+function showSnap(x, y) { snap.style.display = 'block'; snap.style.left = x + 'px'; snap.style.top = y + 'px'; }
+function hideSnap() { snap.style.display = 'none'; }
+function hideDot() { dot.style.display = 'none'; }
+window.WEBCAD_PENHOVER = { dot, snap, hide: hideAll, current: () => hoverEl, stats, diag,
+  showDot, showSnap, hideSnap, hideDot };
 })();

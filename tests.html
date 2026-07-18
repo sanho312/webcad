@@ -3127,6 +3127,58 @@ function tests(){
     reset();
   }
 
+  // ---------- 소프트웨어 호버 대체 (2026-07-19) ----------
+  group('호버 대체 — 🎯 조준 모드 · 드로잉 중 스냅 미리보기 · 눌림 대기상태');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const S = AW.WEBCAD_SKETCH, PH = AW.WEBCAD_PENHOVER;
+    reset();
+    if (S && PH) {
+      const key = S.SK.docKey, bak = AW.localStorage.getItem(key);
+      const cv2 = AD.getElementById('cv');
+      const r0 = cv2.getBoundingClientRect(); cv2._w = r0.width; cv2._h = r0.height;
+      AW.WEBCAD_AI_BRIDGE.addEntity({ type: 'LINE', x1: 0, y1: 0, x2: 2000, y2: 0, layer: '0' });
+      C.state.view.x = 1000; C.state.view.y = 0; C.state.view.scale = 0.3;
+      S.SK.strokes.length = 0; S.SK.rev++;
+      S.enter(); S.syncNow();
+      const skcv = AD.getElementById('skcv');
+      const rr = skcv.getBoundingClientRect();
+      const pd = (t, x, y, id) => skcv.dispatchEvent(new AW.PointerEvent(t, { pointerId: id, pointerType: 'pen', pressure: 0.5,
+        clientX: rr.left + x, clientY: rr.top + y, buttons: 1, button: 0, bubbles: true, cancelable: true, isPrimary: true }));
+      const end = S.w2s(2000, 0);
+      // 🎯 조준: 접촉해도 안 그려지고 마커만, 끝점 근처에서 스냅 표시
+      S.SK.aim = true;
+      pd('pointerdown', 100, 100, 71);
+      pd('pointermove', end[0] + 6, end[1] - 5, 71);
+      ok(PH.dot.style.display === 'block', '★조준: 펜 위치 커서 표시');
+      ok(PH.snap.style.display === 'block' && Math.abs(parseFloat(PH.snap.style.left) - (rr.left + end[0])) < 1.5,
+        '★조준: 스냅점 미리 표시 (끝점)');
+      pd('pointerup', end[0] + 6, end[1] - 5, 71);
+      eqi(S.SK.strokes.length, 0, '★조준 중에는 아무것도 그려지지 않음');
+      ok(PH.dot.style.display === 'none', '  떼면 마커 정리');
+      S.SK.aim = false;
+      ok([...AD.querySelectorAll('#skBar button')].some(b2 => b2.textContent === '🎯'), '🎯 토글 버튼 존재');
+      // 드로잉 중 라이브 스냅: 그리다 끝점 근처 → 마커, 멀면 없음, 떼면 흡착+정리
+      pd('pointerdown', 60, 200, 72);
+      pd('pointermove', 200, 150, 72);
+      ok(PH.snap.style.display === 'none', '멀 때는 마커 없음');
+      pd('pointermove', end[0] + 5, end[1] + 6, 72);
+      ok(PH.snap.style.display === 'block', '★그리는 중 스냅점 실시간 표시 (지금 떼면 여기 붙는다)');
+      pd('pointerup', end[0] + 5, end[1] + 6, 72);
+      const st = S.SK.strokes[0];
+      const lp = st.pts[st.pts.length - 1];
+      ok(Math.abs(lp[0] - 2000) < 0.6 && Math.abs(lp[1]) < 0.6, '★실제 끝점 흡착 (보정 후에도 진행 방향 보존 — 호 뒤집힘 수정)');
+      ok(PH.snap.style.display === 'none', '  떼면 마커 정리');
+      // 눌림 대기상태 CSS
+      ok([...AD.styleSheets].some(ss => { try { return [...ss.cssRules].some(x => x.selectorText && x.selectorText.includes('.tbtn:active')); } catch (e) { return false; } }),
+        '★버튼 눌림 = 대기상태 회색 (:active — 밀어서 취소 가능)');
+      S.SK.strokes.length = 0; S.SK.rev++; S.exit();
+      if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
+      S.loadNow();
+    } else ok(!!S, '(모듈 확인)');
+    reset();
+  }
+
   // ---------- 채팅 복사 · 팝업 드래그 ----------
   group('채팅 복사 — 텍스트 선택 중 Ctrl+C 는 브라우저 기본 복사에 양보 (개체 복사가 가로채지 않음)');
   {
