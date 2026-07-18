@@ -16,15 +16,25 @@ if (!cmdRow || !cmdInput) return;
 // ---------- 기존 크롬 제거 ----------
 const css = document.createElement('style');
 css.textContent = `
-  #toolbar, #console { display: none !important; }
+  #console { display: none !important; }        /* 상단 명령 콘솔 제거 (#toolbar 는 panels.js 가 슬라이드로) */
   #tgBottom { display: none !important; }
   /* 닫힘 = 투명+클릭 통과 (display:none 이면 안의 입력창이 포커스 불가라 '글자=명령'이 죽는다) */
+  /* 간단 명료한 작은 흰색 박스 — 검은 텍스트, 커서를 따라다닌다 */
   #cmdPop{position:fixed;z-index:70;display:flex;opacity:0;pointer-events:none;
-    min-width:340px;max-width:min(480px,90vw);
-    background:rgba(15,22,40,.97);border:1px solid rgba(120,150,220,.45);border-radius:12px;
-    box-shadow:0 10px 30px rgba(0,0,0,.5);padding:8px 10px;}
+    min-width:220px;max-width:min(420px,90vw);
+    background:#ffffff;border:1px solid #c2c8d4;border-radius:8px;
+    box-shadow:0 6px 20px rgba(0,0,0,.28);padding:5px 8px;}
   #cmdPop.open{opacity:1;pointer-events:auto;}
-  #cmdPop #cmdInputRow{display:flex;background:none;border:none;padding:0;}
+  #cmdPop #cmdInputRow{display:flex;background:none;border:none;padding:0;align-items:center;}
+  #cmdPop #cmdLabel{color:#333;font-size:12px;}
+  #cmdPop #cmdInput{background:#fff;color:#111;border:none;outline:none;font-size:13px;}
+  #cmdPop #cmdPrompt, #cmdPop #dimHint{color:#444;}
+  #cmdPop #cmdSuggest{background:#fff;color:#111;border:1px solid #d0d5e0;border-radius:6px;
+    box-shadow:0 6px 16px rgba(0,0,0,.18);}
+  #cmdPop .sugItem{color:#111;}
+  #cmdPop .sugItem .sname{color:#0a54c8;}
+  #cmdPop .sugItem .sko{color:#666;}
+  #cmdPop .sugItem.sel, #cmdPop .sugItem:hover{background:#e8f0ff;}
   #cmdToast{position:fixed;left:50%;top:52px;transform:translateX(-50%);z-index:69;
     max-width:min(700px,92vw);background:rgba(15,22,40,.92);border:1px solid rgba(120,150,220,.35);
     border-radius:10px;padding:6px 14px;font:12.5px -apple-system,system-ui,sans-serif;color:#cfe0ff;
@@ -38,18 +48,28 @@ pop.id = 'cmdPop';
 pop.appendChild(cmdRow);
 document.body.appendChild(pop);
 let lastPtr = { x: innerWidth / 2, y: innerHeight / 2 };
-window.addEventListener('pointermove', (e) => { lastPtr = { x: e.clientX, y: e.clientY }; }, { passive: true });
-window.addEventListener('pointerdown', (e) => { lastPtr = { x: e.clientX, y: e.clientY }; }, { passive: true, capture: true });
-
 const isOpen = () => pop.classList.contains('open');
-function showPop() {
-  if (isOpen()) return;
+function place() {
   // "커서의 왼쪽에" — 팝업 오른쪽 끝을 커서에 붙인다 (안 들어가면 오른쪽으로)
   const r = pop.getBoundingClientRect();
   let x = lastPtr.x - r.width - 14;
   if (x < 8) x = Math.min(innerWidth - r.width - 8, lastPtr.x + 14);
   const y = Math.max(8, Math.min(innerHeight - r.height - 8, lastPtr.y - r.height / 2));
   pop.style.left = x + 'px'; pop.style.top = y + 'px';
+}
+let placeQueued = false;
+window.addEventListener('pointermove', (e) => {
+  lastPtr = { x: e.clientX, y: e.clientY };
+  if (isOpen() && !placeQueued) {                       // 열려 있는 동안 커서를 따라다닌다
+    placeQueued = true;
+    requestAnimationFrame(() => { placeQueued = false; if (isOpen()) place(); });
+  }
+}, { passive: true });
+window.addEventListener('pointerdown', (e) => { lastPtr = { x: e.clientX, y: e.clientY }; }, { passive: true, capture: true });
+
+function showPop() {
+  if (isOpen()) return;
+  place();
   pop.classList.add('open');
   try { cmdInput.focus({ preventScroll: true }); } catch (e) {}
 }
@@ -100,5 +120,5 @@ if (cmdLog) {
 }
 
 // 외부/테스트 훅
-window.WEBCAD_CMDPOP = { show: showPop, hide: hidePop, isOpen, pop };
+window.WEBCAD_CMDPOP = { show: showPop, hide: hidePop, isOpen, pop, place, setPtr: (x, y) => { lastPtr = { x, y }; } };
 })();

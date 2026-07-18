@@ -97,9 +97,13 @@ function snapLineOrtho(a, b, tolDeg) {
   const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const L = dist(a, b) / 2;
   const horiz = Math.abs(((ang % 180) + 180) % 180 - 90) > 45;  // 0/180 근처 = 수평
-  return horiz
-    ? [[mid[0] - L, mid[1]], [mid[0] + L, mid[1]]]
-    : [[mid[0], mid[1] - L], [mid[0], mid[1] + L]];
+  // ★원래 진행 방향(시작→끝)을 보존 — 뒤집으면 끝점 스냅·보정이 반대 끝에 붙는다
+  if (horiz) {
+    const s = a[0] <= b[0] ? 1 : -1;
+    return [[mid[0] - L * s, mid[1]], [mid[0] + L * s, mid[1]]];
+  }
+  const s = a[1] <= b[1] ? 1 : -1;
+  return [[mid[0], mid[1] - L * s], [mid[0], mid[1] + L * s]];
 }
 
 // ---------- 스트로크 1개 → 도형 ----------

@@ -853,9 +853,11 @@
     sendBtn.addEventListener('click', () => { if (busy) { if (aborter) aborter.abort(); return; } submit(); }); // 작업 중엔 중단 버튼
     row.appendChild(clipBtn); row.appendChild(inEl); row.appendChild(sendBtn);
     panel.appendChild(row);
-    // AI 토글을 명령창 오른쪽(기록 버튼 앞)에 삽입 — 화면 일치감 + 우하단 코너 안 가림. 채팅 패널(panel)은 그대로 유지
+    // AI 토글은 상단바의 ✏️ 스케치 버튼 옆에 (명령창은 커서 팝업이 되어 상주 UI 가 아님)
+    const skBtn = document.getElementById('btnSketch');
     const cmdRow = document.getElementById('cmdInputRow'), tgB = document.getElementById('tgBottom');
-    if (cmdRow) { if (tgB) cmdRow.insertBefore(fab, tgB); else cmdRow.appendChild(fab); }
+    if (skBtn && skBtn.parentNode) { fab.classList.add('tbtn'); fab.style.margin = '0'; skBtn.parentNode.insertBefore(fab, skBtn.nextSibling); }
+    else if (cmdRow) { if (tgB) cmdRow.insertBefore(fab, tgB); else cmdRow.appendChild(fab); }
     else document.body.appendChild(fab); // 폴백
     document.body.appendChild(panel);
     setupEl.style.display = cfg.key ? 'none' : 'flex';

@@ -1768,8 +1768,19 @@ cv.addEventListener('touchstart', (ev) => {
     const p = touchXY(ev.touches[0]);
     setPointer(p.x, p.y);
     touch = { mode: 'tap', sx: p.x, sy: p.y, sworld: screenToWorld(p.x, p.y), moved: 0, vx: state.view.x, vy: state.view.y };
+    // 홀드(≈1초) 후 드래그 = 박스 선택 (피그마식) — 터치 환경의 유일한 영역 선택 수단
+    touch.lpTimer = setTimeout(() => {
+      if (touch && touch.mode === 'tap' && touch.moved <= 12) {
+        state.selection.clear();
+        dragSelect = { x1: touch.sworld.x, y1: touch.sworld.y, x2: touch.sworld.x, y2: touch.sworld.y };
+        touch.mode = 'boxsel';
+        renderProps(); draw();
+      }
+    }, 800);
     draw();
   } else if (ev.touches.length === 2) {
+    if (touch && touch.lpTimer) clearTimeout(touch.lpTimer);   // 두 손가락 = 핀치 — 홀드 선택 취소
+    if (dragSelect && touch && touch.mode === 'boxsel') dragSelect = null;
     const a = touchXY(ev.touches[0]), b = touchXY(ev.touches[1]);
     touch = { mode: 'pinch', startDist: touchDist(a, b) || 1, startScale: state.view.scale,
       mid: touchMid(a, b), vx: state.view.x, vy: state.view.y, moved: 0 };
@@ -1782,8 +1793,13 @@ cv.addEventListener('touchmove', (ev) => {
   if (ev.touches.length === 1 && touch.mode !== 'pinch') {
     const p = touchXY(ev.touches[0]);
     touch.moved = Math.max(touch.moved, Math.hypot(p.x - touch.sx, p.y - touch.sy));
-    // 한 손가락 드래그 = 화면 이동(팬). 선택은 탭으로, 박스 선택은 마우스/손도구로.
-    if (touch.mode === 'tap' && touch.moved > 12) touch.mode = 'pan';
+    if (touch.mode === 'boxsel') {                     // 홀드 후 드래그 = 선택 박스
+      const w = screenToWorld(p.x, p.y);
+      dragSelect.x2 = w.x; dragSelect.y2 = w.y;
+      setPointer(p.x, p.y); draw(); return;
+    }
+    // 한 손가락 드래그 = 화면 이동(팬). 영역 선택은 홀드(≈1초) 후 드래그.
+    if (touch.mode === 'tap' && touch.moved > 12) { touch.mode = 'pan'; clearTimeout(touch.lpTimer); }
     if (touch.mode === 'pan') {
       const dx = (p.x - touch.sx) / state.view.scale;
       const dy = (p.y - touch.sy) / state.view.scale;
@@ -1815,7 +1831,11 @@ cv.addEventListener('touchmove', (ev) => {
 cv.addEventListener('touchend', (ev) => {
   ev.preventDefault();
   if (!touch) return;
-  if (touch.mode === 'tap' && touch.moved <= 12) {
+  if (touch.lpTimer) clearTimeout(touch.lpTimer);
+  if (touch.mode === 'boxsel') {                       // 홀드-드래그 선택 확정
+    if (dragSelect) finishDragSelect({ shiftKey: false });
+    if (ev.touches.length === 0) { touch = null; return; }
+  } else if (touch.mode === 'tap' && touch.moved <= 12) {
     // 탭 = 클릭 (마우스 down+up 과 동일하게 정리)
     handleClick(mouseWorld, screenToWorld(mouseScreen.x, mouseScreen.y), { shiftKey: false });
     if (dragSelect) finishDragSelect({ shiftKey: false });
@@ -3961,6 +3981,17 @@ function bind3D(ov, cv3) {
     }
     try { cv3.setPointerCapture(e.pointerId); } catch (_) {}
     cv3.style.cursor = (mode === 'orbit' || mode === 'pan') ? 'grabbing' : cv3.style.cursor;
+    if (isTouch && mode !== 'box') {                   // 터치 홀드(≈1초) 후 드래그 = 박스 선택 (피그마식)
+      drag.lpTimer = setTimeout(() => {
+        if (!drag || drag.moved >= 8) return;
+        const rb = cv3.getBoundingClientRect();
+        const kx2 = rb.width ? cv3.width / rb.width : 1, ky2 = rb.height ? cv3.height / rb.height : 1;
+        drag.mode = 'box'; drag.kx = kx2; drag.ky = ky2;
+        drag.bx0 = (e.clientX - rb.left) * kx2; drag.by0 = (e.clientY - rb.top) * ky2;
+        drag.bx1 = drag.bx0; drag.by1 = drag.by0;
+        render3D();
+      }, 800);
+    }
   });
   cv3.addEventListener('pointermove', (e) => {
     // 돌출 높이 조절 중: 커서 라이브 프리뷰. 단 뷰를 돌리거나 옮기는 중이면 그쪽이 우선 —
@@ -4065,6 +4096,7 @@ function bind3D(ov, cv3) {
     markInteract();
   });
   const end = (e) => {
+    if (drag && drag.lpTimer) clearTimeout(drag.lpTimer); // 터치 홀드 박스선택 타이머 정리
     if (v3.boxRect) v3.boxRect = null; // 러버밴드 상태 해제 (최종 렌더에서 사라짐)
     if (drag && drag.mode === 'gumrot') {
       if (drag.moved < 4 && e && e.type === 'pointerup') { // 링 클릭 = 각도 수치 입력 (라이노식)

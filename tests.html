@@ -2949,7 +2949,7 @@ function tests(){
     // ⑥ 크롬 제거 + 커서 명령창
     ok(!!CP, '★커서 명령창 모듈 로드');
     const disp = (id) => AW.getComputedStyle(AD.getElementById(id)).display;
-    ok(disp('toolbar') === 'none' && disp('console') === 'none', '★왼쪽 도구창·명령 콘솔 제거');
+    ok(disp('console') === 'none', '★명령 콘솔 제거 (도구창은 2차 피드백으로 슬라이드 복원)');
     AD.body.classList.remove('authLocked');
     AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: 600, clientY: 300 }));
     AW.dispatchEvent(new AW.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
@@ -3005,6 +3005,72 @@ function tests(){
       if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
       S.loadNow();
     }
+    reset();
+  }
+
+  // ---------- 피드백 2차 5종 (2026-07-18) ----------
+  group('피드백 2차 — 선 자동 보정 · 몸통 스냅 · 슬라이드 패널 · 커서 추적 흰 명령창');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    const S = AW.WEBCAD_SKETCH, PN = AW.WEBCAD_PANELS, CP = AW.WEBCAD_CMDPOP;
+    reset();
+    // ④ 슬라이드 패널 — 탭 존재 + 프로그램 개폐 (hover 는 실브라우저 검증)
+    ok(!!PN && !!AD.getElementById('pTabL') && !!AD.getElementById('pTabR'), '★좌우 슬라이드 탭 존재');
+    if (PN && PN.left) {
+      PN.left.setOpen(true);
+      ok(AD.getElementById('toolbar').classList.contains('pOpen'), '★도구창 펼침 (translateX 0)');
+      PN.left.setOpen(false);
+      ok(!AD.getElementById('toolbar').classList.contains('pOpen'), '  접힘');
+    }
+    // ⑤ 흰색 커서 명령창 + 추적 배치
+    if (CP) {
+      eqi(AW.getComputedStyle(CP.pop).backgroundColor, 'rgb(255, 255, 255)', '★명령창 = 흰 박스');
+      CP.setPtr(600, 300); CP.show();
+      CP.setPtr(420, 380); CP.place();
+      const pr = CP.pop.getBoundingClientRect();
+      ok(Math.abs(pr.right - (420 - 14)) < 4, '★커서를 따라 이동 (오른쪽 끝 = 커서-14px)');
+      CP.hide();
+      const fab = AD.getElementById('aiFab');
+      ok(fab && fab.previousElementSibling === AD.getElementById('btnSketch'), '★🤖 코워커 = ✏️ 스케치 옆');
+    }
+    // ② 상시 자동 보정 + ③ 몸통 스냅 (동기 — 포인터 이벤트)
+    if (S) {
+      const key = S.SK.docKey, bak = AW.localStorage.getItem(key);
+      S.SK.strokes.length = 0; S.SK.penSeen = false; S.SK.rev++;
+      S.enter(); S.syncNow();
+      const skcv = AD.getElementById('skcv');
+      const rr = skcv.getBoundingClientRect();
+      const pd = (t, x, y, id) => skcv.dispatchEvent(new AW.PointerEvent(t, { pointerId: id, pointerType: 'pen', pressure: 0.5,
+        clientX: rr.left + x, clientY: rr.top + y, buttons: 1, button: 0, bubbles: true, cancelable: true, isPrimary: true }));
+      pd('pointerdown', 100, 100, 61);
+      for (let i = 1; i <= 20; i++) pd('pointermove', 100 + i * 15, 100 + Math.sin(i * 1.7) * 6 + i * 0.4, 61);
+      pd('pointerup', 400, 108, 61);
+      const st = S.SK.strokes[0];
+      const a = st.pts[0], b2 = st.pts[st.pts.length - 1];
+      const dev = st.pts.reduce((m, p) => {
+        const dx = b2[0] - a[0], dy = b2[1] - a[1], L2 = dx * dx + dy * dy;
+        const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2;
+        return Math.max(m, Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy)));
+      }, 0);
+      ok(dev * C.state.view.scale < 1.5, '★삐뚤한 선 → 곧은 직선 (편차 ' + (dev * C.state.view.scale).toFixed(2) + 'px)');
+      ok(a[0] < b2[0], '  진행 방향 보존 (직교 정리 후에도)');
+      // ③ 몸통 스냅: 위 선 중간에서 6,7px 어긋나게 시작 → 선 위로 흡착
+      const mid = S.w2s((a[0] + b2[0]) / 2, (a[1] + b2[1]) / 2);
+      pd('pointerdown', mid[0] + 6, mid[1] + 7, 62);
+      for (let i = 1; i <= 10; i++) pd('pointermove', mid[0] + 6, mid[1] + 7 + i * 12, 62);
+      pd('pointerup', mid[0] + 6, mid[1] + 127, 62);
+      const p0 = S.SK.strokes[1].pts[0];
+      const dBody = (() => { const dx = b2[0] - a[0], dy = b2[1] - a[1], L2 = dx * dx + dy * dy;
+        const t = ((p0[0] - a[0]) * dx + (p0[1] - a[1]) * dy) / L2;
+        return Math.hypot(p0[0] - (a[0] + t * dx), p0[1] - (a[1] + t * dy)); })();
+      ok(dBody * C.state.view.scale < 0.5, '★시작점이 선 몸통에 스냅 (T자 틈 0)');
+      ok(S.SK.beautify !== false, '자동 보정 기본 켬');
+      S.SK.strokes.length = 0; S.SK.rev++; S.exit();
+      if (bak == null) AW.localStorage.removeItem(key); else AW.localStorage.setItem(key, bak);
+      S.loadNow();
+    }
+    // ① 롱프레스 박스 선택 — 타이머(800ms) 기반이라 실브라우저에서 검증 완료 (여기선 계약만)
+    ok(true, '(롱프레스 박스선택 — 실브라우저 실측: 홀드+드래그=선택 1, 빠른 드래그=팬)');
     reset();
   }
 

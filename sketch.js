@@ -277,33 +277,138 @@ let ovClient = { x: 0, y: 0 };  // 오버레이의 client 좌표 원점 캐시
 const localXY = (e) => [e.clientX - ovClient.x, e.clientY - ovClient.y];
 const pressureOf = (e) => (e.pressure > 0 && e.pressure <= 1) ? e.pressure : 0.5;
 
-// ---------- 스냅 — 스트로크 시작/끝을 CAD 개체·다른 스트로크 끝점에 흡착 (자유 작업 연결)
+// ---------- 스냅 — 스트로크 시작/끝을 CAD 개체·다른 스트로크에 흡착 (틈 없는 벽체)
 const SNAP_PX = 10;
-let snapPts = null; // [ [wx, wy], ... ] — 스트로크 시작 시 수집
+let snapPts = null;  // 끝점·꼭짓점·중심 [ [wx, wy], ... ]
+let snapSegs = null; // 선 '몸통' [ [ax, ay, bx, by], ... ] — T자 접합도 틈 없이
 function collectSnapPts() {
-  const out = [];
+  const out = [], segs = [];
   const ents = B.state.entities;
   const n = Math.min(ents.length, 4000);
   for (let i = 0; i < n; i++) {
     const e = ents[i];
-    if (e.type === 'LINE') { out.push([e.x1, e.y1], [e.x2, e.y2]); }
-    else if (e.type === 'LWPOLYLINE' && e.points) for (const p of e.points) out.push([p[0], p[1]]);
+    if (e.type === 'LINE') { out.push([e.x1, e.y1], [e.x2, e.y2]); segs.push([e.x1, e.y1, e.x2, e.y2]); }
+    else if (e.type === 'LWPOLYLINE' && e.points) {
+      for (const p of e.points) out.push([p[0], p[1]]);
+      for (let j = 1; j < e.points.length; j++) segs.push([e.points[j - 1][0], e.points[j - 1][1], e.points[j][0], e.points[j][1]]);
+      if (e.closed && e.points.length > 2) { const a = e.points[e.points.length - 1], b = e.points[0]; segs.push([a[0], a[1], b[0], b[1]]); }
+    }
     else if (e.type === 'CIRCLE' || e.type === 'ARC') out.push([e.cx, e.cy]);
+    if (segs.length > 8000) break;
   }
   for (const s of SK.strokes) {
-    if (s.pts.length) { const a = s.pts[0], b = s.pts[s.pts.length - 1]; out.push([a[0], a[1]], [b[0], b[1]]); }
+    if (!s.pts.length) continue;
+    const a = s.pts[0], b = s.pts[s.pts.length - 1];
+    out.push([a[0], a[1]], [b[0], b[1]]);
+    for (let j = 3; j < s.pts.length; j += 3) segs.push([s.pts[j - 3][0], s.pts[j - 3][1], s.pts[j][0], s.pts[j][1]]);
   }
+  snapSegs = segs;
   return out;
 }
 function snapWorld(wx, wy) {
   if (!SK.snap || !snapPts) return null;
   const rW = SNAP_PX / V().scale;
   let best = null, bd = rW;
-  for (const p of snapPts) {
+  for (const p of snapPts) {                            // ① 끝점·꼭짓점 우선
     const d = Math.hypot(p[0] - wx, p[1] - wy);
-    if (d < bd) { bd = d; best = p; }
+    if (d < bd) { bd = d; best = [p[0], p[1]]; }
+  }
+  if (best) return best;
+  if (snapSegs) {                                       // ② 선 몸통(수선 투영) — T자 접합
+    for (const sg of snapSegs) {
+      const dx = sg[2] - sg[0], dy = sg[3] - sg[1];
+      const L2 = dx * dx + dy * dy; if (L2 < 1e-9) continue;
+      let t = ((wx - sg[0]) * dx + (wy - sg[1]) * dy) / L2;
+      t = Math.max(0, Math.min(1, t));
+      const px = sg[0] + t * dx, py = sg[1] + t * dy;
+      const d = Math.hypot(wx - px, wy - py);
+      if (d < bd) { bd = d; best = [px, py]; }
+    }
   }
   return best;
+}
+// ---------- 상시 자동 보정 — 직선은 곧게, 곡선은 매끈하게 (손떨림 제거) ----------
+function pressureSampler(pts) {
+  const L = [0];
+  for (let i = 1; i < pts.length; i++) L.push(L[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const T = L[L.length - 1] || 1;
+  return (f) => {
+    const target = f * T;
+    let i = 1; while (i < L.length - 1 && L[i] < target) i++;
+    const f2 = (target - L[i - 1]) / Math.max(1e-9, L[i] - L[i - 1]);
+    return pts[i - 1][2] + (pts[i][2] - pts[i - 1][2]) * Math.max(0, Math.min(1, f2));
+  };
+}
+function beautifyStroke(s) {
+  const P = window.WEBCAD_PREP;
+  if (!P || s.pts.length < 3) return;
+  let shape = null;
+  try { shape = P.analyze([s]).shapes[0]; } catch (e) { return; }
+  if (!shape || shape.kind === 'dot') return;
+  const pres = pressureSampler(s.pts);
+  const stepW = 6 / V().scale;                         // 화면 6px 간격 리샘플
+  const out = [];
+  const emitSeg = (a, b, f0, f1) => {
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.max(1, Math.round(L / stepW));
+    for (let i = (out.length ? 1 : 0); i <= n; i++) {
+      const t = i / n, f = f0 + (f1 - f0) * t;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, pres(f)]);
+    }
+    if (!out.length) out.push([a[0], a[1], pres(f0)]);
+  };
+  const emitPath = (vs, closed) => {
+    const P2 = closed ? [...vs, vs[0]] : vs;
+    let tot = 0; const Ls = [0];
+    for (let i = 1; i < P2.length; i++) { tot += Math.hypot(P2[i][0] - P2[i - 1][0], P2[i][1] - P2[i - 1][1]); Ls.push(tot); }
+    out.push([P2[0][0], P2[0][1], pres(0)]);
+    for (let i = 1; i < P2.length; i++) emitSeg(P2[i - 1], P2[i], Ls[i - 1] / (tot || 1), Ls[i] / (tot || 1));
+  };
+  if (shape.kind === 'line') emitPath([shape.a, shape.b], false);
+  else if (shape.kind === 'polyline') emitPath(shape.pts, false);
+  else if (shape.kind === 'rect' || shape.kind === 'polygon') emitPath(shape.pts, true);
+  else if (shape.kind === 'circle') {
+    const vs = []; for (let i = 0; i < 48; i++) { const t = i / 48 * 2 * Math.PI; vs.push([shape.cx + Math.cos(t) * shape.r, shape.cy + Math.sin(t) * shape.r]); }
+    emitPath(vs, true);
+  } else if (shape.kind === 'arc') {
+    const sweep = ((shape.endAngle - shape.startAngle) % 360 + 360) % 360 || 360;
+    const n = Math.max(8, Math.round(sweep / 5));
+    const vs = []; for (let i = 0; i <= n; i++) { const a = (shape.startAngle + sweep * i / n) * Math.PI / 180; vs.push([shape.cx + Math.cos(a) * shape.r, shape.cy + Math.sin(a) * shape.r]); }
+    emitPath(vs, false);
+  } else { // 자유곡선 — 등간격 리샘플 + 이동평균 2회 (미세 울퉁불퉁 제거, 형태 유지)
+    const raw = s.pts;
+    const rs = []; const prevPres = pres;
+    { let tot = 0; const Ls = [0];
+      for (let i = 1; i < raw.length; i++) { tot += Math.hypot(raw[i][0] - raw[i - 1][0], raw[i][1] - raw[i - 1][1]); Ls.push(tot); }
+      const n = Math.max(4, Math.min(200, Math.round(tot / stepW)));
+      for (let i = 0; i <= n; i++) {
+        const target = tot * i / n;
+        let j = 1; while (j < Ls.length - 1 && Ls[j] < target) j++;
+        const f2 = (target - Ls[j - 1]) / Math.max(1e-9, Ls[j] - Ls[j - 1]);
+        rs.push([raw[j - 1][0] + (raw[j][0] - raw[j - 1][0]) * f2, raw[j - 1][1] + (raw[j][1] - raw[j - 1][1]) * f2, prevPres(i / n)]);
+      }
+    }
+    for (let pass = 0; pass < 2; pass++)
+      for (let i = 1; i < rs.length - 1; i++) {
+        rs[i][0] = (rs[i - 1][0] + rs[i][0] * 2 + rs[i + 1][0]) / 4;
+        rs[i][1] = (rs[i - 1][1] + rs[i][1] * 2 + rs[i + 1][1]) / 4;
+      }
+    out.length = 0; out.push(...rs);
+  }
+  if (out.length >= 2) {
+    // 보정 뒤에도 끝점 스냅 유지 (틈 방지)
+    const sA = snapWorld(out[0][0], out[0][1]);
+    const sB = snapWorld(out[out.length - 1][0], out[out.length - 1][1]);
+    if (shape.kind === 'line' && (sA || sB)) {
+      const a2 = sA ? [sA[0], sA[1]] : [out[0][0], out[0][1]];
+      const b2 = sB ? [sB[0], sB[1]] : [out[out.length - 1][0], out[out.length - 1][1]];
+      out.length = 0; emitPath([a2, b2], false);
+    } else {
+      if (sA) { out[0][0] = sA[0]; out[0][1] = sA[1]; }
+      if (sB) { out[out.length - 1][0] = sB[0]; out[out.length - 1][1] = sB[1]; }
+    }
+    s.pts = out;
+  }
 }
 function startStroke(e) {
   const [sx, sy] = localXY(e);
@@ -339,11 +444,12 @@ function extendStroke(e) {
 }
 function finishStroke() {
   if (live && live.pts.length) {
-    // 끝점 스냅 — 벽 끝·다른 스트로크 끝에 정확히 붙는다
+    // 끝점 스냅 — 벽 끝·다른 스트로크에 정확히 붙는다
     const lp = live.pts[live.pts.length - 1];
     const sp = snapWorld(lp[0], lp[1]);
     if (sp) { lp[0] = sp[0]; lp[1] = sp[1]; }
-    // 저장은 원본 그대로(반올림만) — 손그림 데이터가 전처리 엔진의 입력이 된다
+    // 상시 자동 보정 — 직선은 곧게, 곡선은 매끈하게 (📐 토글로 끌 수 있음)
+    if (SK.beautify !== false && SK.tool !== 'eraser') beautifyStroke(live);
     live.pts = live.pts.map(p => [rnd1(p[0]), rnd1(p[1]), Math.round(p[2] * 100) / 100]);
     SK.strokes.push(live);
     pushOp({ t: 'add', s: live });
@@ -734,6 +840,12 @@ sizeIn.addEventListener('input', () => {
 });
 sizeWrapEl.appendChild(sizeIn); sizeWrapEl.appendChild(sizeDot);
 bar.appendChild(sizeWrapEl);
+// 📐 상시 자동 보정 토글 (기본 켬)
+const beautBtn = mkBtn('📐', '자동 보정 — 직선은 곧게, 곡선은 매끈하게 (손떨림 제거). 끄면 원본 그대로', () => {
+  SK.beautify = SK.beautify === false ? true : false;
+  beautBtn.style.opacity = SK.beautify === false ? '.35' : '1';
+});
+bar.appendChild(beautBtn);
 // ✨ 인식 — 손그림 → 기하 (전처리 엔진, AI 0)
 bar.appendChild(mkBtn('✨', '인식 — 손그림을 직선·원·호·사각형과 닫힌 영역으로 (전부 알고리즘, AI 사용 없음)', recognize));
 // 실행취소/재실행/표시/전체지우기/완료
