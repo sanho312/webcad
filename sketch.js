@@ -410,6 +410,41 @@ function beautifyStroke(s) {
     s.pts = out;
   }
 }
+// 펜슬 호버 스냅 프로브 (hover.js) — 접촉 전에 스냅점을 미리 보여준다. 후보는 400ms 캐시.
+let hoverCache = { t: 0, pts: null, segs: null };
+function hoverSnap(clientX, clientY) {
+  const r = cv.getBoundingClientRect();
+  if (cv.style.display === 'none' || clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
+  const now = performance.now();
+  if (!hoverCache.pts || now - hoverCache.t > 400) {
+    const keepP = snapPts, keepS = snapSegs;
+    const pts = collectSnapPts();                      // snapSegs 도 함께 갱신된다
+    hoverCache = { t: now, pts, segs: snapSegs };
+    snapPts = keepP; snapSegs = keepS;                 // 그리기 중 상태 복구
+  }
+  const sx = clientX - r.left, sy = clientY - r.top;
+  const [wx, wy] = s2w(sx, sy);
+  const rW = SNAP_PX / V().scale;
+  let best = null, bd = rW;
+  for (const p of hoverCache.pts) {
+    const d = Math.hypot(p[0] - wx, p[1] - wy);
+    if (d < bd) { bd = d; best = [p[0], p[1]]; }
+  }
+  if (!best && hoverCache.segs) {
+    for (const sg of hoverCache.segs) {
+      const dx = sg[2] - sg[0], dy = sg[3] - sg[1];
+      const L2 = dx * dx + dy * dy; if (L2 < 1e-9) continue;
+      let t = ((wx - sg[0]) * dx + (wy - sg[1]) * dy) / L2;
+      t = Math.max(0, Math.min(1, t));
+      const px = sg[0] + t * dx, py = sg[1] + t * dy;
+      const d = Math.hypot(wx - px, wy - py);
+      if (d < bd) { bd = d; best = [px, py]; }
+    }
+  }
+  if (!best) return null;
+  const q = w2s(best[0], best[1]);
+  return { x: r.left + q[0], y: r.top + q[1], world: best };
+}
 function startStroke(e) {
   const [sx, sy] = localXY(e);
   livePid = e.pointerId; livePtype = e.pointerType;
@@ -915,5 +950,5 @@ requestAnimationFrame(tick);
 
 // 외부/테스트 훅 — Phase 2 전처리 엔진이 이 데이터를 읽는다
 window.WEBCAD_SKETCH = { SK, enter, exit, setTool, undoSk, redoSk, redraw, syncNow, saveNow, loadNow, w2s, s2w,
-  recognize, commitRecog, closePreview, getPreview: () => preview, buildBuilding, fitView, importStrokes };
+  recognize, commitRecog, closePreview, getPreview: () => preview, buildBuilding, fitView, importStrokes, hoverSnap };
 })();
