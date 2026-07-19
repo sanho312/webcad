@@ -25,15 +25,16 @@ css.textContent = `
   #side{position:absolute;right:0;top:0;bottom:0;z-index:26;margin:0;
     transform:translateX(102%);transition:transform .22s ease;box-shadow:-4px 0 18px rgba(0,0,0,.35);}
   #side.pOpen{transform:none;}
-  /* 얇은 세로 바 — 클릭으로만 펼침/접기 */
-  .pTab{position:absolute;top:0;bottom:0;width:9px;z-index:27;
-    display:flex;align-items:center;justify-content:center;
-    background:rgba(58,72,112,.55);color:#9fb2d8;font-size:9px;
+  /* 기존 폭조절 핸들(.rz)과 같은 비주얼 — 투명 트랙 + 가운데 작은 세로 알약. 클릭으로만 펼침/접기 */
+  .pTab{position:absolute;top:0;bottom:0;width:10px;z-index:27;background:transparent;
     cursor:pointer;user-select:none;touch-action:manipulation;
-    transition:left .22s ease, right .22s ease, background .15s;}
-  .pTab:hover{background:rgba(90,110,170,.7);}
-  #pTabL{left:0;border-right:1px solid rgba(120,140,200,.35);}
-  #pTabR{right:0;border-left:1px solid rgba(120,140,200,.35);}
+    transition:left .22s ease, right .22s ease;}
+  .pTab::after{content:'';position:absolute;top:50%;transform:translateY(-50%);
+    width:3px;height:44px;border-radius:2px;background:var(--line,rgba(120,140,180,.45));
+    transition:background .15s ease,height .15s ease;}
+  #pTabL{left:0;} #pTabL::after{left:3px;}
+  #pTabR{right:0;} #pTabR::after{right:3px;}
+  .pTab:hover::after{background:var(--accent,#0A84FF);height:72px;}
 `;
 document.head.appendChild(css);
 
@@ -46,8 +47,7 @@ function mkTab(id, panel, sideKey) {
   const isL = sideKey === 'l';
   const refresh = () => {
     const open = panel.classList.contains('pOpen');
-    tab.textContent = isL ? (open ? '◂' : '▸') : (open ? '▸' : '◂');
-    // 펼치면 바가 패널 가장자리에 붙어 따라간다
+    // 펼치면 바가 패널 가장자리에 붙어 따라간다 (모양은 기존 .rz 알약 그대로)
     const w = panel.getBoundingClientRect().width;
     if (isL) tab.style.left = open ? w + 'px' : '0';
     else tab.style.right = open ? w + 'px' : '0';
