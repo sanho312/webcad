@@ -1,0 +1,127 @@
+/* ============================================================
+   WebCAD 스킨 — Beyond UI 참조 (2026-07-20 사용자 제공 이미지)
+   · 라이트: 종이색 배경 + 흰 카드 + 옅은 보더
+   · 다크: 네이비-블랙(#12151d) + 같은 구조
+   · 얇은 라운드 라인 아이콘, Inter 풍 산세리프, 옅은 pill 하이라이트
+   기존 규칙 뒤에 로드되어 변수·컴포넌트를 덮는다 (기능 로직 무변).
+   ============================================================ */
+
+/* ── 팔레트: 다크 (Beyond UI dark — 남색 끼 검정) ── */
+:root{
+  --bg:#12151d; --panel:#171b25; --panel2:#1d222e; --panel3:#262c3a;
+  --line:rgba(233,238,250,0.07); --line-strong:rgba(233,238,250,0.13);
+  --text:#e7eaf1; --muted:rgba(178,186,203,0.75); --muted2:rgba(178,186,203,0.38);
+  --accent:#4c82f7; --accent-hover:#6d9afc; --accent-text:#8ab2ff;
+  --canvas-bg:#12151d; --grid:rgba(170,190,235,0.06); --grid2:rgba(170,190,235,0.11);
+  --radius-sm:6px; --radius:8px; --radius-lg:12px; --radius-xl:14px; --radius-sheet:16px;
+  /* 유리 효과 제거 — Beyond UI 는 플랫 카드 */
+  --glass:none;
+  --glass-fill:rgba(233,238,250,0.05);
+  --glass-fill-hi:rgba(233,238,250,0.10);
+  --glass-chrome:#171b25;
+  --glass-pop:#1d222e;
+  --topbar-bg:#171b25;
+  --spec:none; --spec-strong:none;
+  --shadow-pop:0 10px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(233,238,250,0.07);
+}
+/* ── 팔레트: 라이트 (Beyond UI light) ── */
+html.light{
+  --bg:#f2f4f7; --panel:#ffffff; --panel2:#f5f6f8; --panel3:#e9ecf1;
+  --line:rgba(17,24,39,0.08); --line-strong:rgba(17,24,39,0.15);
+  --text:#1f2430; --muted:rgba(75,85,99,0.85); --muted2:rgba(75,85,99,0.42);
+  --accent:#3b6ff0; --accent-hover:#5c88f5; --accent-text:#2f5cd8;
+  --canvas-bg:#ffffff; --grid:rgba(17,24,39,0.06); --grid2:rgba(17,24,39,0.11);
+  --glass:none;
+  --glass-fill:rgba(17,24,39,0.045);
+  --glass-fill-hi:rgba(17,24,39,0.08);
+  --glass-chrome:#ffffff;
+  --glass-pop:#ffffff;
+  --topbar-bg:#ffffff;
+  --spec:none; --spec-strong:none;
+  --shadow-pop:0 10px 30px rgba(30,41,59,0.14), 0 0 0 1px rgba(17,24,39,0.06);
+}
+
+/* ── 타이포 — Inter 풍 산세리프, 촘촘한 자간 ── */
+body, button, input, select, textarea{
+  font-family:'Inter','Pretendard','SF Pro Text',-apple-system,'Segoe UI',system-ui,sans-serif;
+  letter-spacing:-0.01em;
+}
+
+/* ── 상단바: 플랫 카드 + 하단 헤어라인 ── */
+#topbar{
+  background:var(--panel);
+  -webkit-backdrop-filter:none; backdrop-filter:none;
+  border-bottom:1px solid var(--line);
+  box-shadow:none;
+}
+.tbtn{
+  background:transparent; border:1px solid transparent; border-radius:8px;
+  box-shadow:none; font-weight:500; font-size:12.5px; color:var(--muted);
+}
+.tbtn:hover{ background:var(--glass-fill-hi); color:var(--text); box-shadow:none; }
+#btnFile, #btnOpts{ border:1px solid var(--line-strong); background:var(--panel2); color:var(--text); }
+#fileName{ color:var(--muted); font-size:12.5px; }
+
+/* ── 도구창: Beyond UI 사이드바 — 아이콘+이름 1열 리스트 ── */
+#toolbar{
+  grid-template-columns:1fr; gap:2px; padding:8px;
+  background:var(--panel);
+  -webkit-backdrop-filter:none; backdrop-filter:none;
+  border-right:1px solid var(--line);
+}
+#toolbar .tool{
+  flex-direction:row; align-items:center; justify-content:flex-start; gap:9px;
+  padding:7px 9px; border-radius:8px; overflow:hidden;
+  min-height:30px;                       /* 아이콘(16px)+여백 — 행 압축 방지 */
+  font-size:12.5px; font-weight:500; letter-spacing:-0.01em; line-height:1;
+  color:var(--muted); background:transparent; box-shadow:none;
+}
+#toolbar .tool svg{
+  width:16px; height:16px; flex:0 0 auto;
+  stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round;
+}
+#toolbar .tool:hover{ background:var(--glass-fill-hi); color:var(--text); box-shadow:none; transform:none; }
+#toolbar .tool.active{ background:var(--panel3); color:var(--text); box-shadow:none; }  /* 옅은 pill — 액센트 아님 */
+.tdiv{ margin:6px 6px; background:var(--line); }
+
+/* ── 우측 패널: 흰/짙은 카드 + 섹션 헤더 ── */
+#side{
+  background:var(--panel);
+  -webkit-backdrop-filter:none; backdrop-filter:none;
+  border-left:1px solid var(--line);
+}
+#side .section > h3{
+  font-size:11.5px; font-weight:600; letter-spacing:0.02em; color:var(--muted);
+}
+.miniBtn{
+  background:var(--panel2); border:1px solid var(--line-strong); border-radius:8px;
+  box-shadow:none; color:var(--text); font-weight:500;
+}
+.miniBtn:hover{ background:var(--panel3); }
+
+/* ── 하단 상태바·문서 탭 ── */
+#statusBar{
+  background:var(--panel);
+  -webkit-backdrop-filter:none; backdrop-filter:none;
+  border-top:1px solid var(--line);
+}
+#docTabs .dtab, #docTabs .dtabNew{ border-radius:8px 8px 0 0; box-shadow:none; }
+#ghFab{ border-radius:8px 8px 0 0; }
+
+/* ── 팝업·메뉴 공통: 플랫 카드 ── */
+.dropdown .menu, #vpModeMenu, #cmdSuggest, #colorPop{
+  -webkit-backdrop-filter:none; backdrop-filter:none;
+  border-radius:10px; box-shadow:var(--shadow-pop);
+}
+.dlgBox{ border-radius:14px; box-shadow:var(--shadow-pop); }
+
+/* ── 뷰포트 이름표: 옅은 pill ── */
+[id^="vpLabel"]{
+  background:var(--panel) !important; border:1px solid var(--line);
+  padding:2px 10px !important; border-radius:999px !important;
+  font-weight:500 !important; font-size:11.5px !important;
+}
+
+/* ── 슬라이드 패널 손잡이 알약: 변수 톤 그대로 (기존 .rz 규격 유지) ── */
+.pTab::after{ background:var(--line-strong); }
+.pTab:hover::after{ background:var(--accent); }

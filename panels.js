@@ -20,7 +20,7 @@ try {
   const u = JSON.parse(localStorage.getItem('webcad_ui_v1') || '{}');
   if (u.toolbarW) { delete u.toolbarW; localStorage.setItem('webcad_ui_v1', JSON.stringify(u)); }
 } catch (e) {}
-if (left) left.style.width = '158px';
+if (left) left.style.width = '170px';   // Beyond UI 리스트형(아이콘+이름 1열) 폭
 
 const css = document.createElement('style');
 css.textContent = `

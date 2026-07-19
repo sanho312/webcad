@@ -397,6 +397,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.24);background-clip:content-box;}
   ::-webkit-scrollbar-track{background:transparent;}
 </style>
+<!-- Beyond UI 스킨 (2026-07-20) — 변수·컴포넌트 오버라이드. 메인 스타일 뒤에 로드되어 이긴다 -->
+<link rel="stylesheet" href="skin.css?v=3">
 </head>
 <body>
 <div id="app">
@@ -928,7 +930,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
 <script src="bimify.js?v=3"></script>
 <script src="sketch.js?v=12"></script>
 <script src="cmdpop.js?v=4"></script>
-<script src="panels.js?v=4"></script>
+<script src="panels.js?v=6"></script>
 <script src="hover.js?v=4"></script>
 <script src="ai.js?v=16"></script>
 <script src="nodes.js?v=12"></script>
@@ -1092,7 +1094,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   const side = document.getElementById('side');
   /* 최소폭: 라벨이 세로로 꺾이거나 기호가 잘리지 않는 한계
      — 도구막대 52px(1열 아이콘+라벨), 측면 176px(레이어 행·버튼 유지) */
-  const DEF = { toolbarW: 158, sideW: 216 };
+  const DEF = { toolbarW: 170, sideW: 216 };  // Beyond UI 리스트형 도구창 폭
   const LIM = { toolbar: [52, 320], side: [176, 420] };
   const clampW = (v, lim) => Math.max(lim[0], Math.min(lim[1], v));
   function applyW() {
