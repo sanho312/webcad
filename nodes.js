@@ -440,11 +440,12 @@
 
   function render() {
     if (!ui.open || !ctx) return;
+    const T = PAL();                                   // 라이트/다크 캔버스 팔레트
     const W = cv.width, H = cv.height, dpr = devicePixelRatio || 1;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#0c1322'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
     // 격자
-    ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = T.grid; ctx.lineWidth = 1;
     const g0 = G(0, 0), g1 = G(W, H), step = 50;
     for (let gx = Math.floor(g0[0] / step) * step; gx < g1[0]; gx += step) { const s = S(gx, 0); ctx.beginPath(); ctx.moveTo(s[0], 0); ctx.lineTo(s[0], H); ctx.stroke(); }
     for (let gy = Math.floor(g0[1] / step) * step; gy < g1[1]; gy += step) { const s = S(0, gy); ctx.beginPath(); ctx.moveTo(0, s[0] !== undefined ? 0 : 0); ctx.moveTo(0, s[1]); ctx.lineTo(W, s[1]); ctx.stroke(); }
@@ -456,37 +457,37 @@
       const p0 = S.apply(null, portGraphPos(a, 'out', w.from.idx));
       const ki = DEFS[b.type].ins.findIndex(i => i.k === w.to.key);
       const p1 = S.apply(null, portGraphPos(b, 'in', ki));
-      ctx.strokeStyle = 'rgba(120,180,255,.7)';
+      ctx.strokeStyle = T.wire;
       ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.bezierCurveTo(p0[0] + 50, p0[1], p1[0] - 50, p1[1], p1[0], p1[1]); ctx.stroke();
       hits.wires.push({ w, mid: [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2] });
     }
     // 연결 중 임시 와이어
     if (ui.drag && ui.drag.mode === 'wire') {
       const p0 = S.apply(null, ui.drag.from);
-      ctx.strokeStyle = 'rgba(120,180,255,.5)'; ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(ui.drag.cur[0], ui.drag.cur[1]); ctx.stroke();
+      ctx.strokeStyle = T.wire; ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(ui.drag.cur[0], ui.drag.cur[1]); ctx.stroke();
     }
     // 노드
     for (const n of graph.nodes) {
       const def = DEFS[n.type], p = S(n.x, n.y), w = NW * ui.view.s, h = nodeH(n) * ui.view.s;
       hits.nodes.push({ n, rect: [p[0], p[1], w, h] });
       const isSel = ui.sel.has(n.id); // GH: 선택 = 녹색
-      ctx.fillStyle = n._err ? '#3a1e26' : (isSel ? '#1d3a2b' : '#182238');
-      ctx.strokeStyle = isSel ? '#7ee2a8' : '#31456e'; ctx.lineWidth = (isSel ? 2.4 : 1.5) * dpr;
+      ctx.fillStyle = n._err ? T.nodeErr : (isSel ? T.nodeSel : T.node);
+      ctx.strokeStyle = isSel ? T.borderSel : T.border; ctx.lineWidth = (isSel ? 2.4 : 1.5) * dpr;
       roundRect(p[0], p[1], w, h, 7 * ui.view.s); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#22314e'; roundRectTop(p[0], p[1], w, TITLE_H * ui.view.s, 7 * ui.view.s); ctx.fill();
-      ctx.fillStyle = '#dbe6ff'; ctx.font = (13 * ui.view.s) + 'px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      ctx.fillStyle = T.title; roundRectTop(p[0], p[1], w, TITLE_H * ui.view.s, 7 * ui.view.s); ctx.fill();
+      ctx.fillStyle = T.text; ctx.font = (13 * ui.view.s) + 'px -apple-system,system-ui,sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
       ctx.fillText((n.label ? def.title + ' · ' + n.label : def.title).slice(0, 18), p[0] + 8 * ui.view.s, p[1] + TITLE_H * ui.view.s / 2);
       // 입력 포트
       def.ins.forEach((ins, i) => {
         const gp = portGraphPos(n, 'in', i), sp = S.apply(null, gp);
         const wired = graph.wires.some(w2 => w2.to.node === n.id && w2.to.key === ins.k);
         drawPort(sp, wired); hits.ports.push({ node: n.id, io: 'in', key: ins.k, idx: i, x: sp[0], y: sp[1] });
-        ctx.fillStyle = '#9fb2d8'; ctx.font = (11 * ui.view.s) + 'px system-ui'; ctx.textAlign = 'left';
+        ctx.fillStyle = T.label; ctx.font = (11 * ui.view.s) + 'px system-ui'; ctx.textAlign = 'left';
         ctx.fillText(ins.label || ins.k, sp[0] + 9 * ui.view.s, sp[1]);
         if (ins.kind === 'num' && !wired) { // 인라인 값
           const vx = sp[0] + 62 * ui.view.s, vw = 40 * ui.view.s;
-          ctx.fillStyle = '#0e1730'; roundRect(vx, sp[1] - 8 * ui.view.s, vw, 16 * ui.view.s, 3); ctx.fill();
-          ctx.fillStyle = '#cfe0ff'; ctx.textAlign = 'center'; ctx.font = (10.5 * ui.view.s) + 'px system-ui';
+          ctx.fillStyle = T.chipBg; roundRect(vx, sp[1] - 8 * ui.view.s, vw, 16 * ui.view.s, 3); ctx.fill();
+          ctx.fillStyle = T.chipText; ctx.textAlign = 'center'; ctx.font = (10.5 * ui.view.s) + 'px system-ui';
           ctx.fillText(fmt(n.inl[ins.k]), vx + vw / 2, sp[1]);
           hits.vals.push({ node: n.id, key: ins.k, rect: [vx, sp[1] - 8 * ui.view.s, vw, 16 * ui.view.s] });
         }
@@ -495,17 +496,17 @@
       def.outs.forEach((label, i) => {
         const gp = portGraphPos(n, 'out', i), sp = S.apply(null, gp);
         drawPort(sp, true); hits.ports.push({ node: n.id, io: 'out', idx: i, x: sp[0], y: sp[1] });
-        ctx.fillStyle = '#9fb2d8'; ctx.font = (11 * ui.view.s) + 'px system-ui'; ctx.textAlign = 'right';
+        ctx.fillStyle = T.label; ctx.font = (11 * ui.view.s) + 'px system-ui'; ctx.textAlign = 'right';
         ctx.fillText(label, sp[0] - 9 * ui.view.s, sp[1]);
       });
       // 슬라이더
       if (def.slider) {
         const ty = p[1] + (TITLE_H + def.ins.length * ROW + ROW / 2) * ui.view.s, tx = p[0] + 12 * ui.view.s, tw = w - 24 * ui.view.s;
-        ctx.strokeStyle = '#31456e'; ctx.lineWidth = 3 * dpr; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + tw, ty); ctx.stroke();
+        ctx.strokeStyle = T.track; ctx.lineWidth = 3 * dpr; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + tw, ty); ctx.stroke();
         const frac = (n.params.v - n.params.min) / ((n.params.max - n.params.min) || 1);
         const kx = tx + Math.max(0, Math.min(1, frac)) * tw;
-        ctx.fillStyle = '#5ad1ff'; ctx.beginPath(); ctx.arc(kx, ty, 6 * ui.view.s, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#cfe0ff'; ctx.textAlign = 'center'; ctx.font = (10.5 * ui.view.s) + 'px system-ui';
+        ctx.fillStyle = T.knob; ctx.beginPath(); ctx.arc(kx, ty, 6 * ui.view.s, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = T.chipText; ctx.textAlign = 'center'; ctx.font = (10.5 * ui.view.s) + 'px system-ui';
         ctx.fillText(fmt(n.params.v), tx + tw / 2, ty - 10 * ui.view.s);
         hits.sliders.push({ node: n.id, rect: [tx, ty - 8 * ui.view.s, tw, 16 * ui.view.s] });
       }
@@ -513,8 +514,8 @@
       if (def.textK || def.capture) {
         const ty = p[1] + (TITLE_H + def.ins.length * ROW + ROW / 2) * ui.view.s;
         const txt = def.capture ? ('선택 ' + ((n.sel || []).length) + '개 · 클릭=가져오기') : ('f = ' + String(n.params[def.textK]));
-        ctx.fillStyle = '#0e1730'; roundRect(p[0] + 8 * ui.view.s, ty - 8 * ui.view.s, w - 16 * ui.view.s, 16 * ui.view.s, 3); ctx.fill();
-        ctx.fillStyle = '#ffd88f'; ctx.textAlign = 'center'; ctx.font = (10 * ui.view.s) + 'px system-ui';
+        ctx.fillStyle = T.chipBg; roundRect(p[0] + 8 * ui.view.s, ty - 8 * ui.view.s, w - 16 * ui.view.s, 16 * ui.view.s, 3); ctx.fill();
+        ctx.fillStyle = T.warn; ctx.textAlign = 'center'; ctx.font = (10 * ui.view.s) + 'px system-ui';
         ctx.fillText(txt.slice(0, 26), p[0] + w / 2, ty);
         hits.vals.push({ node: n.id, key: def.capture ? '__cap' : '__t:' + def.textK, rect: [p[0] + 8 * ui.view.s, ty - 8 * ui.view.s, w - 16 * ui.view.s, 16 * ui.view.s] });
       }
@@ -524,8 +525,8 @@
         let txt = '';
         if (n.type === 'num') { txt = fmt(n.params.v); hits.vals.push({ node: n.id, key: '__numv', rect: [p[0] + 12 * ui.view.s, ty - 8 * ui.view.s, w - 24 * ui.view.s, 16 * ui.view.s] }); }
         else txt = panelText(n.id);
-        ctx.fillStyle = '#0e1730'; roundRect(p[0] + 12 * ui.view.s, ty - 8 * ui.view.s, w - 24 * ui.view.s, 16 * ui.view.s, 3); ctx.fill();
-        ctx.fillStyle = '#8fe6c8'; ctx.textAlign = 'center'; ctx.font = (10.5 * ui.view.s) + 'px system-ui';
+        ctx.fillStyle = T.chipBg; roundRect(p[0] + 12 * ui.view.s, ty - 8 * ui.view.s, w - 24 * ui.view.s, 16 * ui.view.s, 3); ctx.fill();
+        ctx.fillStyle = T.val; ctx.textAlign = 'center'; ctx.font = (10.5 * ui.view.s) + 'px system-ui';
         ctx.fillText(txt, p[0] + w / 2, ty);
       }
     }
@@ -533,14 +534,14 @@
     if (ui.drag && ui.drag.mode === 'box' && ui.drag.moved > 3) {
       const d = ui.drag, bx = Math.min(d.x0, d.cur[0]), by = Math.min(d.y0, d.cur[1]);
       const bw = Math.abs(d.cur[0] - d.x0), bh = Math.abs(d.cur[1] - d.y0);
-      ctx.fillStyle = 'rgba(126,226,168,.08)'; ctx.strokeStyle = 'rgba(126,226,168,.85)'; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([5, 4]);
+      ctx.fillStyle = T.marqueeFill; ctx.strokeStyle = T.marqueeLine; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([5, 4]);
       ctx.fillRect(bx, by, bw, bh); ctx.strokeRect(bx, by, bw, bh); ctx.setLineDash([]);
     }
     ui.hits = hits;
     if (statEl) statEl.textContent = '노드 ' + graph.nodes.length + (ui.sel.size ? ' · 선택 ' + ui.sel.size + '개 (Del=삭제)' : '') + ' · 프리뷰 개체 ' + lastPreviewCount + ' · 좌드래그=선택 · 우드래그=이동';
   }
   function panelText(id) { const outs = window.__GH_LASTEVAL__ || {}; const v = outs[id] && outs[id][0]; if (v == null) return '—'; if (Array.isArray(v)) return '리스트[' + v.length + ']'; if (v.gh) return v.gh; return fmt(v); }
-  function drawPort(sp, filled) { ctx.beginPath(); ctx.arc(sp[0], sp[1], PORT_R * ui.view.s, 0, Math.PI * 2); ctx.fillStyle = filled ? '#5ad1ff' : '#26365a'; ctx.fill(); ctx.strokeStyle = '#1a2740'; ctx.lineWidth = 1; ctx.stroke(); }
+  function drawPort(sp, filled) { const T = PAL(); ctx.beginPath(); ctx.arc(sp[0], sp[1], PORT_R * ui.view.s, 0, Math.PI * 2); ctx.fillStyle = filled ? T.port : T.portEmpty; ctx.fill(); ctx.strokeStyle = T.portEdge; ctx.lineWidth = 1; ctx.stroke(); }
   function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
   function roundRectTop(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r); ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r); ctx.lineTo(x + w, y + h); ctx.closePath(); }
   const fmt = v => { const n = +v; return Number.isInteger(n) ? String(n) : n.toFixed(2); };
@@ -709,7 +710,47 @@
   #ghLib .row .ld span{float:right;color:#7f95c8;font-size:10.5px}
   #ghLib .row .del{width:26px;background:#2a1b22;color:#ff9aa5;border:1px solid #5a2a38;border-radius:6px;cursor:pointer}
   #ghLib .close{display:block;width:100%;margin-top:4px;background:#22314e;color:#dbe6ff;border:1px solid #34477a;border-radius:6px;padding:5px;cursor:pointer}
+  /* ── 라이트 테마 (html.light) — 앱 화면 필터를 따라간다 ── */
+  html.light #ghOv{background:#eef1f7;color:#1c2440}
+  html.light #ghTop{background:#f7f8fc;border-bottom-color:rgba(20,40,90,.15)}
+  html.light #ghTop button{background:#e9edf5;color:#20305c;border-color:rgba(20,40,90,.22)}
+  html.light #ghTop button:hover{background:#dde3ee}
+  html.light #ghTop button.pri{background:#0071e3;color:#fff;border-color:#0060c8}
+  html.light #ghPal{background:#f7f8fc;border-right-color:rgba(20,40,90,.15)}
+  html.light #ghPal .grp{color:#5a6a92}
+  html.light #ghPal button{background:#fff;color:#20305c;border-color:rgba(20,40,90,.2)}
+  html.light #ghPal button:hover{background:#e8f0fe}
+  html.light #ghStat{color:#5a6a92}
+  html.light #ghCtrl{background:#f7f8fc;border-color:rgba(20,40,90,.28);color:#1c2440;box-shadow:0 8px 26px rgba(30,50,100,.25)}
+  html.light #ghCtrl .hd{background:#e9edf5;border-bottom-color:rgba(20,40,90,.13)}
+  html.light #ghCtrl .hd button{color:#51617f}
+  html.light #ghCtrl .lb{color:#5a6a92}
+  html.light #ghCtrl .lb b{color:#151a2c}
+  html.light #ghCtrl input[type=range]{accent-color:#0071e3}
+  html.light #ghCtrl .pv{background:#eef1f7;color:#0a7a55}
+  html.light #ghLib{background:#f7f8fc;border-color:rgba(20,40,90,.28);color:#1c2440;box-shadow:0 10px 30px rgba(30,50,100,.25)}
+  html.light #ghLib .empty{color:#5a6a92}
+  html.light #ghLib .row .ld{background:#fff;color:#20305c;border-color:rgba(20,40,90,.2)}
+  html.light #ghLib .row .ld:hover{background:#e8f0fe}
+  html.light #ghLib .row .ld span{color:#5a6a92}
+  html.light #ghLib .row .del{background:#fdeaea;color:#b03a4a;border-color:#e5b5bb}
+  html.light #ghLib .close{background:#e9edf5;color:#20305c;border-color:rgba(20,40,90,.22)}
   `;
+  // 캔버스 렌더 팔레트 — 노드 그림도 라이트/다크를 따라간다
+  const isLightTheme = () => document.documentElement.classList.contains('light');
+  const PAL = () => isLightTheme()
+    ? { bg: '#f4f6fb', grid: 'rgba(20,40,90,.07)', wire: 'rgba(20,95,215,.6)',
+        node: '#ffffff', nodeSel: '#e6f5ec', nodeErr: '#fde8ea', title: '#e9edf5',
+        text: '#151a2c', label: '#5a6a92', chipBg: '#eef1f7', chipText: '#20305c',
+        border: '#b9c4dc', borderSel: '#1e9e5a', track: '#c8d2e6', knob: '#0071e3',
+        warn: '#8a6a1a', val: '#0a7a55', port: '#0071e3', portEmpty: '#dbe2f0', portEdge: '#8fa0c0',
+        marqueeFill: 'rgba(30,140,80,.08)', marqueeLine: 'rgba(30,140,80,.85)' }
+    : { bg: '#0c1322', grid: 'rgba(255,255,255,.04)', wire: 'rgba(120,180,255,.7)',
+        node: '#182238', nodeSel: '#1d3a2b', nodeErr: '#3a1e26', title: '#22314e',
+        text: '#dbe6ff', label: '#9fb2d8', chipBg: '#0e1730', chipText: '#cfe0ff',
+        border: '#31456e', borderSel: '#7ee2a8', track: '#31456e', knob: '#5ad1ff',
+        warn: '#ffd88f', val: '#8fe6c8', port: '#5ad1ff', portEmpty: '#26365a', portEdge: '#1a2740',
+        marqueeFill: 'rgba(126,226,168,.08)', marqueeLine: 'rgba(126,226,168,.85)' };
   function el(t, a, html) { const e = document.createElement(t); if (a) for (const k in a) e.setAttribute(k, a[k]); if (html != null) e.innerHTML = html; return e; }
   function build() {
     document.head.appendChild(el('style', null, css));
@@ -863,6 +904,9 @@
     for (const n of g.nodes) { const d = depth[n.id]; col[d] = col[d] || 0; n.x = d * 230; n.y = col[d] * 150; col[d]++; }
     return { graph: g, errors };
   }
+  // 테마(라이트/다크) 전환 시 열려 있는 노드 캔버스를 새 팔레트로 즉시 다시 그린다
+  new MutationObserver(() => { try { if (ui && ui.open) render(); } catch (e) {} })
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
   window.WEBCAD_NODES = {
     types: () => Object.keys(DEFS).map(t => { const d = DEFS[t]; return { type: t, title: d.title, ins: d.ins.map(i => i.k + ':' + (i.kind || 'num')), params: (d.params || []).map(p => p.k), outs: d.outs.length }; }),
     setGraph: (list, opts) => {

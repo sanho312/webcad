@@ -736,6 +736,31 @@
   #aiSetup input{background:#0e1730;color:#eaf2ff;border:1px solid #2a3760;border-radius:6px;padding:7px 9px;font-size:12px}
   #aiSetup .hint{font-size:11px;color:#8fa4d4}
   #aiSetup button{align-self:flex-start;background:#2a54b0;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px}
+  /* ── 라이트 테마 (html.light) — 앱 화면 필터를 따라간다 ── */
+  html.light #aiFab{background:#e9edf5;border-color:rgba(20,40,90,.25);color:#20305c}
+  html.light #aiFab:hover{background:#dde3ee}
+  html.light #aiPanel{background:#f7f8fc;border-color:rgba(20,40,90,.25);color:#1c2440;
+    box-shadow:0 10px 34px rgba(30,50,100,.28)}
+  html.light #aiHead{background:#e9edf5;border-bottom:1px solid rgba(20,40,90,.13)}
+  html.light #aiHead select{background:#fff;color:#20305c;border-color:rgba(20,40,90,.25)}
+  html.light #aiHead button{color:#51617f}
+  html.light #aiHead button:hover{color:#10162c}
+  html.light .aiM.user{background:#0071e3;color:#fff}
+  html.light .aiM.ai{background:#eef1f7;border-color:rgba(20,40,90,.15);color:#1c2440}
+  html.light .aiM.tool{color:#5a6a92}
+  html.light .aiM.err{background:#fdeaea;border-color:#e5b5bb;color:#9c2b3a}
+  html.light #aiAtt{background:#e9edf5}
+  html.light #aiAtt img{border-color:rgba(20,40,90,.2)}
+  html.light #aiAtt button{background:#fdeaea;border-color:#e5b5bb;color:#9c2b3a}
+  html.light #aiInRow{background:#e9edf5;border-top:1px solid rgba(20,40,90,.13)}
+  html.light #aiClip{background:#fff;color:#20305c;border-color:rgba(20,40,90,.25)}
+  html.light #aiClip:hover{background:#e8f0fe}
+  html.light #aiIn{background:#fff;color:#151a2c;border-color:rgba(20,40,90,.25)}
+  html.light #aiSend{background:#0071e3}
+  html.light #aiSetup{background:#eef1f7;border-bottom:1px solid rgba(20,40,90,.13)}
+  html.light #aiSetup input{background:#fff;color:#151a2c;border-color:rgba(20,40,90,.25)}
+  html.light #aiSetup .hint{color:#5a6a92}
+  html.light #aiSetup button{background:#0071e3}
   `;
 
   function h(tag, attrs, html) {
