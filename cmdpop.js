@@ -19,11 +19,12 @@ css.textContent = `
   #console { display: none !important; }        /* 상단 명령 콘솔 제거 (#toolbar 는 panels.js 가 슬라이드로) */
   #tgBottom { display: none !important; }
   /* 닫힘 = 투명+클릭 통과 (display:none 이면 안의 입력창이 포커스 불가라 '글자=명령'이 죽는다) */
-  /* 간단 명료한 작은 흰색 박스 — 검은 텍스트, 커서를 따라다닌다 */
+  /* 마우스 크기만한 네모난 흰 박스 — 검은 텍스트, 커서 '오른쪽'을 따라다닌다 */
   #cmdPop{position:fixed;z-index:70;display:flex;opacity:0;pointer-events:none;
-    min-width:220px;max-width:min(420px,90vw);
-    background:#ffffff;border:1px solid #c2c8d4;border-radius:8px;
-    box-shadow:0 6px 20px rgba(0,0,0,.28);padding:5px 8px;}
+    min-width:150px;max-width:min(320px,90vw);
+    background:#ffffff;border:1px solid #b8bfcc;border-radius:3px;
+    box-shadow:0 4px 14px rgba(0,0,0,.25);padding:3px 6px;}
+  #cmdPop #cmdLabel{display:none;}                /* '명령:' 라벨 없이 입력만 */
   #cmdPop.open{opacity:1;pointer-events:auto;}
   #cmdPop #cmdInputRow{display:flex;background:none;border:none;padding:0;align-items:center;}
   #cmdPop #cmdLabel{color:#333;font-size:12px;}
@@ -47,13 +48,14 @@ const pop = document.createElement('div');
 pop.id = 'cmdPop';
 pop.appendChild(cmdRow);
 document.body.appendChild(pop);
+cmdInput.placeholder = '';                       // 입력 전 사용법 안내 텍스트 제거 — 빈 박스
 let lastPtr = { x: innerWidth / 2, y: innerHeight / 2 };
 const isOpen = () => pop.classList.contains('open');
 function place() {
-  // "커서의 왼쪽에" — 팝업 오른쪽 끝을 커서에 붙인다 (안 들어가면 오른쪽으로)
+  // 커서의 '오른쪽'에 — 팝업 왼쪽 끝을 커서에 붙인다 (화면 밖이면 왼쪽으로)
   const r = pop.getBoundingClientRect();
-  let x = lastPtr.x - r.width - 14;
-  if (x < 8) x = Math.min(innerWidth - r.width - 8, lastPtr.x + 14);
+  let x = lastPtr.x + 14;
+  if (x + r.width > innerWidth - 8) x = Math.max(8, lastPtr.x - r.width - 14);
   const y = Math.max(8, Math.min(innerHeight - r.height - 8, lastPtr.y - r.height / 2));
   pop.style.left = x + 'px'; pop.style.top = y + 'px';
 }

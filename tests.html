@@ -2954,7 +2954,7 @@ function tests(){
     AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: 600, clientY: 300 }));
     AW.dispatchEvent(new AW.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
     ok(CP.isOpen(), '★스페이스 = 커서 옆 명령창 열림');
-    ok(CP.pop.getBoundingClientRect().right <= 600, '  커서의 왼쪽에 위치');
+    ok(CP.pop.getBoundingClientRect().left >= 600, '  커서의 오른쪽에 위치');
     ok(AD.activeElement === AD.getElementById('cmdInput'), '  입력 포커스');
     CP.hide(); ok(!CP.isOpen(), '닫힘');
     // ② 터치 — 즉시 반응 CSS
@@ -3028,7 +3028,7 @@ function tests(){
       CP.setPtr(600, 300); CP.show();
       CP.setPtr(420, 380); CP.place();
       const pr = CP.pop.getBoundingClientRect();
-      ok(Math.abs(pr.right - (420 - 14)) < 4, '★커서를 따라 이동 (오른쪽 끝 = 커서-14px)');
+      ok(Math.abs(pr.left - (420 + 14)) < 4, '★커서를 따라 이동 (왼쪽 끝 = 커서+14px, 오른쪽 배치)');
       CP.hide();
       const fab = AD.getElementById('aiFab');
       ok(fab && fab.previousElementSibling === AD.getElementById('btnSketch'), '★🤖 코워커 = ✏️ 스케치 옆');
