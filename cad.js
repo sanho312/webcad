@@ -2991,11 +2991,19 @@ function fit3D() {
 }
 function syncViewSeg(is3d) {
   const p = document.getElementById('vwPlan'), d = document.getElementById('vw3d');
+  const q = document.getElementById('vwQuad');
   if (!p || !d) return;
-  p.style.background = is3d ? 'transparent' : 'var(--accent)'; p.style.color = is3d ? '' : '#fff';
-  d.style.background = is3d ? 'var(--accent)' : 'transparent'; d.style.color = is3d ? '#fff' : '';
-  document.getElementById('toolbar')?.classList.toggle('show3d', is3d); // 3D 전용 도구함 표시 전환
-  const cps = document.getElementById('cplaneStatus'); if (cps) cps.style.display = is3d ? 'inline-flex' : 'none'; // 작업면 Z는 3D에서만
+  // 통합 작업환경의 3상태: 평면 단일(평면 뷰포트 확대 또는 평면 전용 폴백) / 3D 단일 / 4분할
+  const quadOn = is3d && v3 && v3.quad;
+  const planFocus = !is3d || (v3 && !quadOn && vpPlanIndex() === v3.act);
+  const seg = (el, on) => { el.style.background = on ? 'var(--accent)' : 'transparent'; el.style.color = on ? '#fff' : ''; };
+  seg(p, planFocus && !quadOn);
+  seg(d, is3d && !quadOn && !planFocus);
+  if (q) seg(q, !!quadOn);
+  // 3D 전용 도구함·작업면 Z 는 '3D 시점'일 때만 (평면 단일 시점에선 2D 도구가 맞다)
+  const show3d = is3d && !planFocus;
+  document.getElementById('toolbar')?.classList.toggle('show3d', show3d);
+  const cps = document.getElementById('cplaneStatus'); if (cps) cps.style.display = show3d ? 'inline-flex' : 'none';
 }
 // 3D 열린 동안 모델 변경(속성 수정·삭제·undo) 감지 → 재빌드
 let live3dTimer = null, live3dRev = -1, live3dSel = '';
@@ -3105,9 +3113,14 @@ function vpAt(px, py) {
   if (!v3.quad) return v3.act;
   return (px < v3.cv.width / 2 ? 0 : 1) + (py < v3.cv.height / 2 ? 0 : 2);
 }
+let _lastSegSig = '';
 function render3D() {
   const c = v3.ctx, W = v3.cv.width, H = v3.cv.height;
   saveVp(); // 현재 조작 파라미터를 활성 뷰에 보존
+  { // 통합 세그 하이라이트 — 어떤 경로(라벨 클릭·더블클릭 확대 등)로 뷰가 바뀌어도 따라온다
+    const sig = (v3.quad ? 1 : 0) + ':' + v3.act;
+    if (sig !== _lastSegSig) { _lastSegSig = sig; syncViewSeg(true); }
+  }
   c.clearRect(0, 0, W, H);
   // 조명 보기(야간)는 어두운 배경. 태양이 켜져 있으면 낮이므로 옅은 하늘색을 깐다.
   if (sunOn()) { c.fillStyle = '#8fa9c4'; c.fillRect(0, 0, W, H); }
@@ -4295,18 +4308,42 @@ function close3D() {
   syncPlanCv(); // #cv 를 다시 화면 전체로 (평면 칸에 배치돼 있던 인라인 스타일 해제) — resize+draw 포함
   resize();     // 캔버스 크기를 화면 전체로 되돌린다
 }
-// 상단 뷰 세그먼트(평면/3D) — 항상 바인딩 (3D를 아직 안 열었어도 동작)
+// 상단 뷰 세그먼트 — 통합 작업환경 (2026-07-19): 평면/3D/4분할은 별개 모드가 아니라
+// 같은 3D 셸의 '시점 프리셋'이다. 평면 = 평면 뷰포트 단일 확대(같은 2D 엔진이 그린다),
+// 3D = 아이소 단일, 4분할 = 쿼드 토글. close3D(평면 전용 화면)는 내부 폴백으로만 남긴다.
 (function bindViewSeg() {
   const d = document.getElementById('vw3d'), p = document.getElementById('vwPlan');
-  if (d) d.addEventListener('click', () => open3D());
-  if (p) p.addEventListener('click', close3D);
   const q = document.getElementById('vwQuad');
+  function focusView(planWanted) {
+    if (!is3DActive()) open3D();
+    if (!v3) return;
+    // ★vpPlanIndex 는 '화면에 보이는' 칸만 찾는다(단일 뷰에선 -1) — 레이아웃 전체에서 찾아야 한다
+    const i = planWanted ? v3.views.findIndex(w => w.mode === 'plan')
+      : v3.views.findIndex(w => !w.fixed && w.mode !== 'plan');   // 자유 회전 뷰 = 아이소
+    if (i < 0) { if (planWanted) close3D(); return; }             // 평면 칸 없는 레이아웃 → 기존 평면 전용 폴백
+    saveVp(); v3.act = i; loadVp(i);
+    v3.quad = false;
+    render3D(); saveV3Layout(); syncViewSeg(true);
+  }
+  if (p) p.addEventListener('click', () => focusView(true));
+  if (d) d.addEventListener('click', () => focusView(false));
   if (q) q.addEventListener('click', () => {
     const ov = document.getElementById('bim3d');
     if (!ov || ov.style.display === 'none') { open3D(); if (v3) { v3.quad = true; render3D(); saveV3Layout(); } }
     else { v3.quad = !v3.quad; render3D(); saveV3Layout(); }
+    syncViewSeg(true);
   });
 })();
+// 시작하면 항상 통합 셸을 연다 (저장 레이아웃 복원, 첫 실행은 4분할).
+// 테스트 iframe 은 기존 계약(평면 시작)을 유지한다.
+if (!window.frameElement) setTimeout(() => {
+  try {
+    const first = localStorage.getItem('webcad_v3_layout2') == null;
+    open3D();
+    if (v3 && first) { v3.quad = true; render3D(); saveV3Layout(); }
+    syncViewSeg(true);
+  } catch (e) { console.warn('통합 셸 자동 열기 실패(평면으로 시작):', e); }
+}, 0);
 // 3D 스냅: 클릭 지점 근처(화면 12px)의 끝점·중간점으로 흡착 (OSNAP 토글 존중)
 // 3D 선분-선분 최근접 거리와 중간점 — 라이노 Int의 '실제 3D 교차' 판정용 (Ericson 클램프 방식)
 function seg3Dist(p1, p2, q1, q2) {
