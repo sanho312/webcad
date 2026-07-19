@@ -1,9 +1,9 @@
 /* ============================================================
-   WebCAD 슬라이드 패널 — 사용자 피드백 ④
-   왼쪽 도구창(#toolbar)·오른쪽 상태창(#side)을 자동 숨김 슬라이드로.
-   · 가장자리 팝업 버튼에 커서를 올리면 → 스르륵 펼쳐짐
-   · 패널 위에 커서가 있는 동안 유지, 벗어나면 다시 숨음
-   · 팝업 버튼 클릭 = 고정(항상 펼침) ↔ 해제 토글 (localStorage 기억)
+   WebCAD 슬라이드 패널
+   왼쪽 도구창(#toolbar)·오른쪽 상태창(#side)을 접이식으로.
+   (2026-07-19 개편: 호버 자동 펼침 제거 — 사용자 기기(호버 미지원)에
+    맞춰 '클릭으로만' 펼치고 접는다. 손잡이도 화살표 박스가 아니라
+    기존 폭조절 바 느낌의 얇은 세로 바.)
    ============================================================ */
 (() => {
 'use strict';
@@ -12,28 +12,28 @@ const left = document.getElementById('toolbar');
 const right = document.getElementById('side');
 if (!main || (!left && !right)) return;
 const KEY = 'webcad_panels';
-const pin = { l: false, r: false };
+const pin = { l: false, r: false };                    // 펼침 상태 (기억)
 try { Object.assign(pin, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
 
 const css = document.createElement('style');
 css.textContent = `
   #main{position:relative;}
-  .rz{display:none !important;}                 /* 폭 조절 손잡이 → 접기/펼치기 버튼으로 대체 */
+  .rz{display:none !important;}                 /* 옛 폭 조절 손잡이 자리는 접기 바가 대신한다 */
   #toolbar{position:absolute;left:0;top:0;bottom:0;z-index:26;margin:0;
     transform:translateX(-102%);transition:transform .22s ease;box-shadow:4px 0 18px rgba(0,0,0,.35);}
   #toolbar.pOpen{transform:none;}
   #side{position:absolute;right:0;top:0;bottom:0;z-index:26;margin:0;
     transform:translateX(102%);transition:transform .22s ease;box-shadow:-4px 0 18px rgba(0,0,0,.35);}
   #side.pOpen{transform:none;}
-  .pTab{position:absolute;top:50%;margin-top:-34px;z-index:27;width:22px;height:68px;
+  /* 얇은 세로 바 — 클릭으로만 펼침/접기 */
+  .pTab{position:absolute;top:0;bottom:0;width:9px;z-index:27;
     display:flex;align-items:center;justify-content:center;
-    background:rgba(22,33,60,.92);border:1px solid rgba(120,140,200,.45);color:#cfe0ff;
-    cursor:pointer;font-size:13px;user-select:none;touch-action:manipulation;
+    background:rgba(58,72,112,.55);color:#9fb2d8;font-size:9px;
+    cursor:pointer;user-select:none;touch-action:manipulation;
     transition:left .22s ease, right .22s ease, background .15s;}
-  .pTab:hover{background:rgba(42,84,176,.85);}
-  .pTab.pinned{color:#5ad1ff;border-color:#5ad1ff;}
-  #pTabL{left:0;border-radius:0 10px 10px 0;border-left:none;}
-  #pTabR{right:0;border-radius:10px 0 0 10px;border-right:none;}
+  .pTab:hover{background:rgba(90,110,170,.7);}
+  #pTabL{left:0;border-right:1px solid rgba(120,140,200,.35);}
+  #pTabR{right:0;border-left:1px solid rgba(120,140,200,.35);}
 `;
 document.head.appendChild(css);
 
@@ -41,15 +41,13 @@ function mkTab(id, panel, sideKey) {
   if (!panel) return null;
   const tab = document.createElement('div');
   tab.id = id; tab.className = 'pTab';
-  tab.title = '올리면 펼침 · 클릭하면 고정/해제';
+  tab.title = '클릭: 도구창 펼침/접기';
   main.appendChild(tab);
-  let closeTimer = null;
   const isL = sideKey === 'l';
   const refresh = () => {
     const open = panel.classList.contains('pOpen');
     tab.textContent = isL ? (open ? '◂' : '▸') : (open ? '▸' : '◂');
-    tab.classList.toggle('pinned', pin[sideKey]);
-    // 열리면 탭이 패널 가장자리에 붙어 따라간다
+    // 펼치면 바가 패널 가장자리에 붙어 따라간다
     const w = panel.getBoundingClientRect().width;
     if (isL) tab.style.left = open ? w + 'px' : '0';
     else tab.style.right = open ? w + 'px' : '0';
@@ -59,17 +57,7 @@ function mkTab(id, panel, sideKey) {
     refresh();
     window.dispatchEvent(new Event('resize'));
   };
-  const scheduleClose = () => {
-    clearTimeout(closeTimer);
-    if (pin[sideKey]) return;
-    closeTimer = setTimeout(() => setOpen(false), 260);
-  };
-  const cancelClose = () => clearTimeout(closeTimer);
-  tab.addEventListener('pointerenter', () => { cancelClose(); setOpen(true); });
-  tab.addEventListener('pointerleave', scheduleClose);
-  panel.addEventListener('pointerenter', cancelClose);
-  panel.addEventListener('pointerleave', scheduleClose);
-  tab.addEventListener('click', () => {              // 클릭 = 고정 토글 (터치는 이걸로 열고 닫는다)
+  tab.addEventListener('click', () => {                // 클릭 = 토글 (호버로는 아무 일도 없다)
     pin[sideKey] = !pin[sideKey];
     try { localStorage.setItem(KEY, JSON.stringify(pin)); } catch (e) {}
     setOpen(pin[sideKey]);
