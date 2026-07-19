@@ -178,8 +178,10 @@ function vpLabelEl(i) {
     el = document.createElement('div');
     el.id = id;
     // pointer-events:auto — 이름표는 클릭을 받는다(나머지 캔버스는 궤도·작도가 그대로 동작).
+    // 각 칸의 '중앙 상단'에 놓는다 — 좌우 패널이 펼쳐져도 가려지지 않는 자리 (2026-07-20)
     el.style.cssText = 'position:absolute;z-index:20;font:600 12px -apple-system,system-ui,sans-serif;'
-      + 'cursor:pointer;user-select:none;display:none;padding:1px 5px;border-radius:5px;white-space:nowrap;';
+      + 'cursor:pointer;user-select:none;display:none;padding:1px 5px;border-radius:5px;white-space:nowrap;'
+      + 'transform:translateX(-50%);';
     el.title = '클릭: 이 뷰를 활성화(입면은 방향 순환) · 우클릭: 표시 모드 선택';
     // 좌클릭 — 이 뷰포트를 활성으로. 입면이면 방향을 순환(예전 캔버스 히트가 하던 일).
     el.addEventListener('click', (ev) => {
@@ -265,7 +267,7 @@ function vpShowLabel(i, cover) {
   const modeTag = vpIsRt(i) ? ' · 레이트레이싱' : (vpIsRendered(i) ? ' · 렌더링' : '');
   el.textContent = w.name + ((w.name in ELEV_YAW) ? ' ▾' : '') + modeTag;
   el.style.display = '';
-  el.style.left = (r.x + 5) + 'px'; el.style.top = (r.y + 3) + 'px';
+  el.style.left = (r.x + r.w / 2) + 'px'; el.style.top = (r.y + 3) + 'px';   // 칸 중앙 상단
   el.style.color = active ? '#0A84FF' : (getCSS('--muted') || '#8a93a6');
   el.style.background = active ? 'rgba(10,132,255,.10)' : 'transparent';
   if (cover) {

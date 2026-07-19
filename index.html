@@ -124,7 +124,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
 
   /* 문서 탭 — 브라우저 탭처럼 여러 작업물 스택. safe-area는 여기서 흡수 */
   /* 탭 토글은 바닥에 딱 붙음(bottom:0, flex-end). '+'만 라운드 정사각형으로 윗선을 탭과 맞추고 바닥에서 약간 띄움(.dtabNew의 align-self:flex-start) */
-  #docTabs{position:absolute;left:8px;bottom:0;z-index:12;display:flex;align-items:flex-end;gap:4px;max-width:calc(100% - 16px);overflow-x:auto;
+  #docTabs{position:absolute;left:8px;bottom:0;z-index:20;display:flex;align-items:flex-end;gap:4px;max-width:calc(100% - 16px);overflow-x:auto;
     padding:0;background:transparent;border:none;box-shadow:none;scrollbar-width:thin;}
   .dtab{display:flex;align-items:center;gap:7px;max-width:180px;min-width:88px;flex:0 0 auto;
     padding:5px 8px 6px 12px;font-size:12.5px;color:var(--muted);cursor:pointer;
@@ -432,7 +432,9 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     </div>
     <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)">↶ 취소</button>
     <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)">↷ 복구</button>
-    <span id="viewSeg" style="display:inline-flex;gap:2px;background:var(--glass-fill);border-radius:980px;padding:2px;box-shadow:var(--spec);">
+    <!-- 통합 작업환경(2026-07-19) 이후 시점 전환은 뷰 이름 클릭/더블클릭으로 —
+         세그 버튼은 내부 참조(테스트·스케치 폴백)가 있어 DOM 만 남기고 숨긴다 -->
+    <span id="viewSeg" style="display:none;gap:2px;background:var(--glass-fill);border-radius:980px;padding:2px;box-shadow:var(--spec);">
       <button class="tbtn" id="vwPlan" style="box-shadow:none;background:var(--accent);color:#fff;">평면</button>
       <button class="tbtn" id="vw3d" style="box-shadow:none;background:transparent;">3D</button>
       <button class="tbtn" id="vwQuad" title="3D 사분할 뷰 ↔ 단일 뷰" style="box-shadow:none;background:transparent;">4분할</button>
@@ -921,7 +923,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260719c"></script>
+<script src="cad.js?v=20260720a"></script>
 <script src="prep.js?v=5"></script>
 <script src="bimify.js?v=3"></script>
 <script src="sketch.js?v=12"></script>
