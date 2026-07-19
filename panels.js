@@ -14,6 +14,13 @@ if (!main || (!left && !right)) return;
 const KEY = 'webcad_panels';
 const pin = { l: false, r: false };                    // 펼침 상태 (기억)
 try { Object.assign(pin, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
+// 옛 폭조절(.rz)이 저장해둔 좁은 도구창 폭이 남아 아이콘 그리드가 1열 텍스트로 찌그러진다 —
+// 접이식에선 폭 조절이 없으므로 기본 폭(158px, 아이콘 3열)으로 되돌리고 저장값도 정리
+try {
+  const u = JSON.parse(localStorage.getItem('webcad_ui_v1') || '{}');
+  if (u.toolbarW) { delete u.toolbarW; localStorage.setItem('webcad_ui_v1', JSON.stringify(u)); }
+} catch (e) {}
+if (left) left.style.width = '158px';
 
 const css = document.createElement('style');
 css.textContent = `
@@ -35,6 +42,8 @@ css.textContent = `
   #pTabL{left:0;} #pTabL::after{left:3px;}
   #pTabR{right:0;} #pTabR::after{right:3px;}
   .pTab:hover::after{background:var(--accent,#0A84FF);height:72px;}
+  /* 도구창이 펼쳐지면 하단의 노드·문서 탭 무리도 그만큼 밀려나 가려지지 않는다 */
+  #docTabs{left:calc(8px + var(--tbw, 0px));transition:left .22s ease;}
 `;
 document.head.appendChild(css);
 
@@ -55,6 +64,8 @@ function mkTab(id, panel, sideKey) {
   const setOpen = (o) => {
     panel.classList.toggle('pOpen', o);
     refresh();
+    if (isL) document.documentElement.style.setProperty('--tbw',
+      o ? panel.getBoundingClientRect().width + 'px' : '0px');
     window.dispatchEvent(new Event('resize'));
   };
   tab.addEventListener('click', () => {                // 클릭 = 토글 (호버로는 아무 일도 없다)
