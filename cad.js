@@ -1761,16 +1761,50 @@ function touchXY(t) { const r = cv.getBoundingClientRect(); return { x: t.client
 function touchMid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 function touchDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
+// 터치 삭제 — 선택한 개체를 길게 누르면 손끝 옆에 🗑 이 떠서, 끌어다 놓으면 지운다
+// (iPad: 키보드 없이 Delete 를 대신한다. 다중 선택 시 선택 전체 삭제)
+let trashEl = null;
+function showTouchTrash(cx2, cy2) {
+  if (!trashEl) {
+    trashEl = document.createElement('div');
+    trashEl.id = 'touchTrash';
+    trashEl.style.cssText = 'position:fixed;z-index:60;width:44px;height:44px;border-radius:50%;'
+      + 'display:flex;align-items:center;justify-content:center;font-size:20px;'
+      + 'background:rgba(20,28,50,.95);border:1.5px solid rgba(224,79,79,.85);'
+      + 'box-shadow:0 4px 14px rgba(0,0,0,.45);pointer-events:none;transition:transform .1s ease;';
+    trashEl.textContent = '🗑';
+    document.body.appendChild(trashEl);
+  }
+  const x = Math.min(window.innerWidth - 30, Math.max(30, cx2 + 56));
+  const y = Math.min(window.innerHeight - 30, Math.max(30, cy2 - 56));
+  trashEl.style.left = (x - 22) + 'px'; trashEl.style.top = (y - 22) + 'px';
+  trashEl.style.display = 'flex';
+  trashEl.style.transform = ''; trashEl.style.background = 'rgba(20,28,50,.95)';
+}
+function trashHitAt(cx2, cy2) {
+  if (!trashEl || trashEl.style.display === 'none') return false;
+  const r = trashEl.getBoundingClientRect();
+  return cx2 >= r.left - 8 && cx2 <= r.right + 8 && cy2 >= r.top - 8 && cy2 <= r.bottom + 8;
+}
+function hideTouchTrash() { if (trashEl) trashEl.style.display = 'none'; }
 cv.addEventListener('touchstart', (ev) => {
   ev.preventDefault();
   lastInputWasTouch = true;
   if (ev.touches.length === 1) {
-    const p = touchXY(ev.touches[0]);
+    const t0 = ev.touches[0];
+    const p = touchXY(t0);
     setPointer(p.x, p.y);
-    touch = { mode: 'tap', sx: p.x, sy: p.y, sworld: screenToWorld(p.x, p.y), moved: 0, vx: state.view.x, vy: state.view.y };
-    // 홀드(≈1초) 후 드래그 = 박스 선택 (피그마식) — 터치 환경의 유일한 영역 선택 수단
+    touch = { mode: 'tap', sx: p.x, sy: p.y, sworld: screenToWorld(p.x, p.y), moved: 0,
+      vx: state.view.x, vy: state.view.y, cx: t0.clientX, cy: t0.clientY };
+    // 홀드(≈1초): 선택된 개체 위 = 🗑 드래그 삭제, 빈 곳 = 박스 선택 (피그마식)
     touch.lpTimer = setTimeout(() => {
       if (touch && touch.mode === 'tap' && touch.moved <= 12) {
+        const hit = state.selection.size ? pick(touch.sworld, touch.sworld) : null;
+        if (hit && state.selection.has(hit.id)) {
+          touch.mode = 'trash';
+          showTouchTrash(touch.cx, touch.cy);
+          return;
+        }
         state.selection.clear();
         dragSelect = { x1: touch.sworld.x, y1: touch.sworld.y, x2: touch.sworld.x, y2: touch.sworld.y };
         touch.mode = 'boxsel';
@@ -1779,8 +1813,9 @@ cv.addEventListener('touchstart', (ev) => {
     }, 800);
     draw();
   } else if (ev.touches.length === 2) {
-    if (touch && touch.lpTimer) clearTimeout(touch.lpTimer);   // 두 손가락 = 핀치 — 홀드 선택 취소
+    if (touch && touch.lpTimer) clearTimeout(touch.lpTimer);   // 두 손가락 = 핀치 — 홀드 제스처 취소
     if (dragSelect && touch && touch.mode === 'boxsel') dragSelect = null;
+    if (touch && touch.mode === 'trash') hideTouchTrash();
     const a = touchXY(ev.touches[0]), b = touchXY(ev.touches[1]);
     touch = { mode: 'pinch', startDist: touchDist(a, b) || 1, startScale: state.view.scale,
       mid: touchMid(a, b), vx: state.view.x, vy: state.view.y, moved: 0 };
@@ -1791,8 +1826,18 @@ cv.addEventListener('touchmove', (ev) => {
   ev.preventDefault();
   if (!touch) return;
   if (ev.touches.length === 1 && touch.mode !== 'pinch') {
-    const p = touchXY(ev.touches[0]);
+    const t0 = ev.touches[0];
+    const p = touchXY(t0);
     touch.moved = Math.max(touch.moved, Math.hypot(p.x - touch.sx, p.y - touch.sy));
+    if (touch.mode === 'trash') {                      // 🗑 로 끌어다 놓으면 삭제
+      touch.cx = t0.clientX; touch.cy = t0.clientY;
+      const hot = trashHitAt(t0.clientX, t0.clientY);
+      if (trashEl) {
+        trashEl.style.transform = hot ? 'scale(1.3)' : '';
+        trashEl.style.background = hot ? 'rgba(224,79,79,.92)' : 'rgba(20,28,50,.95)';
+      }
+      return;                                          // 팬으로 전환하지 않는다
+    }
     if (touch.mode === 'boxsel') {                     // 홀드 후 드래그 = 선택 박스
       const w = screenToWorld(p.x, p.y);
       dragSelect.x2 = w.x; dragSelect.y2 = w.y;
@@ -1832,7 +1877,14 @@ cv.addEventListener('touchend', (ev) => {
   ev.preventDefault();
   if (!touch) return;
   if (touch.lpTimer) clearTimeout(touch.lpTimer);
-  if (touch.mode === 'boxsel') {                       // 홀드-드래그 선택 확정
+  if (touch.mode === 'trash') {                        // 🗑 위에서 놓으면 선택 전체 삭제
+    const t0 = ev.changedTouches && ev.changedTouches[0];
+    const fx = t0 ? t0.clientX : touch.cx, fy = t0 ? t0.clientY : touch.cy;
+    const hot = trashHitAt(fx, fy);
+    hideTouchTrash();
+    if (hot) deleteSelection();
+    if (ev.touches.length === 0) { touch = null; return; }
+  } else if (touch.mode === 'boxsel') {                // 홀드-드래그 선택 확정
     if (dragSelect) finishDragSelect({ shiftKey: false });
     if (ev.touches.length === 0) { touch = null; return; }
   } else if (touch.mode === 'tap' && touch.moved <= 12) {
