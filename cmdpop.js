@@ -19,20 +19,25 @@ css.textContent = `
   #console { display: none !important; }        /* 상단 명령 콘솔 제거 (#toolbar 는 panels.js 가 슬라이드로) */
   #tgBottom { display: none !important; }
   /* 닫힘 = 투명+클릭 통과 (display:none 이면 안의 입력창이 포커스 불가라 '글자=명령'이 죽는다) */
-  /* 마우스 크기만한 네모난 흰 박스 — 검은 텍스트, 커서 '오른쪽'을 따라다닌다.
-     (2026-07-20 피드백: 더 '짧고 낮게' — 폭 110px대, 입력줄 한 줄 높이) */
+  /* 네모난 흰 박스 — 검은 텍스트. '열리는 순간의 커서 위치'에 고정된다(따라다니지 않음 —
+     아래로 뜨는 유사 명령어를 클릭할 수 있어야 하므로). 2026-07-20: 텍스트 한 줄 높이 · 폭 절반. */
   #cmdPop{position:fixed;z-index:70;display:flex;opacity:0;pointer-events:none;
-    min-width:110px;max-width:min(230px,90vw);
+    min-width:64px;max-width:min(150px,90vw);
     background:#ffffff;border:1px solid #b8bfcc;border-radius:3px;
-    box-shadow:0 3px 10px rgba(0,0,0,.22);padding:2px 5px;}
+    box-shadow:0 3px 10px rgba(0,0,0,.22);padding:1px 4px;}
   #cmdPop #cmdLabel{display:none;}                /* '명령:' 라벨 없이 입력만 */
   #cmdPop.open{opacity:1;pointer-events:auto;}
   #cmdPop #cmdInputRow{display:flex;background:none;border:none;padding:0;align-items:center;}
-  #cmdPop .cmdInputWrap{flex:1 1 110px;min-width:0;max-width:200px;}
+  #cmdPop .cmdInputWrap{flex:1 1 56px;min-width:0;max-width:120px;}
   #cmdPop #cmdLabel{color:#333;font-size:12px;}
-  #cmdPop #cmdInput{background:#fff;color:#111;border:none;outline:none;font-size:12px;
-    padding:2px 3px;height:18px;line-height:14px;border-radius:0;box-shadow:none;font-family:var(--mono,monospace);}
-  #cmdPop #cmdInput:focus{box-shadow:none;background:#fff;}
+  /* 텍스트 색은 테마와 무관하게 강제 — 흰 박스 안은 항상 진한 글자 (화이트모드 흰 글자 금지) */
+  #cmdPop #cmdInput{background:#fff !important;color:#111 !important;-webkit-text-fill-color:#111;
+    caret-color:#111;border:none;outline:none;font-size:12px;
+    padding:0 2px;height:15px;line-height:15px;border-radius:0;box-shadow:none !important;
+    font-family:var(--mono,monospace);}
+  #cmdPop #cmdInput:focus{box-shadow:none !important;background:#fff !important;}
+  /* 유사 명령어 목록은 입력 박스 '아래'로 — 박스가 고정이므로 그대로 클릭 가능 */
+  #cmdPop #cmdSuggest{bottom:auto;top:calc(100% + 6px);}
   #cmdPop #cmdPrompt, #cmdPop #dimHint{color:#444;}
   #cmdPop #cmdSuggest{background:#fff;color:#111;border:1px solid #d0d5e0;border-radius:6px;
     box-shadow:0 6px 16px rgba(0,0,0,.18);}
@@ -63,13 +68,10 @@ function place() {
   const y = Math.max(8, Math.min(innerHeight - r.height - 8, lastPtr.y - r.height / 2));
   pop.style.left = x + 'px'; pop.style.top = y + 'px';
 }
-let placeQueued = false;
+// 열려 있는 동안엔 '고정' — 커서를 따라가면 입력 중 아래 유사 명령어를 클릭할 수 없다.
+// lastPtr 만 계속 갱신해 두었다가, 다음에 '열리는 순간'의 커서 위치에 박스를 놓는다.
 window.addEventListener('pointermove', (e) => {
   lastPtr = { x: e.clientX, y: e.clientY };
-  if (isOpen() && !placeQueued) {                       // 열려 있는 동안 커서를 따라다닌다
-    placeQueued = true;
-    requestAnimationFrame(() => { placeQueued = false; if (isOpen()) place(); });
-  }
 }, { passive: true });
 window.addEventListener('pointerdown', (e) => { lastPtr = { x: e.clientX, y: e.clientY }; }, { passive: true, capture: true });
 

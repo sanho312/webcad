@@ -59,7 +59,7 @@ body, button, input, select, textarea{
   box-shadow:none; font-weight:500; font-size:12.5px; color:var(--muted);
 }
 .tbtn:hover{ background:var(--glass-fill-hi); color:var(--text); box-shadow:none; }
-#btnFile, #btnOpts{ border:1px solid var(--line-strong); background:var(--panel2); color:var(--text); }
+/* 파일·옵션도 다른 토글과 같은 플랫 버튼 (테두리 상자 특별취급 제거 — 2026-07-20 피드백) */
 #fileName{ color:var(--muted); font-size:12.5px; }
 
 /* ── 도구창: Beyond UI 사이드바 — 아이콘+이름 1열 리스트 ── */
@@ -160,6 +160,10 @@ button.tbtn{ display:inline-flex; align-items:center; gap:6px; }
 }
 .dlgHint{ color:var(--muted); }
 .uiEdH{ color:var(--muted); font-weight:600; }
+
+/* ── 뷰 이름표: 반투명 — 작업에 거슬리지 않게, 올리면 또렷하게 (2026-07-20) ── */
+[id^="vpLabel"]{ opacity:.45; transition:opacity .15s ease; }
+[id^="vpLabel"]:hover{ opacity:1; }
 
 /* ── 라이트 모드 스크롤바 (다크용 흰 반투명이 흰 배경에서 안 보이던 것) ── */
 html.light ::-webkit-scrollbar-thumb{

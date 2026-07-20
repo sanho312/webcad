@@ -703,10 +703,12 @@
 
   // ---------- UI ----------
   const css = `
-  /* AI 코워커 토글: 명령창(#cmdInputRow) 오른쪽 빈 공간에 인라인 버튼으로 배치 */
-  #aiFab{flex:0 0 auto;margin-left:8px;width:30px;height:30px;border-radius:8px;border:1px solid #3a4a6a;
-    background:#16213c;color:#eaf2ff;font-size:17px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
-  #aiFab:hover{background:#1d2b4f}
+  /* AI 코워커 토글: 상단바의 다른 토글(.tbtn)과 완전히 같은 디자인 — 특별취급 없음 (2026-07-20 피드백) */
+  #aiFab{flex:0 0 auto;margin:0;width:auto;height:auto;padding:5px 11px;border:none;border-radius:980px;
+    background:var(--glass-fill);color:var(--muted);font-size:12.5px;line-height:1;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;box-shadow:var(--spec);}
+  #aiFab:hover{background:var(--glass-fill-hi);color:var(--text)}
+  #aiFab.on{background:var(--panel3,rgba(120,140,180,.2));color:var(--text)}
   #aiPanel{position:fixed;right:14px;bottom:68px;z-index:9001;width:360px;max-width:calc(100vw - 28px);height:500px;max-height:calc(100vh - 90px);
     display:none;flex-direction:column;background:#111a30;border:1px solid #33406a;border-radius:12px;overflow:hidden;
     box-shadow:0 10px 34px rgba(0,0,0,.55);font:13px/1.5 -apple-system,system-ui,sans-serif;color:#dbe6ff;
@@ -737,8 +739,7 @@
   #aiSetup .hint{font-size:11px;color:#8fa4d4}
   #aiSetup button{align-self:flex-start;background:#2a54b0;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px}
   /* ── 라이트 테마 (html.light) — 앱 화면 필터를 따라간다 ── */
-  html.light #aiFab{background:#e9edf5;border-color:rgba(20,40,90,.25);color:#20305c}
-  html.light #aiFab:hover{background:#dde3ee}
+  /* (#aiFab 는 테마 변수 기반이라 라이트 전용 재정의 불필요) */
   html.light #aiPanel{background:#f7f8fc;border-color:rgba(20,40,90,.25);color:#1c2440;
     box-shadow:0 10px 34px rgba(30,50,100,.28)}
   html.light #aiHead{background:#e9edf5;border-bottom:1px solid rgba(20,40,90,.13)}
@@ -833,7 +834,7 @@
     modelSel.addEventListener('change', () => { cfg.model = modelSel.value; saveCfg(); });
     head.appendChild(modelSel);
     const keyBtn = h('button', { title: 'API 키 설정' });
-    keyBtn.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg>';
+    keyBtn.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
     keyBtn.addEventListener('click', () => { setupEl.style.display = setupEl.style.display === 'none' ? 'flex' : 'none'; });
     head.appendChild(keyBtn);
     const clrBtn = h('button', { title: '대화 초기화' });

@@ -1713,12 +1713,12 @@ function tests(){
     ok(typeof C.vpModeMenu === 'function', 'vpModeMenu 존재');
     ok(typeof C.closeVpMenu === 'function', 'closeVpMenu 존재');
 
-    // 평면 칸은 렌더링/레이트레이싱을 못 켠다 (도면 표시 전용)
-    C.vpSetMode(0, 'rendered');
-    ok(!(C.rview && C.rview.on), '★평면 칸에는 렌더링 뷰가 켜지지 않는다');
-    ok(C.rt && !C.rt.on, '★평면 칸에는 레이트레이싱이 켜지지 않는다');
+    // 평면 칸도 렌더링/레이트레이싱 선택 가능 (2026-07-20 개편) — 선택하면 그 칸만
+    // 3D 톱뷰(top·회전 잠금)로 전환돼 렌더러가 그리고, '작업 표시'가 2D 평면으로 되돌린다.
+    // 렌더러 기동(three.js·BVH)은 무거워 실브라우저에서 검증했다 — 여기선 메뉴 계약만 못박는다.
+    ok(!(C.rview && C.rview.on), '렌더링 뷰는 꺼진 상태에서 시작');
 
-    // 메뉴 DOM — 3D 칸은 3항목, 평면 칸은 1항목
+    // 메뉴 DOM — 이제 3D 칸·평면 칸 모두 작업/렌더링/레이트레이싱 3항목
     const doc = V.cv.ownerDocument;
     const lbl1 = doc.getElementById('vpLabel1') || (C.render3D(), doc.getElementById('vpLabel1'));
     C.vpModeMenu(1, lbl1 || doc.body);
@@ -1730,7 +1730,7 @@ function tests(){
     const lbl0 = doc.getElementById('vpLabel0');
     C.vpModeMenu(0, lbl0 || doc.body);
     menu = doc.getElementById('vpModeMenu');
-    eqi(menu.querySelectorAll('[data-mode]').length, 1, '★평면 칸 메뉴는 작업 표시 1항목만');
+    eqi(menu.querySelectorAll('[data-mode]').length, 3, '★평면 칸 메뉴도 3항목 (렌더링/RT 는 톱뷰 전환으로 표시)');
     C.closeVpMenu();
 
     // 이름표가 DOM 으로 4칸 모두 (우클릭을 받으려면 실제 요소여야 한다)
@@ -3289,6 +3289,110 @@ function tests(){
       ok(C.extrude3DUI(), '4분할(3D 칸 포함) → 3D 흐름');
       v3t.quad = orig.quad; v3t.act = orig.act;
     } else ok(true, '(3D 셸/훅 없는 환경 — 존재만 확인)');
+    reset();
+  }
+
+  // ---------- 2026-07-20 2차 다듬기 ----------
+  group('2차 다듬기 — 고정 명령창 · cap on/off · 체인 캡 · 옵션 칩 · 마이페이지 · 평면 렌더모드');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    reset();
+    // ── 명령창: 텍스트 한 줄 높이·절반 폭·열린 위치 고정
+    const CP = AW.WEBCAD_CMDPOP;
+    if (CP) {
+      CP.setPtr(400, 300); CP.show();
+      const p1 = CP.pop.getBoundingClientRect();
+      ok(p1.width <= 150, `★명령창 폭 ≤ 150 (${Math.round(p1.width)})`);
+      ok(p1.height <= 27, `★명령창 높이 = 텍스트 한 줄 (${Math.round(p1.height)})`);
+      AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: 900, clientY: 100 }));
+      const p2 = CP.pop.getBoundingClientRect();
+      ok(p2.left === p1.left && p2.top === p1.top, '★열린 뒤에는 커서를 따라가지 않고 고정');
+      const sug = AD.getElementById('cmdSuggest');
+      ok(!sug || AW.getComputedStyle(sug).bottom === 'auto', '  유사 명령어 목록은 박스 아래로');
+      CP.hide();
+    } else ok(true, '(cmdpop 없음)');
+    // ── 테마 잉크 규칙: 화이트모드 흰 글자 금지 · 블랙모드 검은 글자 금지
+    AD.documentElement.classList.add('light');
+    ok(C.entityColor({ type: 'TEXT', color: '#ffffff', layer: '0' }) !== '#ffffff', '★화이트모드: 흰 텍스트 → 진한 잉크로');
+    AD.documentElement.classList.remove('light');
+    ok(C.entityColor({ type: 'TEXT', color: '#000000', layer: '0' }) !== '#000000', '★블랙모드: 검은 텍스트 → 밝은 잉크로');
+    // ── extrudecrv: 분해된 곡선(LINE 4개)이 끝점으로 닫히면 캡 가능한 프로파일로
+    setEnts([
+      { type: 'LINE', x1: 0, y1: 0, x2: 3000, y2: 0, layer: '0' },
+      { type: 'LINE', x1: 3000, y1: 0, x2: 3000, y2: 2000, layer: '0' },
+      { type: 'LINE', x1: 3000, y1: 2000, x2: 0, y2: 2000, layer: '0' },
+      { type: 'LINE', x1: 0, y1: 2000, x2: 0, y2: 0, layer: '0' },
+    ]);
+    S0.selection.clear(); S0.entities.forEach(e => S0.selection.add(e.id));
+    C.runCommandInput('extrudecrv');
+    ok(C.extrudePend && !!C.extrudePend.chain, '★끝점 맞닿은 LINE 4개 → 닫힌 고리 감지');
+    C.runCommandInput('on');
+    ok(C.extrudePend && C.extrudePend.cap === true, '  cap on 입력 = 캡 켬');
+    C.runCommandInput('2600');
+    const col = S0.entities.find(e => e.bim);
+    ok(col && col.bim.kind === 'column' && col.bim.h === 2600 && col.closed && col.points.length === 4,
+      '★체인 → 닫힌 프로파일 column(캡 있는 솔리드) h2600');
+    eqi(S0.entities.filter(e => e.type === 'LINE').length, 4, '  원본 곡선 4개 복원 (DeleteInput=No)');
+    // cap off → 면(wall t0)
+    setEnts([
+      { type: 'LINE', x1: 0, y1: 0, x2: 3000, y2: 0, layer: '0' },
+      { type: 'LINE', x1: 3000, y1: 0, x2: 3000, y2: 2000, layer: '0' },
+      { type: 'LINE', x1: 3000, y1: 2000, x2: 0, y2: 2000, layer: '0' },
+      { type: 'LINE', x1: 0, y1: 2000, x2: 0, y2: 0, layer: '0' },
+    ]);
+    S0.selection.clear(); S0.entities.forEach(e => S0.selection.add(e.id));
+    C.runCommandInput('extrudecrv');
+    C.runCommandInput('off');
+    const capBtns = [...AD.querySelectorAll('#cmdPrompt .promptBtn')].map(b => b.textContent);
+    ok(capBtns.some(t => /on/.test(t)) && capBtns.some(t => /off/.test(t)), '★명령창에 cap on/off 클릭 선택지');
+    C.runCommandInput('2600');
+    const w0 = S0.entities.find(e => e.bim);
+    ok(w0 && w0.bim.kind === 'wall' && w0.bim.t === 0, '  cap off = 캡 없는 면(wall t0)');
+    // 기본값 복원 (상시 cap on)
+    C.runCommandInput('extrudecrv'); C.runCommandInput('on'); C.extrudePendCancel && C.extrudePendCancel();
+    reset();
+    // ── 옵션 칩 통일: fillet r=, chamfer d=
+    C.runCommandInput('fillet');
+    ok([...AD.querySelectorAll('#cmdPrompt .promptBtn')].some(b => /^r=/.test(b.textContent)), '★fillet = r 옵션 칩');
+    C.runCommandInput('chamfer');
+    ok([...AD.querySelectorAll('#cmdPrompt .promptBtn')].some(b => /^d=/.test(b.textContent)), '  chamfer = d 옵션 칩');
+    AW.__CADTEST__ && C.runCommandInput('select');
+    // ── 노드 에디터·상단바 통일
+    ok(!!AD.querySelector('#ghFab svg.ic'), '★노드 버튼 = 라인 아이콘');
+    ok(AD.querySelectorAll('#ghTop svg.ic').length >= 6, '  노드 에디터 상단 버튼 전부 라인 아이콘');
+    const fab2 = AD.getElementById('aiFab');
+    ok(fab2 && AW.getComputedStyle(fab2).borderTopStyle === 'none', '★AI 코워커 버튼 = 다른 토글과 같은 플랫 디자인');
+    const lbl0 = AD.querySelector('[id^="vpLabel"]');
+    ok(!lbl0 || AW.getComputedStyle(lbl0).opacity === '0.45', '★뷰 이름표 = 반투명(0.45)');
+    // ── 마이페이지 드롭다운 (플랜·친구·로그아웃) — 상시 로그아웃 버튼 없음
+    if (AW.WEBCAD_AUTH_API && AW.WEBCAD_AUTH_API._showUser) {
+      AW.WEBCAD_AUTH_API._showUser({ user: { email: 't@webcad.dev', user_metadata: { username: 'T', friends: ['f@x.com'] } } });
+      ok(!AD.getElementById('btnLogout'), '★상시 로그아웃 버튼 제거');
+      AD.getElementById('userChip').dispatchEvent(new AW.PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      const menu = AD.getElementById('userMenu');
+      ok(menu && menu.classList.contains('open'), '★마이페이지 클릭 = 드롭다운');
+      ok(!!AD.getElementById('umPlan') && !!AD.getElementById('umFriends') && !!AD.getElementById('umLogout'),
+        '  항목: 플랜 · 친구 · 로그아웃');
+      AD.getElementById('umFriends').click();
+      const fp = AD.getElementById('friendPanel');
+      ok(fp.classList.contains('open') && fp.querySelectorAll('.frRow').length === 1, '★친구 패널 — 목록(접속 표시) 렌더');
+      ok(fp.getBoundingClientRect().right <= AD.getElementById('userChip').getBoundingClientRect().left,
+        '  패널은 토글 왼쪽으로 펼침');
+      AD.dispatchEvent(new AW.PointerEvent('pointerdown', { bubbles: true }));
+      ok(!menu.classList.contains('open'), '  바깥 클릭 = 닫힘');
+    } else ok(true, '(auth 훅 없음)');
+    // ── 평면 칸 표시 모드 메뉴: 렌더링/레이트레이싱 선택지 노출
+    C.open3D && C.open3D();
+    if (C.v3 && C.v3.views) {
+      let pi2 = -1; for (let i = 0; i < C.v3.views.length; i++) if (C.vpIsPlan(i)) { pi2 = i; break; }
+      if (pi2 >= 0) {
+        const lblEl = C.vpLabelEl(pi2); lblEl._vi = pi2;
+        C.vpModeMenu(pi2, lblEl);
+        const items = AD.querySelectorAll('#vpModeMenu [data-mode]');
+        eqi(items.length, 3, '★평면 칸 표시 모드 메뉴 = 작업/렌더링/레이트레이싱 3개');
+        C.closeVpMenu();
+      } else ok(true, '(평면 칸 없음)');
+    }
     reset();
   }
 }

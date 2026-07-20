@@ -754,17 +754,25 @@
   function el(t, a, html) { const e = document.createElement(t); if (a) for (const k in a) e.setAttribute(k, a[k]); if (html != null) e.innerHTML = html; return e; }
   function build() {
     document.head.appendChild(el('style', null, css));
-    const fab = el('button', { id: 'ghFab' }, '◇ 노드');
+    // 이모지/기호 대신 앱 공통 라인 아이콘(svg.ic) — 상단바·도구창과 같은 그림체 (2026-07-20)
+    const IC_NODE = '<svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="6" rx="1.5"/><rect x="14" y="14" width="7" height="6" rx="1.5"/><path d="M10 7h4a3 3 0 0 1 3 3v4"/></svg>';
+    const IC_CHECK = '<svg class="ic" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5L19.5 7"/></svg>';
+    const IC_ERASE = '<svg class="ic" viewBox="0 0 24 24"><path d="M4 15.5L13.5 6a2 2 0 0 1 2.8 0l2.7 2.7a2 2 0 0 1 0 2.8L11.5 19H7z"/><path d="M11.5 19H20"/></svg>';
+    const IC_RESET = '<svg class="ic" viewBox="0 0 24 24"><polyline points="3.5 4.5 3.5 10.5 9.5 10.5"/><path d="M5.8 15.5a8 8 0 1 0 1.7-8.7L3.5 10.5"/></svg>';
+    const IC_SAVE = '<svg class="ic" viewBox="0 0 24 24"><path d="M12 4v10M8 10.5l4 4 4-4"/><path d="M4.5 19.5h15"/></svg>';
+    const IC_OPEN = '<svg class="ic" viewBox="0 0 24 24"><path d="M3 7.5a2 2 0 0 1 2-2h4.2l2 2.2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+    const IC_X = '<svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    const fab = el('button', { id: 'ghFab' }, IC_NODE + ' 노드');
     fab.addEventListener('click', toggle);
     ov = el('div', { id: 'ghOv' });
     const top = el('div', { id: 'ghTop' });
-    top.appendChild(el('b', null, '◇ 파라메트릭 노드 에디터'));
-    const bBake = el('button', { class: 'pri' }, '✔ 베이크(확정)'); bBake.addEventListener('click', () => { bake(); });
-    const bClear = el('button', null, '프리뷰 지우기'); bClear.addEventListener('click', () => { clearPreview(); lastPreviewCount = 0; B().refresh(); render(); }); // 재생성 없이 프리뷰만 제거 (다음 편집 시 복귀)
-    const bReset = el('button', null, '그래프 초기화'); bReset.addEventListener('click', () => { if (confirm('노드 그래프를 모두 지울까요? (Ctrl+Z로 복구 가능)')) { pushGraphUndo(); graph = { nodes: [], wires: [], seq: 1 }; ui.sel.clear(); apply(); } });
-    const bSave = el('button', null, '💾 저장'); bSave.setAttribute('title', 'Ctrl+S — 노드 로직을 이름으로 저장'); bSave.addEventListener('click', saveLogic);
-    const bLoad = el('button', null, '📂 불러오기'); bLoad.addEventListener('click', loadLogicUI);
-    const bClose = el('button', null, '✕ 닫기'); bClose.addEventListener('click', toggle);
+    top.appendChild(el('b', null, IC_NODE + ' 파라메트릭 노드 에디터'));
+    const bBake = el('button', { class: 'pri' }, IC_CHECK + ' 베이크(확정)'); bBake.addEventListener('click', () => { bake(); });
+    const bClear = el('button', null, IC_ERASE + ' 프리뷰 지우기'); bClear.addEventListener('click', () => { clearPreview(); lastPreviewCount = 0; B().refresh(); render(); }); // 재생성 없이 프리뷰만 제거 (다음 편집 시 복귀)
+    const bReset = el('button', null, IC_RESET + ' 그래프 초기화'); bReset.addEventListener('click', () => { if (confirm('노드 그래프를 모두 지울까요? (Ctrl+Z로 복구 가능)')) { pushGraphUndo(); graph = { nodes: [], wires: [], seq: 1 }; ui.sel.clear(); apply(); } });
+    const bSave = el('button', null, IC_SAVE + ' 저장'); bSave.setAttribute('title', 'Ctrl+S — 노드 로직을 이름으로 저장'); bSave.addEventListener('click', saveLogic);
+    const bLoad = el('button', null, IC_OPEN + ' 불러오기'); bLoad.addEventListener('click', loadLogicUI);
+    const bClose = el('button', null, IC_X + ' 닫기'); bClose.addEventListener('click', toggle);
     top.appendChild(bBake); top.appendChild(bClear); top.appendChild(bReset); top.appendChild(bSave); top.appendChild(bLoad); top.appendChild(bClose);
     ov.appendChild(top);
     const wrap = el('div', { id: 'ghWrap' });
@@ -800,7 +808,7 @@
     const hdTitle = el('span');
     hdTitle.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M5 4v5m0 4.5V20M12 4v9m0 4.5V20M19 4v3m0 4.5V20"/><path d="M2.8 11.5h4.4M9.8 15h4.4M16.8 9.5h4.4"/></svg> 패턴 컨트롤';
     hd.appendChild(hdTitle);
-    const bEd = el('button', { title: '노드 에디터 열기(고급)' }, '◇'); bEd.addEventListener('click', () => { if (!ui.open) toggle(); });
+    const bEd = el('button', { title: '노드 에디터 열기(고급)' }, '<svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="6" rx="1.5"/><rect x="14" y="14" width="7" height="6" rx="1.5"/><path d="M10 7h4a3 3 0 0 1 3 3v4"/></svg>'); bEd.addEventListener('click', () => { if (!ui.open) toggle(); });
     const bX = el('button', { title: '닫기' }, '✕'); bX.addEventListener('click', () => { ctrlHidden = true; updateCtrl(); });
     hd.appendChild(bEd); hd.appendChild(bX);
     ctrl.appendChild(hd);

@@ -398,7 +398,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   ::-webkit-scrollbar-track{background:transparent;}
 </style>
 <!-- Beyond UI 스킨 (2026-07-20) — 변수·컴포넌트 오버라이드. 메인 스타일 뒤에 로드되어 이긴다 -->
-<link rel="stylesheet" href="skin.css?v=4">
+<link rel="stylesheet" href="skin.css?v=5">
 </head>
 <body>
 <div id="app">
@@ -419,7 +419,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       </div>
     </div>
     <div class="menuWrap">
-      <button class="tbtn tglc" id="btnOpts" title="옵션 메뉴"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg><span class="tl">옵션 ▾</span></button>
+      <button class="tbtn tglc" id="btnOpts" title="옵션 메뉴"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="tl">옵션 ▾</span></button>
       <div id="optMenu" class="dropdown">
         <button class="menuItem" id="miSetAsLight">💡 광원으로 지정 (setaslight)</button>
         <button class="menuItem" id="miUnsetLight">🚫 광원 해제 (unsetlight)</button>
@@ -751,7 +751,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <!-- Right side -->
     <div class="rz" id="rzRight" title="드래그: 측면 패널 폭 조절 · 더블클릭: 기본 폭"></div>
     <div id="side">
-      <button id="btnUiEdit" title="인터페이스 편집 — 도구·패널 구성"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg></button>
+      <button id="btnUiEdit" title="인터페이스 편집 — 도구·패널 구성"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
       <div class="section" data-sec="layers">
         <h3>레이어</h3>
         <div class="body">
@@ -926,17 +926,17 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260720c"></script>
+<script src="cad.js?v=20260720d"></script>
 <script src="prep.js?v=5"></script>
 <script src="bimify.js?v=3"></script>
 <script src="sketch.js?v=13"></script>
-<script src="cmdpop.js?v=5"></script>
+<script src="cmdpop.js?v=6"></script>
 <script src="panels.js?v=6"></script>
 <script src="hover.js?v=4"></script>
-<script src="ai.js?v=17"></script>
-<script src="nodes.js?v=13"></script>
+<script src="ai.js?v=18"></script>
+<script src="nodes.js?v=14"></script>
 <script src="auth-config.js?v=2"></script>
-<script src="auth.js?v=9"></script>
+<script src="auth.js?v=10"></script>
 <script src="cloud.js?v=7"></script>
 <script src="lobby.js?v=4"></script>
 <script>

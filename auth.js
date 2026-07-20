@@ -44,6 +44,28 @@
     color:#ffd426;font-size:12.5px;line-height:1.5;}
   #authCode{letter-spacing:8px;text-align:center;font-size:20px;font-family:ui-monospace,Consolas,monospace;}
   #userChipWrap{position:relative;display:inline-block;}
+  /* ── 마이페이지 드롭다운 + 친구 패널 (2026-07-20) ── */
+  #userChipWrap .dropdown{left:auto;right:0;min-width:185px;}
+  #userMenu .menuItem{display:flex;align-items:center;gap:8px;width:100%;}
+  #friendPanel{display:none;position:absolute;top:calc(100% + 6px);right:calc(100% + 8px);width:252px;
+    background:var(--panel,#171b25);border:1px solid var(--line,rgba(128,140,170,.25));border-radius:12px;
+    box-shadow:var(--shadow-pop,0 10px 30px rgba(0,0,0,.4));padding:10px;z-index:60;
+    flex-direction:column;gap:8px;}
+  #friendPanel.open{display:flex;}
+  #friendPanel h4{margin:0;font-size:11.5px;font-weight:600;color:var(--muted,#8a93a6);letter-spacing:.02em;}
+  #frList{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow-y:auto;}
+  .frRow{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text,#e7eaf1);
+    padding:5px 7px;border-radius:8px;}
+  .frRow:hover{background:var(--glass-fill-hi,rgba(128,140,170,.12));}
+  .frDot{width:8px;height:8px;border-radius:50%;background:#8a93a6;flex:0 0 auto;}
+  .frDot.on{background:#31c46f;box-shadow:0 0 0 3px rgba(49,196,111,.18);}
+  .frNm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .frSt{margin-left:auto;font-size:10.5px;color:var(--muted,#8a93a6);flex:0 0 auto;}
+  .frDel{border:none;background:none;color:var(--muted,#8a93a6);cursor:pointer;font-size:13px;padding:0 2px;flex:0 0 auto;}
+  .frDel:hover{color:#e04f4f;}
+  #frAddRow{display:flex;gap:6px;}
+  #frAdd{flex:1;min-width:0;font-size:12px;}
+  #frEmpty{font-size:12px;color:var(--muted,#8a93a6);padding:2px 4px;line-height:1.5;}
   `;
   document.head.appendChild(style);
 
@@ -266,23 +288,124 @@
     });
   }
 
-  // ---------- 세션 → 게이트/사용자 칩 ----------
-  let chip = null;
+  // ---------- 세션 → 게이트/마이페이지 칩 ----------
+  // 로그아웃 버튼을 상시 노출하지 않고 '마이페이지' 드롭다운에 넣는다 (2026-07-20 피드백).
+  // 드롭다운: 플랜 · 친구(왼쪽으로 패널 — 접속 표시·추가) · 로그아웃.
+  let chip = null, curSession = null;
+  // 친구 목록: user_metadata.friends (계정에 저장 — 어느 기기에서나 동일). 데모/미지원이면 localStorage 폴백.
+  const FR_KEY = 'webcad_friends_local';
+  function getFriends() {
+    const meta = curSession && curSession.user && curSession.user.user_metadata;
+    if (meta && Array.isArray(meta.friends)) return meta.friends.slice();
+    try { const a = JSON.parse(localStorage.getItem(FR_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  }
+  async function setFriends(list) {
+    try { localStorage.setItem(FR_KEY, JSON.stringify(list)); } catch (e) {}
+    try {
+      if (sb && sb.auth && sb.auth.updateUser) {
+        await sb.auth.updateUser({ data: { friends: list } });
+        if (curSession && curSession.user) curSession.user.user_metadata = Object.assign({}, curSession.user.user_metadata || {}, { friends: list });
+      }
+    } catch (e) {}
+  }
+  // 접속 표시: Supabase Realtime presence — 로그인한 모든 WebCAD 창이 자기 이메일을 알린다.
+  let presCh = null, online = new Set();
+  function startPresence(session) {
+    if (!session || presCh || !sb || typeof sb.channel !== 'function') return;
+    try {
+      const key = String(session.user.email || 'user').toLowerCase();
+      presCh = sb.channel('webcad-online', { config: { presence: { key } } });
+      presCh.on('presence', { event: 'sync' }, () => {
+        online = new Set(Object.keys(presCh.presenceState() || {}).map(k => String(k).toLowerCase()));
+        renderFriendList();
+      });
+      presCh.subscribe((st) => { if (st === 'SUBSCRIBED') { try { presCh.track({ at: Date.now() }); } catch (e) {} } });
+    } catch (e) {}
+  }
+  function renderFriendList() {
+    const list = chip && chip.querySelector('#frList'); if (!list) return;
+    const fr = getFriends();
+    const me = String((curSession && curSession.user && curSession.user.email) || '').toLowerCase();
+    list.innerHTML = '';
+    const empty = chip.querySelector('#frEmpty');
+    if (empty) empty.style.display = fr.length ? 'none' : '';
+    for (const em of fr) {
+      const on = online.has(String(em).toLowerCase());
+      const row = document.createElement('div'); row.className = 'frRow';
+      row.innerHTML = `<span class="frDot${on ? ' on' : ''}"></span>`
+        + `<span class="frNm" title="${em}">${em.split('@')[0]}</span>`
+        + `<span class="frSt">${on ? '접속 중' : '오프라인'}</span>`
+        + `<button class="frDel" title="친구 삭제">✕</button>`;
+      row.querySelector('.frDel').addEventListener('click', async () => {
+        if (!confirm(`'${em}' 을(를) 친구에서 삭제할까요?`)) return;
+        await setFriends(getFriends().filter(x => x !== em)); renderFriendList();
+      });
+      list.appendChild(row);
+      void me; // (자기 자신은 추가 단계에서 걸러짐)
+    }
+  }
   function showUser(session) {
+    curSession = session;
     const name = session?.user?.user_metadata?.username || (session?.user?.email || '').split('@')[0];
     if (!chip) {
-      chip = document.createElement('div'); chip.id = 'userChipWrap';
-      chip.style.cssText = 'display:inline-flex;gap:6px;align-items:center;';
-      chip.innerHTML = `<button class="tbtn" id="userChip" title="로그인된 계정"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M5.2 19.5a6.8 6.8 0 0 1 13.6 0"/></svg> <span id="userName"></span></button>
-        <button class="tbtn" id="btnLogout" title="로그아웃">로그아웃</button>`;
+      chip = document.createElement('div'); chip.id = 'userChipWrap'; chip.className = 'menuWrap';
+      const IC_USER = '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M5.2 19.5a6.8 6.8 0 0 1 13.6 0"/></svg>';
+      const IC_FRIENDS = '<svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3"/><path d="M3.2 19a5.8 5.8 0 0 1 11.6 0"/><circle cx="17" cy="9.5" r="2.4"/><path d="M15.8 14.6a4.9 4.9 0 0 1 5 4.4"/></svg>';
+      const IC_OUT = '<svg class="ic" viewBox="0 0 24 24"><path d="M14.5 8V5.5a1.5 1.5 0 0 0-1.5-1.5H6a1.5 1.5 0 0 0-1.5 1.5v13A1.5 1.5 0 0 0 6 20h7a1.5 1.5 0 0 0 1.5-1.5V16M10 12h10.5M17.5 9l3 3-3 3"/></svg>';
+      chip.innerHTML = `
+        <button class="tbtn tglc" id="userChip" title="마이페이지">${IC_USER} <span id="userName"></span></button>
+        <div id="userMenu" class="dropdown">
+          <div class="menuItem" id="umPlan" style="cursor:default;opacity:.9;">플랜: <b id="umPlanName" style="margin-left:4px;">무료</b></div>
+          <div class="menuSep"></div>
+          <button class="menuItem" id="umFriends">${IC_FRIENDS} 친구 <span style="margin-left:auto;opacity:.55;">◀</span></button>
+          <div class="menuSep"></div>
+          <button class="menuItem" id="umLogout">${IC_OUT} 로그아웃</button>
+        </div>
+        <div id="friendPanel">
+          <h4>친구 — 접속 상태</h4>
+          <div id="frEmpty">아직 친구가 없습니다.<br>아래에 이메일을 넣어 추가하세요.</div>
+          <div id="frList"></div>
+          <div id="frAddRow"><input id="frAdd" type="text" placeholder="친구 이메일"><button class="miniBtn" id="frAddBtn">추가</button></div>
+        </div>`;
       document.getElementById('topbar').appendChild(chip);
-      chip.querySelector('#btnLogout').addEventListener('click', async () => {
+      const btn = chip.querySelector('#userChip'), menu = chip.querySelector('#userMenu'), fp = chip.querySelector('#friendPanel');
+      const toggle = (open) => {
+        menu.classList.toggle('open', open === undefined ? !menu.classList.contains('open') : open);
+        btn.classList.toggle('on', menu.classList.contains('open'));
+        if (!menu.classList.contains('open')) fp.classList.remove('open');
+        if (menu.classList.contains('open')) { // 열 때마다 플랜 최신화
+          const p = window.WEBCAD_CLOUD && WEBCAD_CLOUD.plan ? WEBCAD_CLOUD.plan() : 'free';
+          const el = chip.querySelector('#umPlanName'); if (el) el.textContent = p === 'pro' ? '프로 (PRO)' : '무료 (Free)';
+        }
+      };
+      btn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); toggle(); });
+      btn.addEventListener('click', (e) => e.stopPropagation());
+      document.addEventListener('pointerdown', () => toggle(false));
+      document.addEventListener('click', () => toggle(false));
+      for (const el of [menu, fp]) { el.addEventListener('pointerdown', (e) => e.stopPropagation()); el.addEventListener('click', (e) => e.stopPropagation()); }
+      chip.querySelector('#umLogout').addEventListener('click', async () => {
         if (!confirm('로그아웃할까요? (작업물은 이 브라우저에 자동 저장되어 있습니다)')) return;
         await sb.auth.signOut(); location.reload();
       });
+      chip.querySelector('#umFriends').addEventListener('click', () => {
+        fp.classList.toggle('open'); if (fp.classList.contains('open')) renderFriendList();
+      });
+      const doAdd = async () => {
+        const inp = chip.querySelector('#frAdd');
+        const em = (inp.value || '').trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { alert('이메일 형식으로 입력하세요.'); return; }
+        const me = String((curSession && curSession.user && curSession.user.email) || '').toLowerCase();
+        if (em === me) { alert('자기 자신은 추가할 수 없습니다.'); return; }
+        const fr = getFriends();
+        if (fr.includes(em)) { alert('이미 친구 목록에 있습니다.'); return; }
+        fr.push(em); await setFriends(fr); inp.value = ''; renderFriendList();
+      };
+      chip.querySelector('#frAddBtn').addEventListener('click', doAdd);
+      chip.querySelector('#frAdd').addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') doAdd(); });
     }
     chip.querySelector('#userName').textContent = name;
     chip.style.display = session ? 'inline-flex' : 'none';
+    if (session) startPresence(session);
   }
   function setGate(open) {
     gate.classList.toggle('hidden', !open);
@@ -295,6 +418,7 @@
     hideLogin: () => setGate(false),
     isGateOpen: () => !gate.classList.contains('hidden'),
     signOut: async () => { if (sb) { await sb.auth.signOut(); } location.reload(); },
+    _showUser: showUser, // 테스트 훅 — 마이페이지 칩/친구 패널 검증용 (세션 주입)
   };
 
   async function init() {
