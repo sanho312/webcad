@@ -19,16 +19,20 @@ css.textContent = `
   #console { display: none !important; }        /* 상단 명령 콘솔 제거 (#toolbar 는 panels.js 가 슬라이드로) */
   #tgBottom { display: none !important; }
   /* 닫힘 = 투명+클릭 통과 (display:none 이면 안의 입력창이 포커스 불가라 '글자=명령'이 죽는다) */
-  /* 마우스 크기만한 네모난 흰 박스 — 검은 텍스트, 커서 '오른쪽'을 따라다닌다 */
+  /* 마우스 크기만한 네모난 흰 박스 — 검은 텍스트, 커서 '오른쪽'을 따라다닌다.
+     (2026-07-20 피드백: 더 '짧고 낮게' — 폭 110px대, 입력줄 한 줄 높이) */
   #cmdPop{position:fixed;z-index:70;display:flex;opacity:0;pointer-events:none;
-    min-width:150px;max-width:min(320px,90vw);
+    min-width:110px;max-width:min(230px,90vw);
     background:#ffffff;border:1px solid #b8bfcc;border-radius:3px;
-    box-shadow:0 4px 14px rgba(0,0,0,.25);padding:3px 6px;}
+    box-shadow:0 3px 10px rgba(0,0,0,.22);padding:2px 5px;}
   #cmdPop #cmdLabel{display:none;}                /* '명령:' 라벨 없이 입력만 */
   #cmdPop.open{opacity:1;pointer-events:auto;}
   #cmdPop #cmdInputRow{display:flex;background:none;border:none;padding:0;align-items:center;}
+  #cmdPop .cmdInputWrap{flex:1 1 110px;min-width:0;max-width:200px;}
   #cmdPop #cmdLabel{color:#333;font-size:12px;}
-  #cmdPop #cmdInput{background:#fff;color:#111;border:none;outline:none;font-size:13px;}
+  #cmdPop #cmdInput{background:#fff;color:#111;border:none;outline:none;font-size:12px;
+    padding:2px 3px;height:18px;line-height:14px;border-radius:0;box-shadow:none;font-family:var(--mono,monospace);}
+  #cmdPop #cmdInput:focus{box-shadow:none;background:#fff;}
   #cmdPop #cmdPrompt, #cmdPop #dimHint{color:#444;}
   #cmdPop #cmdSuggest{background:#fff;color:#111;border:1px solid #d0d5e0;border-radius:6px;
     box-shadow:0 6px 16px rgba(0,0,0,.18);}

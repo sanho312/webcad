@@ -741,6 +741,7 @@ function enter() {
   skcv.style.cursor = 'crosshair';
   bar.style.display = 'flex';
   entryBtn.style.background = 'var(--accent)'; entryBtn.style.color = '#fff';
+  entryBtn.classList.add('on');                       // 활성 → 라벨 표시 (.tglc)
   refreshLayerSel();
   B.logLine && B.logLine('  ✏️ 스케치 — 펜: 그리기 · 두 손가락: 이동/확대 · 시작/끝점은 CAD 에 스냅 · Esc/완료: 종료', 'info');
 }
@@ -752,6 +753,7 @@ function exit() {
   skcv.style.pointerEvents = 'none';
   bar.style.display = 'none';
   entryBtn.style.background = ''; entryBtn.style.color = '';
+  entryBtn.classList.remove('on');                    // 비활성 → 아이콘만
   redraw();
 }
 function setTool(tool) {
@@ -946,8 +948,9 @@ setTool('pen'); markColor();
 
 // 상단바 진입 버튼
 const entryBtn = document.createElement('button');
-entryBtn.className = 'tbtn'; entryBtn.id = 'btnSketch';
-entryBtn.textContent = '✏️ 스케치';
+entryBtn.className = 'tbtn tglc'; entryBtn.id = 'btnSketch';
+// 이모지 대신 라인 아이콘(펜) — 비활성=아이콘만, 스케치 중=아이콘+라벨 (.tglc 규칙)
+entryBtn.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M17 3.5a2.6 2.6 0 0 1 3.7 3.7L8.2 19.7 3.3 20.9l1.2-4.9z"/><path d="M15 5.5l3.7 3.7"/></svg><span class="tl">스케치</span>';
 entryBtn.title = '스케치 모드 — Apple Pencil/펜으로 생각을 그린다 (손그림은 CAD 와 별도 레이어로 보존)';
 entryBtn.addEventListener('click', () => { SK.on ? exit() : enter(); });
 const themeBtn = document.getElementById('btnTheme');

@@ -398,7 +398,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   ::-webkit-scrollbar-track{background:transparent;}
 </style>
 <!-- Beyond UI 스킨 (2026-07-20) — 변수·컴포넌트 오버라이드. 메인 스타일 뒤에 로드되어 이긴다 -->
-<link rel="stylesheet" href="skin.css?v=3">
+<link rel="stylesheet" href="skin.css?v=4">
 </head>
 <body>
 <div id="app">
@@ -406,7 +406,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   <div id="topbar">
     <span class="title">▦ WebCAD</span>
     <div class="menuWrap">
-      <button class="tbtn" id="btnFile">📁 파일 ▾</button>
+      <button class="tbtn tglc" id="btnFile" title="파일 메뉴"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7.5a2 2 0 0 1 2-2h4.2l2 2.2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="tl">파일 ▾</span></button>
       <div id="fileMenu" class="dropdown">
         <button class="menuItem" id="miNew">🆕 새로 만들기</button>
         <button class="menuItem" id="miOpen">📂 열기 (DXF·STL·OBJ)</button>
@@ -419,7 +419,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       </div>
     </div>
     <div class="menuWrap">
-      <button class="tbtn" id="btnOpts">⚙ 옵션 ▾</button>
+      <button class="tbtn tglc" id="btnOpts" title="옵션 메뉴"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg><span class="tl">옵션 ▾</span></button>
       <div id="optMenu" class="dropdown">
         <button class="menuItem" id="miSetAsLight">💡 광원으로 지정 (setaslight)</button>
         <button class="menuItem" id="miUnsetLight">🚫 광원 해제 (unsetlight)</button>
@@ -432,8 +432,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <button class="menuItem" id="moUnits">📏 단위 설정…</button>
       </div>
     </div>
-    <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)">↶ 취소</button>
-    <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)">↷ 복구</button>
+    <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)"><svg class="ic" viewBox="0 0 24 24"><polyline points="3.5 4.5 3.5 10.5 9.5 10.5"/><path d="M5.8 15.5a8 8 0 1 0 1.7-8.7L3.5 10.5"/></svg></button>
+    <button class="tbtn" id="btnRedo" title="다시 실행 (Ctrl+Y)"><svg class="ic" viewBox="0 0 24 24"><polyline points="20.5 4.5 20.5 10.5 14.5 10.5"/><path d="M18.2 15.5a8 8 0 1 1-1.7-8.7l4 3.7"/></svg></button>
     <!-- 통합 작업환경(2026-07-19) 이후 시점 전환은 뷰 이름 클릭/더블클릭으로 —
          세그 버튼은 내부 참조(테스트·스케치 폴백)가 있어 DOM 만 남기고 숨긴다 -->
     <span id="viewSeg" style="display:none;gap:2px;background:var(--glass-fill);border-radius:980px;padding:2px;box-shadow:var(--spec);">
@@ -452,7 +452,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <button class="tbtn" id="btnOsnap" title="객체 스냅 (F3) — 끝점·중점·중심·근처" style="display:none">객체스냅</button>
     <button class="tbtn" id="btnCmdHelp" title="전체 명령어 목록 (help 또는 ? 입력)" style="display:none">❓ 명령어</button>
     <button class="tbtn" id="btnTheme" title="다크/화이트 모드 전환">🌓</button>
-    <button class="tbtn" id="btnFull" title="전체화면 토글 (F11)">⛶ 전체화면</button>
+    <button class="tbtn tglc" id="btnFull" title="전체화면 토글 (F11)"><svg class="ic" viewBox="0 0 24 24"><path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/></svg><span class="tl">전체화면</span></button>
     <input type="file" id="fileInput" accept=".dxf,.stl,.obj" style="display:none">
     <input type="file" id="imgInput" accept="image/*" style="display:none">
   </div>
@@ -582,10 +582,11 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <!-- 캔버스 좌하단 좌표: 하단 상태바(#stCoords)와 중복 → 화면에서 숨김. 단 이 요소가 상태바 좌표의 원본(cad.js가 텍스트를 여기 씀)이라 DOM은 유지 -->
       <div id="coords" style="display:none">X: 0.00  Y: 0.00</div>
 
-      <!-- 인터페이스 편집: 도구막대 표시 도구 + 우측 패널 섹션 -->
-      <div id="uiEditDlg" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:21;">
-        <div class="dlgBox" style="width:560px;max-width:94vw;max-height:84%;display:flex;flex-direction:column;">
-          <h2 style="display:flex;align-items:center;gap:10px;">🎛 인터페이스 편집
+      <!-- 인터페이스 편집: 도구막대 표시 도구 + 우측 패널 섹션.
+           반투명 전체 덮개가 아니라 제목줄을 잡고 옮길 수 있는 '팝업창' — 뒤 화면은 그대로 조작 가능 -->
+      <div id="uiEditDlg" style="position:absolute;left:50%;top:56px;transform:translateX(-50%);display:none;z-index:40;">
+        <div class="dlgBox" style="width:560px;max-width:94vw;max-height:min(560px,72vh);display:flex;flex-direction:column;">
+          <h2 style="display:flex;align-items:center;gap:10px;"><svg class="ic" viewBox="0 0 24 24"><path d="M5 4v5m0 4.5V20M12 4v9m0 4.5V20M19 4v3m0 4.5V20"/><path d="M2.8 11.5h4.4M9.8 15h4.4M16.8 9.5h4.4"/></svg> 인터페이스 편집
             <span style="flex:1"></span>
             <button class="miniBtn" id="uiEditReset">기본값 복원</button>
             <button class="miniBtn" id="uiEditClose">닫기</button></h2>
@@ -750,7 +751,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <!-- Right side -->
     <div class="rz" id="rzRight" title="드래그: 측면 패널 폭 조절 · 더블클릭: 기본 폭"></div>
     <div id="side">
-      <button id="btnUiEdit" title="인터페이스 편집 — 도구·패널 구성">⚙</button>
+      <button id="btnUiEdit" title="인터페이스 편집 — 도구·패널 구성"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg></button>
       <div class="section" data-sec="layers">
         <h3>레이어</h3>
         <div class="body">
@@ -758,7 +759,7 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
             <button class="miniBtn" id="btnAddLayer">+ 추가</button>
             <button class="miniBtn" id="btnDelLayer">삭제</button>
-            <button class="miniBtn" id="btnAllVis" title="모든 레이어 표시+잠금해제">👁 전체</button>
+            <button class="miniBtn" id="btnAllVis" title="모든 레이어 표시+잠금해제"><svg class="ic" viewBox="0 0 24 24"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg> 전체</button>
           </div>
         </div>
       </div>
@@ -925,17 +926,17 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   </div>
 </div>
 
-<script src="cad.js?v=20260720a"></script>
+<script src="cad.js?v=20260720c"></script>
 <script src="prep.js?v=5"></script>
 <script src="bimify.js?v=3"></script>
-<script src="sketch.js?v=12"></script>
-<script src="cmdpop.js?v=4"></script>
+<script src="sketch.js?v=13"></script>
+<script src="cmdpop.js?v=5"></script>
 <script src="panels.js?v=6"></script>
 <script src="hover.js?v=4"></script>
-<script src="ai.js?v=16"></script>
-<script src="nodes.js?v=12"></script>
+<script src="ai.js?v=17"></script>
+<script src="nodes.js?v=13"></script>
 <script src="auth-config.js?v=2"></script>
-<script src="auth.js?v=8"></script>
+<script src="auth.js?v=9"></script>
 <script src="cloud.js?v=7"></script>
 <script src="lobby.js?v=4"></script>
 <script>
@@ -951,7 +952,10 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   const btnTheme = document.getElementById('btnTheme');
   function applyTheme() {
     const light = document.documentElement.classList.contains('light');
-    btnTheme.textContent = light ? '☀ 라이트' : '🌙 다크';
+    // 이모지 대신 라인 아이콘(해/달) — 아이콘만으로 상태가 읽혀 텍스트 없이 깔끔하게
+    btnTheme.innerHTML = light
+      ? '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8"/></svg>'
+      : '<svg class="ic" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z"/></svg>';
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.content = light ? '#eef1f7' : '#0a1020';
     if (window.WEBCAD_API && WEBCAD_API.redraw) WEBCAD_API.redraw();
@@ -1080,13 +1084,14 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       lb.appendChild(cb); lb.appendChild(document.createTextNode(el.querySelector('h3').textContent.trim()));
       secBox.appendChild(lb);
     }
-    uiDlg.style.display = 'flex';
+    uiDlg.style.display = 'block';
+    // 팝업창 — 제목줄을 잡고 위치를 옮길 수 있다 (뒤 화면은 어둡게 덮지 않고 그대로 조작 가능)
+    if (!uiDlg._drag && window.webcadPopupDrag) { uiDlg._drag = true; window.webcadPopupDrag(uiDlg, uiDlg.querySelector('h2')); }
   }
   document.getElementById('btnTbEdit').addEventListener('click', openUiEdit);
   document.getElementById('btnUiEdit').addEventListener('click', openUiEdit);
   document.getElementById('uiEditClose').addEventListener('click', () => uiDlg.style.display = 'none');
   document.getElementById('uiEditReset').addEventListener('click', () => { uie = { tools: [], secs: [], fold: [], order: [] }; uieSave(); applyUie(); openUiEdit(); });
-  uiDlg.addEventListener('pointerdown', (e) => { if (e.target === uiDlg) uiDlg.style.display = 'none'; });
   applyUie();
 
   // ── 좌우 패널 폭 드래그 조절 ──

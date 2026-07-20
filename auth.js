@@ -273,7 +273,7 @@
     if (!chip) {
       chip = document.createElement('div'); chip.id = 'userChipWrap';
       chip.style.cssText = 'display:inline-flex;gap:6px;align-items:center;';
-      chip.innerHTML = `<button class="tbtn" id="userChip" title="로그인된 계정">👤 <span id="userName"></span></button>
+      chip.innerHTML = `<button class="tbtn" id="userChip" title="로그인된 계정"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M5.2 19.5a6.8 6.8 0 0 1 13.6 0"/></svg> <span id="userName"></span></button>
         <button class="tbtn" id="btnLogout" title="로그아웃">로그아웃</button>`;
       document.getElementById('topbar').appendChild(chip);
       chip.querySelector('#btnLogout').addEventListener('click', async () => {

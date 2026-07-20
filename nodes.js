@@ -797,7 +797,9 @@
   function buildCtrl() {
     ctrl = el('div', { id: 'ghCtrl' });
     const hd = el('div', { class: 'hd' });
-    hd.appendChild(el('span', null, '🎛 패턴 컨트롤'));
+    const hdTitle = el('span');
+    hdTitle.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M5 4v5m0 4.5V20M12 4v9m0 4.5V20M19 4v3m0 4.5V20"/><path d="M2.8 11.5h4.4M9.8 15h4.4M16.8 9.5h4.4"/></svg> 패턴 컨트롤';
+    hd.appendChild(hdTitle);
     const bEd = el('button', { title: '노드 에디터 열기(고급)' }, '◇'); bEd.addEventListener('click', () => { if (!ui.open) toggle(); });
     const bX = el('button', { title: '닫기' }, '✕'); bX.addEventListener('click', () => { ctrlHidden = true; updateCtrl(); });
     hd.appendChild(bEd); hd.appendChild(bX);

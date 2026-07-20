@@ -811,22 +811,33 @@
   }
   function buildUI() {
     document.head.appendChild(h('style', null, css));
-    const fab = h('button', { id: 'aiFab', title: 'AI 코워커 (자연어 작도)' }, '🤖');
-    fab.addEventListener('click', () => { panel.style.display = panel.style.display === 'flex' ? 'none' : 'flex'; if (panel.style.display === 'flex') inEl.focus(); });
+    // 이모지 대신 라인 아이콘(봇) — 상단바 다른 버튼과 같은 스트로크 문법
+    const IC_BOT = '<svg class="ic" viewBox="0 0 24 24"><rect x="4.5" y="9" width="15" height="10" rx="2.5"/><circle cx="12" cy="4.3" r="1.1"/><path d="M12 9V5.8M9.3 13v2M14.7 13v2M2 13.5v2M22 13.5v2"/></svg>';
+    const fab = h('button', { id: 'aiFab', title: 'AI 코워커 (자연어 작도)' });
+    fab.innerHTML = IC_BOT;
+    fab.addEventListener('click', () => {
+      panel.style.display = panel.style.display === 'flex' ? 'none' : 'flex';
+      fab.classList.toggle('on', panel.style.display === 'flex');   // 열림=활성 pill
+      if (panel.style.display === 'flex') inEl.focus();
+    });
     panel = h('div', { id: 'aiPanel' });
     // 패널 안의 키 입력은 앱 전역 단축키로 새지 않게 — 채팅 텍스트를 긁어 Ctrl+C 하면
     // 브라우저 기본 복사가 되어야 한다 (전역 핸들러는 Ctrl+C 를 '개체 복사' 로 가로챈다)
     panel.addEventListener('keydown', (e) => e.stopPropagation());
     const head = h('div', { id: 'aiHead' });
-    head.appendChild(h('b', null, '🤖 AI 코워커'));
+    const headTitle = h('b');
+    headTitle.innerHTML = IC_BOT + ' AI 코워커';
+    head.appendChild(headTitle);
     const modelSel = h('select', { title: '모델' });
     for (const [v, label] of MODELS) { const o = h('option', { value: v }, label); if (v === cfg.model) o.selected = true; modelSel.appendChild(o); }
     modelSel.addEventListener('change', () => { cfg.model = modelSel.value; saveCfg(); });
     head.appendChild(modelSel);
-    const keyBtn = h('button', { title: 'API 키 설정' }, '⚙');
+    const keyBtn = h('button', { title: 'API 키 설정' });
+    keyBtn.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg>';
     keyBtn.addEventListener('click', () => { setupEl.style.display = setupEl.style.display === 'none' ? 'flex' : 'none'; });
     head.appendChild(keyBtn);
-    const clrBtn = h('button', { title: '대화 초기화' }, '🗑');
+    const clrBtn = h('button', { title: '대화 초기화' });
+    clrBtn.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M6.5 7l1 12.5h9L17.5 7M10 10.5v6M14 10.5v6"/></svg>';
     clrBtn.addEventListener('click', () => { history = []; try { localStorage.removeItem('webcad_ai_hist'); } catch (e) {} msgsEl.innerHTML = ''; greet(); });
     head.appendChild(clrBtn);
     const closeBtn = h('button', { title: '닫기' }, '✕');
@@ -855,11 +866,12 @@
     attEl = h('div', { id: 'aiAtt' });
     panel.appendChild(attEl);
     const row = h('div', { id: 'aiInRow' });
-    const clipBtn = h('button', { id: 'aiClip', title: '도면 이미지 첨부 (붙여넣기 Ctrl+V·드래그도 가능)' }, '📎');
+    const clipBtn = h('button', { id: 'aiClip', title: '도면 이미지 첨부 (붙여넣기 Ctrl+V·드래그도 가능)' });
+    clipBtn.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M20.5 11.5l-8 8a5.2 5.2 0 0 1-7.4-7.4l8.6-8.6a3.5 3.5 0 0 1 4.9 4.9l-8.6 8.6a1.75 1.75 0 0 1-2.5-2.5l8-8"/></svg>';
     const fileIn = h('input', { type: 'file', accept: 'image/*', style: 'display:none' });
     clipBtn.addEventListener('click', () => fileIn.click());
     fileIn.addEventListener('change', () => { if (fileIn.files && fileIn.files[0]) attachImage(fileIn.files[0]); fileIn.value = ''; });
-    inEl = h('textarea', { id: 'aiIn', placeholder: '예: 5000×4000 방 그려줘 · 📎 도면 이미지를 첨부하면 그대로 모델링해 드립니다' });
+    inEl = h('textarea', { id: 'aiIn', placeholder: '예: 5000×4000 방 그려줘 · 도면 이미지를 첨부하면 그대로 모델링해 드립니다' });
     inEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
       e.stopPropagation(); // 앱 전역 단축키와 충돌 방지

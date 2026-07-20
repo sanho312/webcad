@@ -125,3 +125,44 @@ body, button, input, select, textarea{
 /* ── 슬라이드 패널 손잡이 알약: 변수 톤 그대로 (기존 .rz 규격 유지) ── */
 .pTab::after{ background:var(--line-strong); }
 .pTab:hover::after{ background:var(--accent); }
+
+/* ============================================================
+   2026-07-20 다듬기 — 아이콘 통일·토글 라벨 접기·팝업 불투명 (사용자 피드백)
+   ============================================================ */
+
+/* ── 공용 라인 아이콘 문법: 도구창 아이콘과 같은 stroke 1.5 + 라운드 캡 ── */
+svg.ic{
+  width:15px; height:15px; flex:0 0 auto;
+  fill:none; stroke:currentColor; stroke-width:1.5;
+  stroke-linecap:round; stroke-linejoin:round;
+  vertical-align:-3px;
+}
+button.tbtn{ display:inline-flex; align-items:center; gap:6px; }
+.miniBtn svg.ic{ width:13px; height:13px; vertical-align:-2px; }
+
+/* ── 아이콘+텍스트 토글: 비활성 = 아이콘만, 활성(.on/.active) = 아이콘+라벨 ── */
+.tglc:not(.on):not(.active) .tl{ display:none; }
+.tglc .tl{ white-space:nowrap; }
+.tbtn.on{ background:var(--panel3); color:var(--text); }
+
+/* ── 레이어 행 잠금·표시 아이콘 (renderLayers 의 SVG) ── */
+.layer .lk svg.ic, .layer .eye svg.ic{ width:13px; height:13px; vertical-align:-2px; }
+.layer .lk{ cursor:pointer; opacity:.55; }
+.layer .lk.on{ opacity:1; }
+.layer .eye{ cursor:pointer; }
+.layer .eye.off{ opacity:.4; }
+
+/* ── 대화상자: 반투명 유리 → 불투명 카드 (뒤 화면 비침으로 글이 안 읽히던 문제) ── */
+.dlgBox{
+  background:var(--panel) !important;
+  -webkit-backdrop-filter:none !important; backdrop-filter:none !important;
+  border:1px solid var(--line); box-shadow:var(--shadow-pop) !important;
+}
+.dlgHint{ color:var(--muted); }
+.uiEdH{ color:var(--muted); font-weight:600; }
+
+/* ── 라이트 모드 스크롤바 (다크용 흰 반투명이 흰 배경에서 안 보이던 것) ── */
+html.light ::-webkit-scrollbar-thumb{
+  background:rgba(17,24,39,0.2); border:2px solid transparent; background-clip:content-box;
+}
+html.light ::-webkit-scrollbar-thumb:hover{ background:rgba(17,24,39,0.32); background-clip:content-box; }
