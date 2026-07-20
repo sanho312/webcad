@@ -39,12 +39,18 @@ css.textContent = `
   /* 유사 명령어 목록은 입력 박스 '아래'로 — 박스가 고정이므로 그대로 클릭 가능 */
   #cmdPop #cmdSuggest{bottom:auto;top:calc(100% + 6px);}
   #cmdPop #cmdPrompt, #cmdPop #dimHint{color:#444;}
-  #cmdPop #cmdSuggest{background:#fff;color:#111;border:1px solid #d0d5e0;border-radius:6px;
-    box-shadow:0 6px 16px rgba(0,0,0,.18);}
-  #cmdPop .sugItem{color:#111;}
+  /* 유사 명령어 목록 — 명령창과 같은 디자인(흰 박스·같은 테두리·radius 3px·12px 글자) */
+  #cmdPop #cmdSuggest{background:#fff;color:#111;border:1px solid #b8bfcc;border-radius:3px;
+    box-shadow:0 3px 10px rgba(0,0,0,.22);padding:3px;min-width:150px;font-size:12px;}
+  #cmdPop .sugItem{color:#111;padding:4px 8px;border-radius:2px;font-size:12px;}
   #cmdPop .sugItem .sname{color:#0a54c8;}
-  #cmdPop .sugItem .sko{color:#666;}
+  #cmdPop .sugItem .sko{color:#666;font-size:10.5px;}
   #cmdPop .sugItem.sel, #cmdPop .sugItem:hover{background:#e8f0ff;}
+  /* ★일치 글자(.match) — 본체 CSS가 선택 행에 연백색(#dcebff)을 입혀 흰 박스에서 사라졌다.
+     흰 박스 안은 항상 진한 파랑 (화이트모드 흰 글자 금지 규칙) */
+  #cmdPop .sugItem .match{color:#0a54c8;}
+  #cmdPop .sugItem.sel .match, #cmdPop .sugItem:hover .match{color:#0a54c8;}
+  #cmdPop .sugItem.sel .sname, #cmdPop .sugItem:hover .sname{color:#0a54c8;}
   #cmdToast{position:fixed;left:50%;top:52px;transform:translateX(-50%);z-index:69;
     max-width:min(700px,92vw);background:rgba(15,22,40,.92);border:1px solid rgba(120,150,220,.35);
     border-radius:10px;padding:6px 14px;font:12.5px -apple-system,system-ui,sans-serif;color:#cfe0ff;

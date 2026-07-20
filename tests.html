@@ -3309,6 +3309,18 @@ function tests(){
       ok(p2.left === p1.left && p2.top === p1.top, '★열린 뒤에는 커서를 따라가지 않고 고정');
       const sug = AD.getElementById('cmdSuggest');
       ok(!sug || AW.getComputedStyle(sug).bottom === 'auto', '  유사 명령어 목록은 박스 아래로');
+      // 유사 명령어 = 명령창과 같은 디자인 + 선택 행의 일치 글자가 흰색으로 사라지지 않는다
+      const inp2 = AD.getElementById('cmdInput');
+      CP.show(); inp2.value = 'extr'; inp2.dispatchEvent(new AW.Event('input', { bubbles: true }));
+      if (sug && sug.classList.contains('open')) {
+        const ss = AW.getComputedStyle(sug);
+        eqi(ss.backgroundColor, 'rgb(255, 255, 255)', '★제안 박스 = 명령창과 같은 흰 박스');
+        eqi(ss.borderRadius, '3px', '  같은 radius(3px)');
+        const sel = sug.querySelector('.sugItem.sel') || sug.querySelector('.sugItem');
+        const m = sel && sel.querySelector('.match');
+        ok(m && AW.getComputedStyle(m).color === 'rgb(10, 84, 200)', '★선택 행 일치 글자 = 진한 파랑 (흰색 금지)');
+      } else ok(true, '(제안 미표시 환경)');
+      inp2.value = ''; inp2.dispatchEvent(new AW.Event('input', { bubbles: true }));
       CP.hide();
     } else ok(true, '(cmdpop 없음)');
     // ── 테마 잉크 규칙: 화이트모드 흰 글자 금지 · 블랙모드 검은 글자 금지
@@ -3376,8 +3388,8 @@ function tests(){
       AD.getElementById('umFriends').click();
       const fp = AD.getElementById('friendPanel');
       ok(fp.classList.contains('open') && fp.querySelectorAll('.frRow').length === 1, '★친구 패널 — 목록(접속 표시) 렌더');
-      ok(fp.getBoundingClientRect().right <= AD.getElementById('userChip').getBoundingClientRect().left,
-        '  패널은 토글 왼쪽으로 펼침');
+      ok(fp.getBoundingClientRect().right <= menu.getBoundingClientRect().left + 1,
+        '★친구 패널이 마이페이지 메뉴를 가리지 않는다 (메뉴 왼쪽으로)');
       AD.dispatchEvent(new AW.PointerEvent('pointerdown', { bubbles: true }));
       ok(!menu.classList.contains('open'), '  바깥 클릭 = 닫힘');
     } else ok(true, '(auth 훅 없음)');

@@ -388,7 +388,14 @@
         await sb.auth.signOut(); location.reload();
       });
       chip.querySelector('#umFriends').addEventListener('click', () => {
-        fp.classList.toggle('open'); if (fp.classList.contains('open')) renderFriendList();
+        fp.classList.toggle('open');
+        if (fp.classList.contains('open')) {
+          // 패널을 '메뉴의 왼쪽'에 붙인다 — 메뉴는 칩보다 왼쪽으로 더 넓게 펼쳐지므로
+          // 칩 기준(right:100%)으로 두면 메뉴를 가린다. 메뉴 폭만큼 더 왼쪽으로.
+          fp.style.right = (menu.offsetWidth + 8) + 'px';
+          fp.style.top = menu.offsetTop + 'px';
+          renderFriendList();
+        }
       });
       const doAdd = async () => {
         const inp = chip.querySelector('#frAdd');
