@@ -161,6 +161,20 @@ button.tbtn{ display:inline-flex; align-items:center; gap:6px; }
 .dlgHint{ color:var(--muted); }
 .uiEdH{ color:var(--muted); font-weight:600; }
 
+/* ── 하단 탭 라인의 모듈 탭(스케치·AI 코워커) — 노드 탭(#ghFab)과 같은 디자인 (2026-07-20) ── */
+.modTab{
+  flex:0 0 auto; align-self:flex-end; display:inline-flex; align-items:center; gap:6px;
+  height:29px; padding:0 11px; border-radius:10px 10px 0 0; border:none;
+  background:rgba(120,170,255,0.14); color:#9fd0ff;
+  font:590 12px/1 system-ui; cursor:pointer; white-space:nowrap;
+}
+.modTab:hover{ background:rgba(120,170,255,0.24); color:#cfe6ff; }
+.modTab.on{ background:var(--accent,#0A84FF); color:#fff; }
+html.light .modTab{ background:rgba(20,95,215,0.13); color:#1552c0; }
+html.light .modTab:hover{ background:rgba(20,95,215,0.22); color:#0c3f9e; }
+html.light .modTab.on{ background:var(--accent,#3b6ff0); color:#fff; }
+.modTab svg.ic{ width:14px; height:14px; }
+
 /* ── 뷰 이름표: 반투명 — 작업에 거슬리지 않게, 올리면 또렷하게 (2026-07-20) ── */
 [id^="vpLabel"]{ opacity:.45; transition:opacity .15s ease; }
 [id^="vpLabel"]:hover{ opacity:1; }

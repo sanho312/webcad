@@ -796,6 +796,7 @@
     const dt = document.getElementById('docTabs');
     if (dt) dt.insertBefore(fab, dt.firstChild);
     else document.body.appendChild(fab); // 폴백
+    if (window.__syncBottomTabs) window.__syncBottomTabs(); // [스케치][코워커][노드] 저장 순서로 정렬
     ctx = cv.getContext('2d');
     bindCanvas();
     buildCtrl();

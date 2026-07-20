@@ -4247,9 +4247,13 @@ function bind3D(ov, cv3) {
         drag = null; cv3.style.cursor = cursor3D(); saveV3Layout();
         return;
       }
-      if (drag.mode === 'box' && drag.moved >= 4) applyBox3D(drag);
+      if (drag.mode === 'box' && drag.moved >= 4) {
+        // 줌 윈도(zoom): 3D·입면 뷰포트에서도 드래그한 박스만큼 확대 (2026-07-20 — 모든 환경 호환)
+        if (state.tool === '_zoomw') applyZoomWindow3D(drag); else applyBox3D(drag);
+      }
       else if (drag.moved < 4 && (e.button === 0 || e.pointerType === 'touch')) {
         if (v3.wallMode) wall3DClick(e);
+        else if (state.tool === '_zoomw') { /* 줌 윈도는 3D에선 드래그로 박스 지정 — 클릭은 무시 */ }
         else if (state.tool === 'line') line3DClick(e); // 3D 선: 정점별 높이 지원
         else if (state.tool !== 'select') tool3DClick(e); // 나머지 평면 도구
         else {
@@ -12693,6 +12697,31 @@ function cmdZoomWindow() {
   setPrompt('줌: 확대할 영역을 드래그(또는 두 모서리 클릭)하세요 · Esc 취소');
   logLine('  ▷ 줌 — 확대할 영역을 드래그하세요 (전체보기는 ze 또는 F)', 'info');
 }
+// 3D·입면 뷰포트용 줌 윈도 — 드래그 박스(캔버스 px)를 그 칸 가득 확대.
+// proj3D: 화면x = 칸중심x + (sx+panX)·k, 화면y = 칸중심y − (sy+panY)·k  (k = min(w,h)/(fit·1.4)·zoom)
+// ① 박스 중심을 칸 중심으로(pan 이동, 현재 k 기준) ② zoom 배율 곱(칸 중심 기준 확대라 중심 유지)
+function applyZoomWindow3D(d) {
+  if (typeof v3 === 'undefined' || !v3) return false;
+  const x0 = Math.min(d.bx0, d.bx1), x1 = Math.max(d.bx0, d.bx1);
+  const y0 = Math.min(d.by0, d.by1), y1 = Math.max(d.by0, d.by1);
+  const bw = x1 - x0, bh = y1 - y0;
+  if (bw < 4 || bh < 4) { logLine('  줌: 영역이 너무 작습니다 — 확대할 박스를 드래그하세요.', 'warn'); render3D(); return false; }
+  const vi = vpAt((x0 + x1) / 2, (y0 + y1) / 2);
+  if (v3.act !== vi) { saveVp(); v3.act = vi; loadVp(vi); }
+  const r = vpRect(vi);
+  const k = Math.min(r.w, r.h) / (v3.fit * 1.4) * v3.zoom;
+  if (!(k > 0)) return false;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const ccx = r.x + r.w / 2, ccy = r.y + r.h / 2;
+  v3.panX -= (cx - ccx) / k;
+  v3.panY += (cy - ccy) / k;
+  v3.zoom = Math.max(0.001, Math.min(100000, v3.zoom * Math.min(r.w / bw, r.h / bh) * 0.95));
+  saveVp();
+  setTool(zoomwPrevTool === '_zoomw' ? 'select' : zoomwPrevTool);
+  logLine('  ✔ 줌 — 지정한 영역으로 확대 (전체보기: ze)', 'ok');
+  render3D();
+  return true;
+}
 function zoomFit(robust) {
   // 전체보기는 두 카메라(평면 state.view / 3D v3)를 모두 맞춘다. 범위는 modelExtents 하나로
   // 계산하므로 둘이 다른 곳을 볼 수 없다 — 예전엔 각자 자기 switch 로 범위를 구해 어긋났다.
@@ -14673,7 +14702,78 @@ function renderDocTabs() {
     ev.stopPropagation(); closeDocTab(+el.dataset.close);
   }));
   document.getElementById('dtabNew').addEventListener('click', newDocTab);
-  if (window.__nodeTabBtn) bar.insertBefore(window.__nodeTabBtn, bar.firstChild); // 노드 버튼을 탭 맨 왼쪽에 재삽입(innerHTML 재생성 후)
+  syncModuleTabs(bar);  // 모듈 탭(스케치·코워커·노드)을 저장된 순서로 문서 탭 왼쪽에 재삽입
+  bindTabDrag(bar);     // 탭 클릭&드래그 순서 변경
+}
+// ── 하단 탭 라인: 모듈 탭(스케치·AI 코워커·노드) + 문서 탭 — 드래그로 순서 변경 (2026-07-20) ──
+const MODTAB_KEY = 'webcad_bottabs';
+const MODTAB_EL = { sk: () => window.__skTabBtn, ai: () => window.__aiTabBtn, node: () => window.__nodeTabBtn };
+function modTabOrder() {
+  try { const a = JSON.parse(localStorage.getItem(MODTAB_KEY) || 'null'); if (Array.isArray(a) && a.length) return a.filter(k => MODTAB_EL[k]); } catch (e) {}
+  return ['sk', 'ai', 'node'];   // 기본: [스케치][AI 코워커][노드] — 코워커는 노드 왼쪽, 스케치는 맨 왼쪽
+}
+function syncModuleTabs(bar) {
+  bar = bar || document.getElementById('docTabs'); if (!bar) return;
+  const order = modTabOrder();
+  for (const k of ['sk', 'ai', 'node']) if (!order.includes(k)) order.push(k);
+  const els = order.map(k => MODTAB_EL[k]()).filter(Boolean);
+  for (const el of els) if (el.parentNode === bar) bar.removeChild(el);
+  for (let i = els.length - 1; i >= 0; i--) bar.insertBefore(els[i], bar.firstChild);
+}
+window.__syncBottomTabs = syncModuleTabs; // sketch.js·ai.js·nodes.js 가 등록 직후 호출
+let _tabSupClick = false;
+function bindTabDrag(bar) {
+  if (bar._dragBound) return; bar._dragBound = true;
+  const isMod = (el) => el === window.__skTabBtn || el === window.__aiTabBtn || el === window.__nodeTabBtn;
+  let td = null;
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 && e.pointerType !== 'touch') return;
+    const t = e.target.closest('#docTabs > *');
+    if (!t || t.id === 'dtabNew') return;
+    td = { el: t, x: e.clientX, y: e.clientY, on: false };
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (!td) return;
+    if (!td.on) {
+      if (Math.hypot(e.clientX - td.x, e.clientY - td.y) <= 8) return;
+      td.on = true; td.el.style.opacity = '.5';
+      try { bar.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    // 좌표(rect) 스캔으로 대상 판정 — elementFromPoint 는 숨김/백그라운드 창에서 null 이라 못 쓴다
+    let over = null, rct = null;
+    for (const el of bar.children) {
+      if (el === td.el || el.id === 'dtabNew') continue;
+      const rc = el.getBoundingClientRect();
+      if (rc.width && e.clientX >= rc.left && e.clientX <= rc.right) { over = el; rct = rc; break; }
+    }
+    if (!over) return;
+    if (isMod(td.el) !== isMod(over)) return;  // 모듈 탭 ↔ 문서 탭 사이 교차 이동은 없음
+    bar.insertBefore(td.el, e.clientX > rct.left + rct.width / 2 ? over.nextSibling : over);
+  });
+  const tdEnd = () => {
+    if (!td) return;
+    if (td.on) {
+      td.el.style.opacity = '';
+      if (isMod(td.el)) {   // 모듈 탭 순서 저장
+        const ord = [...bar.children].filter(isMod).map(el =>
+          el === window.__skTabBtn ? 'sk' : el === window.__aiTabBtn ? 'ai' : 'node');
+        try { localStorage.setItem(MODTAB_KEY, JSON.stringify(ord)); } catch (_) {}
+      } else {              // 문서 탭 순서 = docs 배열 재배열
+        const idxs = [...bar.querySelectorAll('.dtab')].map(el => +el.dataset.doc);
+        if (idxs.length === docs.length && idxs.every(i => docs[i] !== undefined)) {
+          const cur = docs[curDoc];
+          docs = idxs.map(i => docs[i]);
+          curDoc = Math.max(0, docs.indexOf(cur));
+          renderDocTabs();
+        }
+      }
+      _tabSupClick = true; setTimeout(() => { _tabSupClick = false; }, 0);
+    }
+    td = null;
+  };
+  bar.addEventListener('pointerup', tdEnd);
+  bar.addEventListener('pointercancel', tdEnd);
+  bar.addEventListener('click', (e) => { if (_tabSupClick) { e.stopPropagation(); e.preventDefault(); } }, true);
 }
 
 function newDrawing() {
@@ -14812,7 +14912,7 @@ window.__CADTEST__ = {
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
   trimLine, extendLine, doFillet, filletPolyCorner, nearestPolySeg, clickFillet, doChamfer, offsetEntity, insertChildren,
-  applyZoomWindow, cmdZoomWindow, clickTrim, trimSpaceAction, emptyEnterAction, handleClick,
+  applyZoomWindow, cmdZoomWindow, applyZoomWindow3D, clickTrim, trimSpaceAction, emptyEnterAction, handleClick, syncModuleTabs,
   // 유틸
   dxfColorIndex, aci2hex, rgbHex,
   // 링크 공유

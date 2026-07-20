@@ -3231,12 +3231,12 @@ function tests(){
     bf.dispatchEvent(new AW.PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
     ok(!bf.classList.contains('on'), '  다시 닫힘 = .on 해제');
     const bs = AD.getElementById('btnSketch'), SK2 = AW.WEBCAD_SKETCH;
-    if (bs && SK2) {
+    if (bs && SK2) { // 스케치는 하단 탭(4차 개편) — 활성 상태는 .on 클래스로
+      ok(AD.getElementById('docTabs').contains(bs), '★스케치 = 하단 탭 라인');
       SK2.enter();
-      ok(bs.classList.contains('on') && AW.getComputedStyle(bs.querySelector('.tl')).display !== 'none',
-        '★스케치 중 = 라벨 표시');
+      ok(bs.classList.contains('on'), '★스케치 중 = 탭 활성(on)');
       SK2.exit();
-      eqi(AW.getComputedStyle(bs.querySelector('.tl')).display, 'none', '  스케치 종료 = 아이콘만');
+      ok(!bs.classList.contains('on'), '  스케치 종료 = 활성 해제');
     }
     // ③ 인터페이스 편집 = 반투명 덮개가 아닌 '팝업창' (뒤 화면 조작 가능 + 제목줄 드래그)
     AD.getElementById('btnUiEdit').click();
@@ -3492,6 +3492,66 @@ function tests(){
       ok(v3T.zoom > 1000, `★3D 확대 리미트 해제 (zoom=${Math.round(v3T.zoom)} > 예전 상한 20)`);
       v3T.zoom = 1;
     }
+    reset();
+  }
+
+  // ---------- 2026-07-20 4차 — 3D 줌 윈도 · 하단 모듈 탭 ----------
+  group('4차 — 3D 뷰 줌 윈도 · 스케치/코워커 하단 탭 · 드래그 순서 · 세로 테마 스케치바');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    reset();
+    // ── 하단 탭: [스케치][코워커][노드] + 상단바에서 제거
+    const dt = AD.getElementById('docTabs');
+    const sk = AD.getElementById('btnSketch'), ai = AD.getElementById('aiFab'), nd = AD.getElementById('ghFab');
+    ok(dt && dt.contains(sk) && dt.contains(ai) && dt.contains(nd), '★스케치·코워커·노드 = 하단 탭 라인');
+    ok(!AD.getElementById('topbar').contains(sk) && !AD.getElementById('topbar').contains(ai), '  상단바에서 제거');
+    AW.localStorage.setItem('webcad_bottabs', JSON.stringify(['sk', 'ai', 'node']));
+    AW.__syncBottomTabs();
+    ok(dt.firstElementChild === sk && sk.nextElementSibling === ai && ai.nextElementSibling === nd,
+      '★기본 순서 = [스케치][코워커][노드] (코워커는 노드 왼쪽)');
+    ok(sk.classList.contains('modTab') && ai.classList.contains('modTab'), '  노드 탭과 같은 모듈 탭 디자인');
+    // 드래그로 순서 변경 (rect 스캔 — 숨김 창에서도 동작)
+    const sr = sk.getBoundingClientRect(), ar = ai.getBoundingClientRect();
+    sk.dispatchEvent(new AW.PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: sr.x + 5, clientY: sr.y + 5, pointerId: 3, button: 0 }));
+    dt.dispatchEvent(new AW.PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: ar.right - 3, clientY: ar.y + 5, pointerId: 3, button: 0 }));
+    dt.dispatchEvent(new AW.PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: ar.right - 3, clientY: ar.y + 5, pointerId: 3, button: 0 }));
+    ok(dt.firstElementChild === ai && ai.nextElementSibling === sk, '★클릭&드래그로 탭 순서 변경');
+    eqi(AW.localStorage.getItem('webcad_bottabs'), JSON.stringify(['ai', 'sk', 'node']), '  순서 저장');
+    AW.localStorage.setItem('webcad_bottabs', JSON.stringify(['sk', 'ai', 'node']));
+    AW.__syncBottomTabs();
+    ok(dt.firstElementChild === sk, '  복원');
+    // ── 스케치바: 세로 + 테마 변수 (라이트/다크)
+    const SK3 = AW.WEBCAD_SKETCH;
+    if (SK3) {
+      SK3.enter();
+      const barEl = AD.getElementById('skBar');
+      eqi(AW.getComputedStyle(barEl).flexDirection, 'column', '★스케치 툴바 = 세로(컬럼)');
+      const bgDark = AW.getComputedStyle(barEl).backgroundColor;
+      AD.documentElement.classList.add('light');
+      const bgLight = AW.getComputedStyle(barEl).backgroundColor;
+      AD.documentElement.classList.remove('light');
+      ok(bgDark !== bgLight && bgLight === 'rgb(255, 255, 255)', '★스케치바 = 라이트/다크 테마 연동 (라이트=흰 카드)');
+      SK3.exit();
+    }
+    // ── 3D 뷰 줌 윈도: 산식·활성 칸 전환·도구 복귀 (렌더 픽셀은 실브라우저에서 검증)
+    C.open3D && C.open3D();
+    if (C.v3 && typeof C.applyZoomWindow3D === 'function') {
+      const V = C.v3;
+      const di = V.views.findIndex((w, i) => !C.vpIsPlan(i));
+      V.quad = false; V.act = di; V.zoom = 1; V.panX = 0; V.panY = 0;
+      C.runCommandInput('zoom');
+      eqi(C.state.tool, '_zoomw', '★3D 뷰에서도 zoom = 줌 윈도 도구');
+      const W2 = V.cv.width, H2 = V.cv.height;
+      const box = { bx0: 10, by0: 10, bx1: 10 + Math.max(20, W2 * 0.2), by1: 10 + Math.max(16, H2 * 0.2) };
+      const z0 = V.zoom;
+      const okz = C.applyZoomWindow3D(box);
+      const r2 = C.vpRect(V.act);
+      const expect = Math.max(0.001, Math.min(100000, z0 * Math.min(r2.w / (box.bx1 - box.bx0), r2.h / (box.by1 - box.by0)) * 0.95));
+      ok(okz === true, '★드래그 박스 적용됨 (아이소·입면 공통 경로)');
+      eq(V.zoom, expect, '  줌 배율 = 박스에 맞춤 (산식 일치)', Math.max(1e-9, expect * 1e-6));
+      eqi(C.state.tool, 'select', '  적용 후 도구 복귀');
+      V.zoom = 1; V.panX = 0; V.panY = 0;
+    } else ok(true, '(3D 훅 없음)');
     reset();
   }
 }

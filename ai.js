@@ -703,12 +703,8 @@
 
   // ---------- UI ----------
   const css = `
-  /* AI 코워커 토글: 상단바의 다른 토글(.tbtn)과 완전히 같은 디자인 — 특별취급 없음 (2026-07-20 피드백) */
-  #aiFab{flex:0 0 auto;margin:0;width:auto;height:auto;padding:5px 11px;border:none;border-radius:980px;
-    background:var(--glass-fill);color:var(--muted);font-size:12.5px;line-height:1;cursor:pointer;
-    display:inline-flex;align-items:center;justify-content:center;box-shadow:var(--spec);}
-  #aiFab:hover{background:var(--glass-fill-hi);color:var(--text)}
-  #aiFab.on{background:var(--panel3,rgba(120,140,180,.2));color:var(--text)}
+  /* AI 코워커 토글: 하단 탭 라인의 모듈 탭(.modTab — skin.css) — 노드 탭과 같은 디자인 */
+  #aiFab{gap:6px;}
   #aiPanel{position:fixed;right:14px;bottom:68px;z-index:9001;width:360px;max-width:calc(100vw - 28px);height:500px;max-height:calc(100vh - 90px);
     display:none;flex-direction:column;background:#111a30;border:1px solid #33406a;border-radius:12px;overflow:hidden;
     box-shadow:0 10px 34px rgba(0,0,0,.55);font:13px/1.5 -apple-system,system-ui,sans-serif;color:#dbe6ff;
@@ -891,12 +887,15 @@
     sendBtn.addEventListener('click', () => { if (busy) { if (aborter) aborter.abort(); return; } submit(); }); // 작업 중엔 중단 버튼
     row.appendChild(clipBtn); row.appendChild(inEl); row.appendChild(sendBtn);
     panel.appendChild(row);
-    // AI 토글은 상단바의 ✏️ 스케치 버튼 옆에 (명령창은 커서 팝업이 되어 상주 UI 가 아님)
-    const skBtn = document.getElementById('btnSketch');
-    const cmdRow = document.getElementById('cmdInputRow'), tgB = document.getElementById('tgBottom');
-    if (skBtn && skBtn.parentNode) { fab.classList.add('tbtn'); fab.style.margin = '0'; skBtn.parentNode.insertBefore(fab, skBtn.nextSibling); }
-    else if (cmdRow) { if (tgB) cmdRow.insertBefore(fab, tgB); else cmdRow.appendChild(fab); }
-    else document.body.appendChild(fab); // 폴백
+    // AI 토글은 하단 탭 라인(팝업창 줄) — 노드 왼쪽 (2026-07-20, 상단바에서 이동)
+    fab.classList.add('modTab');
+    fab.innerHTML = IC_BOT + ' <span class="tl">코워커</span>';
+    const dtBar = document.getElementById('docTabs');
+    if (dtBar) {
+      dtBar.insertBefore(fab, window.__nodeTabBtn && window.__nodeTabBtn.parentNode === dtBar ? window.__nodeTabBtn : dtBar.firstChild);
+      window.__aiTabBtn = fab;
+      if (window.__syncBottomTabs) window.__syncBottomTabs();
+    } else document.body.appendChild(fab); // 폴백
     document.body.appendChild(panel);
     setupEl.style.display = cfg.key ? 'none' : 'flex';
     if (history.length) renderHistory(); else greet();
