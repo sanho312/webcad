@@ -1076,7 +1076,7 @@ function tests(){
     // 테스트는 저장된 상태에 의존하면 안 된다 → 단일 아이소 뷰로 못박는다.
     V.quad = false; V.act = 1;
     V.pitch = 45 * Math.PI / 180; V.yaw = 0.6;
-    C.INSTANT_CMDS.zoom();
+    C.INSTANT_CMDS.ze();
     V._fast = false; C.render3D();
     const cv = V.cv;
     const toC = (px, py) => { const r = cv.getBoundingClientRect(); return [r.left + px / (cv.width / (r.width || cv.width)), r.top + py / (cv.height / (r.height || cv.height))]; };
@@ -1128,7 +1128,7 @@ function tests(){
       C.extrudePendCancel();
       const en = C.state.entities.find(x => x.id === 1); en.bim.h = 2000;
       C.state.selection.clear();
-      C.INSTANT_CMDS.zoom();
+      C.INSTANT_CMDS.ze();
       const w = V.views[V.act];
       V.pitch = w.pitch = pd * Math.PI / 180; V.yaw = w.yaw = yw;
       V.panX = w.panX = 0; V.panY = w.panY = 0;
@@ -1663,7 +1663,7 @@ function tests(){
     // ★두 카메라가 같은 중심을 봐야 한다
     if (!C.v3) C.INSTANT_CMDS['view3d']();
     C.v3.quad = false; C.v3.act = 1;
-    C.INSTANT_CMDS.zoom();
+    C.INSTANT_CMDS.ze();
     ok(Math.abs(C.state.view.x - C.v3.cx) < 2, '★평면 전체보기와 3D 화면맞춤의 중심 X 가 같다');
     ok(Math.abs(C.state.view.y - C.v3.cy) < 2, '★중심 Y 가 같다');
 
@@ -2235,7 +2235,7 @@ function tests(){
     ok(V.views[1]._faces && V.views[1]._faces.length > 0, '아이소 칸은 3D 렌더러가 그대로 그린다');
 
     // ★핵심: 평면 칸에 문자가 실제로 그려진다 (3D 파이프라인은 TEXT 를 못 그린다)
-    C.INSTANT_CMDS.zoom();
+    C.INSTANT_CMDS.ze();
     const g = cvEl.getContext('2d');
     const d = g.getImageData(0, 0, cvEl.width, cvEl.height).data;
     let red = 0;
@@ -2280,7 +2280,7 @@ function tests(){
     // act=0(평면)이면 3D 렌더러가 그 칸을 건너뛰어 면이 0개가 되고, 이 그룹은 무의미해진다.
     V.quad = false; V.act = 1;
     V.pitch = 45 * Math.PI / 180; V.yaw = 0.6;
-    C.INSTANT_CMDS.zoom();   // 3D 화면 맞춤 (전체보기)
+    C.INSTANT_CMDS.ze();   // 3D 화면 맞춤 (전체보기)
     const hq = () => { V._fast = false; clearTimeout(V._settleT); C.render3D(); };
     const probes = [[0, -1000, 1000], [1000, 0, 1000], [0, 1000, 1000], [-1000, 0, 1000], [0, 0, 2000]];
     const collect = () => probes.map(([x, y, z]) => {
@@ -2946,17 +2946,22 @@ function tests(){
     const AW = document.getElementById('app').contentWindow, AD = AW.document;
     const S = AW.WEBCAD_SKETCH, BF = AW.WEBCAD_BIMIFY, CP = AW.WEBCAD_CMDPOP;
     reset();
-    // ⑥ 크롬 제거 + 커서 명령창
-    ok(!!CP, '★커서 명령창 모듈 로드');
+    // ⑥ 명령창 — 하단 도크(로그+입력줄) 기본, 접으면 커서 팝업 (2026-07-20 3차 개편 반영)
+    ok(!!CP && !!AD.getElementById('cmdDockTab'), '★명령창 도크 모듈 + 접기 손잡이');
     const disp = (id) => AW.getComputedStyle(AD.getElementById(id)).display;
-    ok(disp('console') === 'none', '★명령 콘솔 제거 (도구창은 2차 피드백으로 슬라이드 복원)');
     AD.body.classList.remove('authLocked');
+    CP.setDock(false);                                   // 팝업 모드로 검증
+    ok(disp('console') === 'none', '★도크 접힘 = 콘솔 숨김 → 커서 팝업 모드');
     AW.dispatchEvent(new AW.PointerEvent('pointermove', { clientX: 600, clientY: 300 }));
     AW.dispatchEvent(new AW.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
-    ok(CP.isOpen(), '★스페이스 = 커서 옆 명령창 열림');
+    ok(!CP.isOpen(), '★스페이스 = 직전 명령 반복 (팝업을 열지 않는다)');
+    const inp0 = AD.getElementById('cmdInput');
+    inp0.value = 'li'; inp0.dispatchEvent(new AW.Event('input', { bubbles: true }));
+    ok(CP.isOpen(), '★타이핑 = 커서 옆 팝업 열림');
     ok(CP.pop.getBoundingClientRect().left >= 600, '  커서의 오른쪽에 위치');
-    ok(AD.activeElement === AD.getElementById('cmdInput'), '  입력 포커스');
+    inp0.value = ''; inp0.dispatchEvent(new AW.Event('input', { bubbles: true }));
     CP.hide(); ok(!CP.isOpen(), '닫힘');
+    CP.setDock(true); C.runCommandInput('select');
     // ② 터치 — 즉시 반응 CSS
     eqi(AW.getComputedStyle(AD.getElementById('btnFile')).touchAction, 'manipulation', '★버튼 touch-action=manipulation (더블탭 줌 차단)');
     // ③ 브러시 3종 + 레이어 연동
@@ -3022,14 +3027,15 @@ function tests(){
       PN.left.setOpen(false);
       ok(!AD.getElementById('toolbar').classList.contains('pOpen'), '  접힘');
     }
-    // ⑤ 흰색 커서 명령창 + 추적 배치
+    // ⑤ 흰색 커서 명령창 (팝업 모드) — 열 때 커서 오른쪽에 놓인다
     if (CP) {
+      CP.setDock(false);
       eqi(AW.getComputedStyle(CP.pop).backgroundColor, 'rgb(255, 255, 255)', '★명령창 = 흰 박스');
       CP.setPtr(600, 300); CP.show();
       CP.setPtr(420, 380); CP.place();
       const pr = CP.pop.getBoundingClientRect();
-      ok(Math.abs(pr.left - (420 + 14)) < 4, '★커서를 따라 이동 (왼쪽 끝 = 커서+14px, 오른쪽 배치)');
-      CP.hide();
+      ok(Math.abs(pr.left - (420 + 14)) < 4, '★배치 = 커서 오른쪽(+14px) — place 호출 기준');
+      CP.hide(); CP.setDock(true);
       const fab = AD.getElementById('aiFab');
       ok(fab && fab.previousElementSibling === AD.getElementById('btnSketch'), '★🤖 코워커 = ✏️ 스케치 옆');
     }
@@ -3244,12 +3250,13 @@ function tests(){
     // ④ 명령창 콤팩트 — 더 짧고(≤230px) 낮게(≤34px)
     const CP2 = AW.WEBCAD_CMDPOP;
     if (CP2) {
+      CP2.setDock(false);
       CP2.setPtr(400, 300); CP2.show(); CP2.place();
       const pr = CP2.pop.getBoundingClientRect();
       ok(pr.width <= 230, `★명령창 폭 ≤ 230 (${Math.round(pr.width)})`);
       ok(pr.height <= 34, `★명령창 높이 ≤ 34 (${Math.round(pr.height)})`);
       ok(pr.left > 400, '  커서 오른쪽 유지');
-      CP2.hide();
+      CP2.hide(); CP2.setDock(true);
     }
   }
 
@@ -3300,6 +3307,7 @@ function tests(){
     // ── 명령창: 텍스트 한 줄 높이·절반 폭·열린 위치 고정
     const CP = AW.WEBCAD_CMDPOP;
     if (CP) {
+      CP.setDock(false);                              // 커서 팝업 모드에서 검증
       CP.setPtr(400, 300); CP.show();
       const p1 = CP.pop.getBoundingClientRect();
       ok(p1.width <= 150, `★명령창 폭 ≤ 150 (${Math.round(p1.width)})`);
@@ -3321,7 +3329,7 @@ function tests(){
         ok(m && AW.getComputedStyle(m).color === 'rgb(10, 84, 200)', '★선택 행 일치 글자 = 진한 파랑 (흰색 금지)');
       } else ok(true, '(제안 미표시 환경)');
       inp2.value = ''; inp2.dispatchEvent(new AW.Event('input', { bubbles: true }));
-      CP.hide();
+      CP.hide(); CP.setDock(true);
     } else ok(true, '(cmdpop 없음)');
     // ── 테마 잉크 규칙: 화이트모드 흰 글자 금지 · 블랙모드 검은 글자 금지
     AD.documentElement.classList.add('light');
@@ -3404,6 +3412,85 @@ function tests(){
         eqi(items.length, 3, '★평면 칸 표시 모드 메뉴 = 작업/렌더링/레이트레이싱 3개');
         C.closeVpMenu();
       } else ok(true, '(평면 칸 없음)');
+    }
+    reset();
+  }
+
+  // ---------- 2026-07-20 3차 보완 ----------
+  group('3차 보완 — fillet 클릭쪽 · trim 기준선 · 줌 윈도 · 적응 검볼 · 도크 명령창 · Space 반복 · Esc 초기화');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    reset();
+    // ── ① fillet: 클릭한 쪽이 남는다 (짧은 쪽 클릭 → 짧은 쪽 유지)
+    const f1 = { id: 1, type: 'LINE', x1: -1000, y1: 0, x2: 4000, y2: 0, layer: '0' };
+    const f2 = { id: 2, type: 'LINE', x1: 0, y1: -1000, x2: 0, y2: 4000, layer: '0' };
+    S0.entities.push(f1, f2); S0.nextId = 3;
+    C.doFillet(f1, f2, 0, { x: -500, y: 0 }, { x: 0, y: -500 });
+    ok(Math.min(f1.x1, f1.x2) === -1000 && Math.max(f1.x1, f1.x2) === 0
+      && Math.min(f2.y1, f2.y2) === -1000 && Math.max(f2.y1, f2.y2) === 0,
+      '★모깎기 = 클릭한 쪽 유지 (짧은 쪽 클릭 → 반대로 꺾이지 않음)');
+    reset();
+    const g1 = { id: 1, type: 'LINE', x1: -1000, y1: 0, x2: 4000, y2: 0, layer: '0' };
+    const g2 = { id: 2, type: 'LINE', x1: 0, y1: -1000, x2: 0, y2: 4000, layer: '0' };
+    S0.entities.push(g1, g2); S0.nextId = 3;
+    C.doFillet(g1, g2, 0);
+    ok(Math.max(g1.x1, g1.x2) === 4000 && Math.max(g2.y1, g2.y2) === 4000, '  클릭점 없으면(직접 호출) 예전 규칙 유지');
+    // ── ② trim: 기준선 선택 → Space(빈 엔터) → 클릭한 부분 제거
+    reset();
+    const t1 = { id: 1, type: 'LINE', x1: -2000, y1: 0, x2: 2000, y2: 0, layer: '0' };
+    const t2 = { id: 2, type: 'LINE', x1: 0, y1: -2000, x2: 0, y2: 2000, layer: '0' };
+    S0.entities.push(t1, t2); S0.nextId = 3;
+    C.runCommandInput('trim');
+    C.clickTrim({ x: 0, y: 1000 }, { x: 5, y: 1000 });    // 기준선 = 세로선
+    C.emptyEnterAction();                                  // Space = 확정 (빈 엔터 경로)
+    C.clickTrim({ x: -1000, y: 0 }, { x: -1000, y: 3 });   // 가로선 '왼쪽' 클릭
+    ok(Math.min(t1.x1, t1.x2) === 0 && Math.max(t1.x1, t1.x2) === 2000,
+      '★자르기 — 기준선 확정 후 클릭한 쪽(왼쪽)만 제거');
+    C.runCommandInput('select');
+    // ── ③ 줌 윈도: zoom → _zoomw 도구, 박스 적용 = 그 영역으로 확대 + 도구 복귀
+    reset();
+    C.runCommandInput('zoom');
+    eqi(S0.tool, '_zoomw', '★zoom = 줌 윈도 도구 진입 (전체보기 아님)');
+    S0.view.x = 0; S0.view.y = 0; S0.view.scale = 0.05;
+    C.applyZoomWindow({ x1: 0, y1: 0, x2: 1000, y2: 800 });
+    const cvT = AD.getElementById('cv');
+    eq(S0.view.x, 500, '  중심 X = 박스 중심', 1);
+    eq(S0.view.y, 400, '  중심 Y = 박스 중심', 1);
+    eq(S0.view.scale, Math.min(cvT._w / 1000, cvT._h / 800) * 0.95, '  배율 = 박스에 맞춤', 1e-6);
+    eqi(S0.tool, 'select', '  적용 후 이전 도구 복귀');
+    ok(!!C.INSTANT_CMDS.ze, '  전체보기는 ze 로 분리');
+    // ── ⑤ Space=직전 명령 반복 · Esc=명령창 초기화
+    ok(!!AW.WEBCAD_EMPTY_ENTER, '★빈 Enter 동작(WEBCAD_EMPTY_ENTER) 노출');
+    C.runCommandInput('line'); C.runCommandInput('select');
+    AW.WEBCAD_EMPTY_ENTER();
+    eqi(S0.tool, 'line', '★Space/Enter = 직전 명령 반복');
+    C.runCommandInput('select');
+    const inpE = AD.getElementById('cmdInput');
+    inpE.focus(); inpE.value = 'abc';
+    inpE.dispatchEvent(new AW.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    eqi(inpE.value, '', '★Esc = 명령창 입력 초기화');
+    // ── ⑨ 도크: 기본 하단 콘솔(로그가 입력줄 위) + 손잡이 토글
+    const CP3 = AW.WEBCAD_CMDPOP;
+    CP3.setDock(true);
+    const conT = AD.getElementById('console');
+    ok(AW.getComputedStyle(conT).display !== 'none' && conT.contains(AD.getElementById('cmdInputRow')),
+      '★도크 = 하단 고정 명령창 (입력줄 포함)');
+    ok(AD.getElementById('cmdLog').getBoundingClientRect().top < AD.getElementById('cmdInputRow').getBoundingClientRect().top,
+      '  로그창이 입력줄 바로 위');
+    ok(conT.getBoundingClientRect().top > AW.innerHeight / 2, '  콘솔은 화면 하단');
+    ok(!!AD.getElementById('cmdDockTab'), '  접기 손잡이 존재');
+    CP3.setDock(false);
+    ok(AW.getComputedStyle(conT).display === 'none' && CP3.pop.contains(AD.getElementById('cmdInputRow')),
+      '★손잡이로 접으면 커서 팝업 모드로 전환');
+    CP3.setDock(true);
+    // ── ⑦ 3D 확대 리미트 해제 (휠 클램프 0.1~20 → 0.001~100000)
+    C.open3D && C.open3D();
+    if (C.v3) {
+      const v3T = C.v3;
+      v3T.zoom = 5000;
+      v3T.cv.dispatchEvent(new AW.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      ok(v3T.zoom > 1000, `★3D 확대 리미트 해제 (zoom=${Math.round(v3T.zoom)} > 예전 상한 20)`);
+      v3T.zoom = 1;
     }
     reset();
   }

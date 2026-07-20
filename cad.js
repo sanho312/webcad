@@ -1452,14 +1452,26 @@ function lineInfIntersect(a, b, c, d) { // 무한 직선 교차점
   const t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den;
   return [a[0] + t * rx, a[1] + t * ry];
 }
-function doFillet(line1, line2, radius) {
+function doFillet(line1, line2, radius, keep1, keep2) {
   const a1 = [line1.x1, line1.y1], b1 = [line1.x2, line1.y2];
   const a2 = [line2.x1, line2.y1], b2 = [line2.x2, line2.y2];
   const C = lineInfIntersect(a1, b1, a2, b2);
   if (!C) { logLine('  두 선이 평행하여 모깎기할 수 없습니다.', 'warn'); return false; }
   const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
-  const far1 = dist(C, a1) > dist(C, b1) ? a1 : b1, near1 = far1 === a1 ? 'b' : 'a';
-  const far2 = dist(C, a2) > dist(C, b2) ? a2 : b2, near2 = far2 === a2 ? 'b' : 'a';
+  // 남길 쪽 = '클릭한 쪽' (라이노) — 교차점에서 클릭점이 향한 방향의 끝점을 유지한다.
+  // ★예전엔 무조건 '긴 쪽'을 남겨서, 교차한 두 선의 짧은 쪽을 클릭해도 반대쪽에 코너가
+  //   생겼다(사용자 보고: 직각이 반대로 작용). 클릭점이 없으면(직접 호출) 예전 규칙 유지.
+  const pickFar = (a, b, keep) => {
+    if (keep) {
+      const dx = keep.x - C[0], dy = keep.y - C[1];
+      const da = (a[0] - C[0]) * dx + (a[1] - C[1]) * dy;
+      const db = (b[0] - C[0]) * dx + (b[1] - C[1]) * dy;
+      return da >= db ? a : b;
+    }
+    return dist(C, a) > dist(C, b) ? a : b;
+  };
+  const far1 = pickFar(a1, b1, keep1), near1 = far1 === a1 ? 'b' : 'a';
+  const far2 = pickFar(a2, b2, keep2), near2 = far2 === a2 ? 'b' : 'a';
   const setNear = (ln, key, p) => { if (key === 'a') { ln.x1 = p[0]; ln.y1 = p[1]; } else { ln.x2 = p[0]; ln.y2 = p[1]; } };
   let u1 = [far1[0] - C[0], far1[1] - C[1]]; let l1 = Math.hypot(u1[0], u1[1]) || 1; u1 = [u1[0] / l1, u1[1] / l1];
   let u2 = [far2[0] - C[0], far2[1] - C[1]]; let l2 = Math.hypot(u2[0], u2[1]) || 1; u2 = [u2[0] / l2, u2[1] / l2];
@@ -1652,10 +1664,15 @@ cv.addEventListener('mousemove', (ev) => {
   if (toolPend) {
     if (!(ev.buttons & 1)) toolPend = null; // 버튼이 이미 놓임(창 밖 release 등) — 보류 취소
     else if (Math.hypot(ev.clientX - toolPend.sx, ev.clientY - toolPend.sy) > 5) {
-      // 홀드-드래그 = 박스 선택 시작 (도구 동작은 실행하지 않음 — 선택은 어떤 상황에서도 가능)
-      if (!toolPend.shift) state.selection.clear();
-      dragSelect = { x1: toolPend.rawW.x, y1: toolPend.rawW.y, x2: raw.x, y2: raw.y };
-      toolPend = null; renderProps();
+      if (state.tool === '_zoomw') { // 줌 윈도: 드래그 = 확대할 영역 박스 (선택 아님)
+        dragSelect = { x1: toolPend.rawW.x, y1: toolPend.rawW.y, x2: raw.x, y2: raw.y, zoomw: true };
+        toolPend = null;
+      } else {
+        // 홀드-드래그 = 박스 선택 시작 (도구 동작은 실행하지 않음 — 선택은 어떤 상황에서도 가능)
+        if (!toolPend.shift) state.selection.clear();
+        dragSelect = { x1: toolPend.rawW.x, y1: toolPend.rawW.y, x2: raw.x, y2: raw.y };
+        toolPend = null; renderProps();
+      }
     }
   }
   if (dragSelect) { dragSelect.x2 = raw.x; dragSelect.y2 = raw.y; }
@@ -1920,6 +1937,12 @@ cv.addEventListener('touchend', (ev) => {
 // 클릭 처리 (도구별)
 function handleClick(w, rawW, ev) {
   if (state.tool === '_paste' && cmdOp && cmdOp.name === 'paste') { doPaste(w); return; }
+  if (state.tool === '_zoomw') { // 줌 윈도: 두 모서리 클릭도 지원 (드래그와 같은 결과)
+    if (!cmdOp || cmdOp.name !== 'zoomw') { cmdOp = { name: 'zoomw', p1: { x: rawW.x, y: rawW.y } }; setPrompt('줌: 반대 모서리를 클릭하세요 (드래그도 가능) · Esc 취소'); return; }
+    const zp1 = cmdOp.p1; cmdOp = null;
+    applyZoomWindow({ x1: zp1.x, y1: zp1.y, x2: rawW.x, y2: rawW.y });
+    return;
+  }
   if (state.tool === '_plotregion') { // 플롯 영역 지정: 두 점
     if (!cmdOp || cmdOp.name !== 'plotrgn') { cmdOp = { name: 'plotrgn', p1: w }; setPrompt('플롯 영역: 반대 모서리를 클릭하세요.'); return; }
     const p1 = cmdOp.p1;
@@ -2269,6 +2292,7 @@ function clickFillet(w, rawW) {
   const seg = hit.type === 'LWPOLYLINE' ? nearestPolySeg(hit, rawW || w) : null; // 스냅 전 실제 클릭점으로 변 판정 (꼭짓점 스냅 시 오선택 방지)
   if (cmdOp.step === 'l1') { // 첫 번째 변
     cmdOp.l1 = hit; cmdOp.seg1 = seg; cmdOp.step = 'l2';
+    cmdOp.w1 = { x: (rawW || w).x, y: (rawW || w).y };   // 클릭점 — 남길 쪽 판정(라이노식)
     state.selection.clear(); state.selection.add(hit.id); renderProps();
     setPrompt(`모깎기 R=${filletRadius}: 두 번째 변을 클릭하세요. (반지름 변경: 숫자 입력 후 Enter)`);
     logLine(`  ▷ 첫 번째 변 선택됨 — 두 번째 변을 클릭 (반지름 R=${filletRadius})`, 'info');
@@ -2284,7 +2308,7 @@ function clickFillet(w, rawW) {
     setTool('select');
   };
   if (hit.type === 'LWPOLYLINE' && cmdOp.l1 === hit) { pushUndo(); done(filletPolyCorner(hit, cmdOp.seg1, seg, R)); return; } // 같은 폴리라인의 두 변
-  if (hit.type === 'LINE' && cmdOp.l1.type === 'LINE') { if (hit === cmdOp.l1) return; pushUndo(); done(doFillet(cmdOp.l1, hit, R)); return; } // 두 개의 선
+  if (hit.type === 'LINE' && cmdOp.l1.type === 'LINE') { if (hit === cmdOp.l1) return; pushUndo(); done(doFillet(cmdOp.l1, hit, R, cmdOp.w1, { x: (rawW || w).x, y: (rawW || w).y })); return; } // 두 개의 선 — 클릭한 쪽 유지
   logLine('  모깎기: 같은 폴리라인의 두 변, 또는 두 개의 선을 선택하세요. (선↔폴리라인 혼합은 아직 미지원)', 'warn');
 }
 
@@ -3654,7 +3678,20 @@ function renderScene(isActive) {
         for (const t of ent.tris) for (const p of t) { if (p[2] < zm2) zm2 = p[2]; if (p[2] > zM2) zM2 = p[2]; }
         if (zm2 <= zM2) gz = (zm2 + zM2) / 2;
       }
-      const L = v3.fit / 7;
+      // 검볼 크기 — 선택 '개체'의 크기에 맞춘다 (예전엔 모델 전체 기준 v3.fit/7 고정이라
+      // 작은 개체에 거대한 검볼이 씌워져 조작이 어려웠다 — 2026-07-20 사용자 보고).
+      // 화면 픽셀 36~140px 범위로 클램프해 아주 작아지거나 커지지는 않게.
+      let L;
+      {
+        const dprG = devicePixelRatio || 1;
+        const pA = proj3D(gx, gy, gz), pB = proj3D(gx + 100, gy, gz);
+        const pxPer100 = Math.hypot(pB[0] - pA[0], pB[1] - pA[1]) || 1e-6; // 화면px / 100mm
+        const toWorld = (px) => px * 100 / pxPer100;
+        const diagE = Math.hypot(bb.xmax - bb.xmin, bb.ymax - bb.ymin) || 0;
+        L = Math.max(diagE * 0.55, 1);
+        L = Math.min(Math.max(L, toWorld(36 * dprG)), toWorld(140 * dprG));
+        if (!isFinite(L) || L <= 0) L = v3.fit / 7; // 투영 퇴화 시 예전 규칙 폴백
+      }
       // Z축: 모든 객체 — 일반 도형=3D 표시 높이(zo), 문·창=씰, 벽·기둥·계단=base, 슬래브=top, 지붕=처마
       const AXES = [['x', 1, 0, 0, '#ff453a'], ['y', 0, 1, 0, '#30d158'], ['z', 0, 0, 1, '#0A84FF']];
       const g0 = proj3D(gx, gy, gz);
@@ -4240,7 +4277,8 @@ function bind3D(ov, cv3) {
       if (vi !== v3.act) { v3.act = vi; loadVp(vi); }
     }
     // 델타 크기에 비례한 부드러운 줌 (한 칸 ≈ ×1.06)
-    v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * Math.pow(1.06, -(e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY) / 100)));
+    // 확대 리미트 완화(0.1~20 → 사실상 무제한) — mm 단위 개체 작업이 리미트에 막혔다 (2026-07-20)
+    v3.zoom = Math.max(0.001, Math.min(100000, v3.zoom * Math.pow(1.06, -(e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY) / 100)));
   }, { passive: false });
   // 더블클릭: 사분할 ↔ 해당 뷰 최대화 (라이노식)
   cv3.addEventListener('dblclick', (e) => {
@@ -4258,7 +4296,7 @@ function bind3D(ov, cv3) {
   cv3.addEventListener('touchmove', (e) => {
     if (pinch && e.touches.length === 2) {
       const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      v3.zoom = Math.max(0.1, Math.min(20, v3.zoom * d / pinch)); pinch = d; markInteract();
+      v3.zoom = Math.max(0.001, Math.min(100000, v3.zoom * d / pinch)); pinch = d; markInteract();
     }
   }, { passive: true });
   const setWallMode = (on) => {
@@ -4286,6 +4324,10 @@ function bind3D(ov, cv3) {
   new ResizeObserver(() => { if (ov.style.display !== 'none') { size3D(); render3D(); } }).observe(ov);
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || ov.style.display === 'none') return;
+    { // 명령창에 입력 중이면 Esc 1타 = 입력 '초기화'만 (2026-07-20 사용자 규칙) — 캡처가 먼저 먹기 전에 처리
+      const ci = document.getElementById('cmdInput');
+      if (ci && e.target === ci && ci.value) { ci.value = ''; e.stopPropagation(); e.preventDefault(); return; }
+    }
     e.stopPropagation(); // 전역 Escape 핸들러가 선택을 먼저 지워 2단계 판정이 깨지는 것 방지
     if (typeof boolPending !== 'undefined' && boolPending) { boolPending = null; logLine('  차집합 취소', 'info'); state.selection.clear(); renderProps(); render3D(); return; } // 차집합 2단계 취소
     if (extrudePend) { extrudePendCancel(); return; }                                   // 0차: 돌출(선택/cap/높이) 취소
@@ -10985,7 +11027,9 @@ const INSTANT_CMDS = {
   front: () => reorderSel(true),
   back: () => reorderSel(false),
   similar: selectSimilar,
-  zoom: () => { zoomFit(); logLine('  ✔ 전체보기', 'info'); },
+  // zoom = 줌 윈도(드래그한 박스만큼 확대 — 사용자 정의, 2026-07-20). 전체보기는 ze/F/버튼.
+  zoom: () => cmdZoomWindow(),
+  ze: () => { zoomFit(); logLine('  ✔ 전체보기', 'info'); },
   zp: zoomPrev,
   undo: () => { undo(); logLine('  ✔ 실행취소', 'info'); },
   redo: () => { redo(); logLine('  ✔ 다시실행', 'info'); },
@@ -11305,6 +11349,11 @@ function finishGripMoveMaybe() {
 }
 
 function finishDragSelect(ev) {
+  if (dragSelect.zoomw) { // 줌 윈도: 드래그한 박스만큼 확대 (선택 아님)
+    const b = dragSelect; dragSelect = null;
+    applyZoomWindow(b);
+    return;
+  }
   const { x1, y1, x2, y2 } = dragSelect;
   if (Math.hypot(x2 - x1, y2 - y1) * state.view.scale > 3) {  // 실제 드래그(3px 이상)일 때만
     if (!ev.shiftKey) state.selection.clear();
@@ -11429,7 +11478,7 @@ const CMD_ALIASES = {
   dist: 'dist', di: 'dist', area: 'area', aa: 'area',
   dim: 'dim', dli: 'dim', dal: 'dim', dimlinear: 'dim', dimaligned: 'dim',
   dimbase: 'dimbase', dimbaseline: 'dimbase', 기준선치수: 'dimbase',
-  zoom: 'zoom', z: 'zoom', zp: 'zp', u: 'undo', undo: 'undo', redo: 'redo',
+  zoom: 'zoom', z: 'zoom', ze: 'ze', fit: 'ze', zoomextents: 'ze', 전체보기: 'ze', zp: 'zp', u: 'undo', undo: 'undo', redo: 'redo',
   pan: 'pan',
   break: 'break', br: 'break', lengthen: 'lengthen', len: 'lengthen',
   hatch: 'hatch', h: 'hatch',
@@ -11638,6 +11687,8 @@ function emptyEnterAction() {
   if (draft) { cancelDraft(); return; }
   repeatLastCommand();
 }
+// cmdpop(커서 명령창)이 '빈 Space/Enter'를 여기로 넘긴다 — 직전 명령 반복·작도 확정이 즉시 동작
+window.WEBCAD_EMPTY_ENTER = emptyEnterAction;
 
 // ---------- 좌표/치수 입력 파서 ----------
 // "x,y" → 절대점 | "@dx,dy" → 상대점 | "12" → 단일 수치
@@ -12622,6 +12673,26 @@ function zoomPrev() {
   if (!v) { logLine('  이전 뷰가 없습니다.', 'warn'); return; }
   state.view = v; draw(); logLine('  ✔ 이전 뷰', 'info');
 }
+// ── 줌 윈도(zoom) — 드래그(또는 두 클릭)로 지정한 박스만큼 확대. 전체보기는 ze/F/전체보기 버튼 ──
+let zoomwPrevTool = 'select';
+function applyZoomWindow(b) {
+  const bw = Math.abs(b.x2 - b.x1), bh = Math.abs(b.y2 - b.y1);
+  if (bw * state.view.scale < 3 && bh * state.view.scale < 3) { logLine('  줌: 영역이 너무 작습니다 — 확대할 박스를 드래그하세요.', 'warn'); return false; }
+  pushViewPrev();
+  state.view.x = (b.x1 + b.x2) / 2; state.view.y = (b.y1 + b.y2) / 2;
+  state.view.scale = Math.min(cv._w / Math.max(bw, 1e-9), cv._h / Math.max(bh, 1e-9)) * 0.95; // 리미트 없음
+  setTool(zoomwPrevTool === '_zoomw' ? 'select' : zoomwPrevTool);
+  logLine('  ✔ 줌 — 지정한 영역으로 확대 (이전 뷰: zp · 전체보기: ze)', 'ok');
+  draw();
+  return true;
+}
+function cmdZoomWindow() {
+  zoomwPrevTool = state.tool === '_zoomw' ? 'select' : state.tool;
+  cmdOp = null;
+  setTool('_zoomw');
+  setPrompt('줌: 확대할 영역을 드래그(또는 두 모서리 클릭)하세요 · Esc 취소');
+  logLine('  ▷ 줌 — 확대할 영역을 드래그하세요 (전체보기는 ze 또는 F)', 'info');
+}
 function zoomFit(robust) {
   // 전체보기는 두 카메라(평면 state.view / 3D v3)를 모두 맞춘다. 범위는 modelExtents 하나로
   // 계산하므로 둘이 다른 곳을 볼 수 없다 — 예전엔 각자 자기 switch 로 범위를 구해 어긋났다.
@@ -12996,8 +13067,17 @@ function showHomeScreenHelp() {
     if (fn) fn.call(document);
   }
   btn.addEventListener('click', () => { fsEl() ? exit() : enter(); });
+  // Esc가 전체화면을 해제하지 않게 — Esc는 취소 등 핵심 기능과 엮여 있어 토글 버튼으로만 on/off (2026-07-20).
+  // Keyboard Lock API(크롬 데스크톱): 전체화면 중 Esc를 페이지가 소유한다. 미지원 브라우저는 브라우저 규칙대로.
+  function lockEsc(on) {
+    try {
+      if (on && navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock(['Escape']);
+      else if (!on && navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
+    } catch (e) {}
+  }
   function sync() {
     const on = !!fsEl();
+    lockEsc(on);
     const lbl = btn.querySelector('.tl');                          // 아이콘(svg)은 두고 라벨만 갱신
     if (lbl) lbl.textContent = on ? '창모드' : '전체화면';
     else btn.textContent = on ? '⛶ 창모드' : '⛶ 전체화면';
@@ -13083,7 +13163,8 @@ const CMD_HELP = [
     ['measure', '간격 표식', '간격 입력 → 대상 클릭 → 일정 간격 ✕ 표식'],
   ]},
   { c: '화면·표시', items: [
-    ['zoom', '전체보기', '모든 도형이 보이도록 화면 맞춤 (즉시 실행)'],
+    ['zoom', '줌(영역 확대) · z', '확대할 영역을 드래그(또는 두 모서리 클릭)하면 그 박스만큼 확대'],
+    ['ze', '전체보기 (fit)', '모든 도형이 보이도록 화면 맞춤 (F 키·전체보기 버튼과 동일)'],
     ['zp', '이전 뷰', '직전 화면으로 되돌아가기 (즉시 실행)'],
     ['pan', '화면 이동', '드래그로 화면 이동 (마우스 휠 드래그와 동일)'],
     ['vs 이름', '뷰 저장', '현재 화면을 이름으로 저장 (예: vs 평면)'],
@@ -13225,7 +13306,7 @@ const COMMAND_LIST = [
   { name: 'scale', ko: '배율', d3: 1 }, { name: 'stretch', ko: '신축' },
   { name: 'polygon', ko: '다각형' }, { name: 'ellipse', ko: '타원' }, { name: 'chamfer', ko: '모따기' },
   { name: 'explode', ko: '분해' }, { name: 'join', ko: '결합' }, { name: 'dim', ko: '치수 기입' },
-  { name: 'dist', ko: '거리 측정' }, { name: 'area', ko: '면적' }, { name: 'zoom', ko: '전체보기' },
+  { name: 'dist', ko: '거리 측정' }, { name: 'area', ko: '면적' }, { name: 'zoom', ko: '줌(영역 확대)' }, { name: 'ze', ko: '전체보기' },
   { name: 'undo', ko: '실행취소' }, { name: 'redo', ko: '다시실행' },
   { name: 'break', ko: '끊기' }, { name: 'lengthen', ko: '길이조정' }, { name: 'hatch', ko: '해치' },
   { name: 'dimradius', ko: '반지름 치수' }, { name: 'dimdiameter', ko: '지름 치수' },
@@ -14731,6 +14812,7 @@ window.__CADTEST__ = {
   polyArea, polyPerimeter, polygonPoints,
   // 편집 연산(순수)
   trimLine, extendLine, doFillet, filletPolyCorner, nearestPolySeg, clickFillet, doChamfer, offsetEntity, insertChildren,
+  applyZoomWindow, cmdZoomWindow, clickTrim, trimSpaceAction, emptyEnterAction, handleClick,
   // 유틸
   dxfColorIndex, aci2hex, rgbHex,
   // 링크 공유

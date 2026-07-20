@@ -13,11 +13,27 @@ const cmdInput = document.getElementById('cmdInput');
 const cmdLog = document.getElementById('cmdLog');
 if (!cmdRow || !cmdInput) return;
 
-// ---------- 기존 크롬 제거 ----------
+// ---------- 콘솔 도크 + 커서 팝업 ----------
+// 2026-07-20 개편: 고정 명령창(하단 콘솔 = 로그 + 입력줄)을 되살린다.
+//  · 콘솔은 화면 '하단'(작업영역 아래, 상태바 위) — 로그가 입력줄 바로 위.
+//  · 얇은 알약 손잡이(#cmdDockTab)로 접고 펼침 (도구창 손잡이와 같은 문법).
+//  · 콘솔을 '숨기면' 기존 커서 옆 팝업 명령창이 대신 동작한다.
 const css = document.createElement('style');
 css.textContent = `
-  #console { display: none !important; }        /* 상단 명령 콘솔 제거 (#toolbar 는 panels.js 가 슬라이드로) */
+  /* 콘솔을 하단으로 (BIM29 때 상단 order:2 → 하단 order:4) + 접힘 상태 */
+  #console { order: 4 !important; border-top: 0.5px solid var(--line); border-bottom: none !important; }
+  #statusBar { order: 5 !important; }
+  #console.dockHidden { display: none !important; }
+  /* 하단 콘솔이므로 제안(자동완성)은 입력줄 '위'로 */
+  #console #cmdSuggest { bottom: calc(100% + 8px) !important; top: auto !important; }
   #tgBottom { display: none !important; }
+  /* 콘솔 접기/펼치기 손잡이 — 도구창 손잡이(.rz 알약)와 같은 비주얼, 가로 방향 */
+  #cmdDockTab{position:absolute;left:50%;transform:translateX(-50%);width:76px;height:12px;z-index:57;
+    background:transparent;cursor:pointer;user-select:none;touch-action:manipulation;}
+  #cmdDockTab::after{content:'';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:44px;height:3px;border-radius:2px;background:var(--line-strong,rgba(120,140,180,.45));
+    transition:background .15s ease,width .15s ease;}
+  #cmdDockTab:hover::after{background:var(--accent,#0A84FF);width:64px;}
   /* 닫힘 = 투명+클릭 통과 (display:none 이면 안의 입력창이 포커스 불가라 '글자=명령'이 죽는다) */
   /* 네모난 흰 박스 — 검은 텍스트. '열리는 순간의 커서 위치'에 고정된다(따라다니지 않음 —
      아래로 뜨는 유사 명령어를 클릭할 수 있어야 하므로). 2026-07-20: 텍스트 한 줄 높이 · 폭 절반. */
@@ -58,12 +74,50 @@ css.textContent = `
 `;
 document.head.appendChild(css);
 
-// ---------- 플로팅 팝업 (기존 입력줄을 그대로 입양) ----------
+// ---------- 플로팅 팝업 (콘솔을 숨겼을 때 입력줄을 입양) ----------
 const pop = document.createElement('div');
 pop.id = 'cmdPop';
-pop.appendChild(cmdRow);
 document.body.appendChild(pop);
 cmdInput.placeholder = '';                       // 입력 전 사용법 안내 텍스트 제거 — 빈 박스
+
+// ---------- 콘솔 도크 (하단 고정 명령창 + 로그) ----------
+const consoleEl = document.getElementById('console');
+const DOCK_KEY = 'webcad_cmddock';
+let dockOpen = true;                             // 기본 = 고정 명령창 표시 (2026-07-20 사용자 요청)
+try { const s = localStorage.getItem(DOCK_KEY); if (s != null) dockOpen = JSON.parse(s); } catch (e) {}
+const tab = document.createElement('div');
+tab.id = 'cmdDockTab';
+tab.title = '클릭: 명령창(로그+입력줄) 펼침/접기 — 접으면 커서 옆 팝업 명령창으로';
+function positionTab() {
+  const app = document.getElementById('app'); if (!app) return;
+  const ar = app.getBoundingClientRect();
+  const anchor = (dockOpen && consoleEl) ? consoleEl.getBoundingClientRect().top
+    : (document.getElementById('statusBar') ? document.getElementById('statusBar').getBoundingClientRect().top : ar.bottom);
+  tab.style.top = (anchor - ar.top - 7) + 'px';
+}
+function applyDock() {
+  if (!consoleEl) return;
+  if (dockOpen) {
+    consoleEl.appendChild(cmdRow);               // 입력줄을 콘솔로 (로그 아래 = 로그가 입력줄 바로 위)
+    consoleEl.classList.remove('dockHidden');
+    hidePop(); pop.style.display = 'none';
+  } else {
+    pop.appendChild(cmdRow);                     // 입력줄을 커서 팝업으로
+    pop.style.display = '';
+    consoleEl.classList.add('dockHidden');
+  }
+  requestAnimationFrame(positionTab);
+  window.dispatchEvent(new Event('resize'));     // 작업영역 높이 변화 → 캔버스 재조정
+}
+tab.addEventListener('click', () => {
+  dockOpen = !dockOpen;
+  try { localStorage.setItem(DOCK_KEY, JSON.stringify(dockOpen)); } catch (e) {}
+  applyDock();
+});
+window.addEventListener('resize', () => requestAnimationFrame(positionTab));
+(document.getElementById('app') || document.body).appendChild(tab);
+const appEl = document.getElementById('app');
+if (appEl && getComputedStyle(appEl).position === 'static') appEl.style.position = 'relative';
 let lastPtr = { x: innerWidth / 2, y: innerHeight / 2 };
 const isOpen = () => pop.classList.contains('open');
 function place() {
@@ -93,22 +147,32 @@ function hidePop() { pop.classList.remove('open'); }
 const sketchOn = () => !!(window.WEBCAD_SKETCH && window.WEBCAD_SKETCH.SK.on);
 const inOtherField = (t) => t && ((/INPUT|TEXTAREA|SELECT/.test(t.tagName) && t.id !== 'cmdInput')
   || (t.closest && t.closest('#aiPanel')));
-// 스페이스/엔터 = 열기 (닫힌 상태에서 직전 명령이 몰래 실행되지 않게 캡처에서 가로챈다)
+// 스페이스/엔터 = '직전 명령 반복'(빈 Enter 동작 — 작도 확정·차집합 완료 포함) (2026-07-20 개편).
+// 예전엔 팝업을 여는 데 소비했는데, 반복이 라이노/오토캐드 관례이고 trim의 Space 확정도 이걸로 산다.
 window.addEventListener('keydown', (e) => {
   if (sketchOn() || isOpen()) return;
   if (inOtherField(e.target)) return;
+  if (e.target && e.target.id === 'cmdInput') return; // 도크 입력줄 안의 키는 본체(cad.js)가 처리
   if (document.body.classList.contains('authLocked')) return;
   const k = typeof e.key === 'string' ? e.key : '';
-  if (k === ' ' || k === 'Enter') { e.preventDefault(); e.stopPropagation(); showPop(); }
+  if (k === ' ' || k === 'Enter') {
+    e.preventDefault(); e.stopPropagation();
+    if (window.WEBCAD_EMPTY_ENTER) window.WEBCAD_EMPTY_ENTER();
+  }
 }, true);
-// 글자를 치면(전역 핸들러가 명령창에 넣어준다) 팝업이 따라 뜬다 — 타이핑 즉시 명령 시작
-cmdInput.addEventListener('input', () => { if (cmdInput.value && !isOpen() && !sketchOn()) showPop(); });
+// 글자를 치면(전역 핸들러가 명령창에 넣어준다) 팝업이 따라 뜬다 — 콘솔을 숨긴 상태에서만
+cmdInput.addEventListener('input', () => { if (!dockOpen && cmdInput.value && !isOpen() && !sketchOn()) showPop(); });
 // 명령을 실행(엔터/스페이스)하고 입력이 비면 닫는다 — 진행 안내는 토스트가 맡는다
 cmdInput.addEventListener('keydown', (e) => {
   const k = typeof e.key === 'string' ? e.key : '';
-  if (k === 'Enter' || k === ' ') setTimeout(() => { if (!cmdInput.value) hidePop(); }, 60);
-  if (k === 'Escape') hidePop();
-});
+  if (k === 'Enter' || k === ' ') setTimeout(() => { if (!dockOpen && !cmdInput.value) hidePop(); }, 60);
+}, false);
+// Esc = 명령창 '초기화' — 입력이 있으면 지우기만(다른 취소로 안 새게), 비어 있으면 닫고 본체 취소로
+cmdInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (cmdInput.value) { cmdInput.value = ''; e.stopPropagation(); e.preventDefault(); }
+  if (!dockOpen) hidePop();
+}, true);
 // 바깥 클릭(작도 지점 클릭 포함) = 닫기 — 숫자·좌표를 다시 치면 곧바로 다시 뜬다
 document.addEventListener('pointerdown', (e) => {
   if (isOpen() && !pop.contains(e.target)) hidePop();
@@ -128,11 +192,19 @@ function showToast(text) {
 }
 if (cmdLog) {
   new MutationObserver(() => {
+    if (dockOpen) return;                        // 콘솔이 보이면 로그가 곧 화면 — 토스트 중복 금지
     const last = cmdLog.lastElementChild;
     if (last && last.textContent) showToast(last.textContent.trim());
   }).observe(cmdLog, { childList: true });
 }
 
+// 시작 배치 (저장된 접힘 상태 복원)
+applyDock();
+setTimeout(() => requestAnimationFrame(positionTab), 200); // 레이아웃 안정 후 손잡이 위치 보정
+
 // 외부/테스트 훅
-window.WEBCAD_CMDPOP = { show: showPop, hide: hidePop, isOpen, pop, place, setPtr: (x, y) => { lastPtr = { x, y }; } };
+window.WEBCAD_CMDPOP = { show: showPop, hide: hidePop, isOpen, pop, place, setPtr: (x, y) => { lastPtr = { x, y }; },
+  isDock: () => dockOpen,
+  setDock: (o) => { dockOpen = !!o; try { localStorage.setItem(DOCK_KEY, JSON.stringify(dockOpen)); } catch (e) {} applyDock(); },
+  tab };
 })();

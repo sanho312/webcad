@@ -165,6 +165,14 @@ button.tbtn{ display:inline-flex; align-items:center; gap:6px; }
 [id^="vpLabel"]{ opacity:.45; transition:opacity .15s ease; }
 [id^="vpLabel"]:hover{ opacity:1; }
 
+/* ── iPad 전체화면: 상단 상태바(시간·배터리)와 겹치지 않게 세이프 에어리어만큼 내림 (2026-07-20) ── */
+#topbar{
+  padding-top: calc(5px + env(safe-area-inset-top, 0px));
+}
+#statusBar{
+  padding-bottom: calc(3px + env(safe-area-inset-bottom, 0px));
+}
+
 /* ── 라이트 모드 스크롤바 (다크용 흰 반투명이 흰 배경에서 안 보이던 것) ── */
 html.light ::-webkit-scrollbar-thumb{
   background:rgba(17,24,39,0.2); border:2px solid transparent; background-clip:content-box;
