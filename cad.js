@@ -4268,8 +4268,24 @@ function bind3D(ov, cv3) {
       return;
     }
     if (drag.mode === 'orbit') {
-      v3.yaw += dx * 0.008;                 // 드래그 방향 = 모델 회전 방향 (라이노식)
-      v3.pitch += dy * 0.006;               // 각도 제한 없음 — 아래에서도 볼 수 있음
+      // 라이노식 궤도 (2026-07-20):
+      //  ① 회전 감도를 줌에 반비례시킨다 — 멀리서 보면 크게, 당겨서 보면 그만큼 미세하게.
+      //     (예전엔 배율과 무관한 고정 감도라, 확대할수록 같은 드래그가 화면을 통째로 휘둘렀다)
+      //  ② 회전 중심을 '화면 중앙에 있는 지점'으로 유지한다. 모델 중심(v3.cx..)만 축으로 삼으면
+      //     확대해 들여다보던 부분이 회전과 함께 화면 밖으로 날아간다 — 라이노는 보고 있던 곳을
+      //     붙잡고 돈다. 회전 후 pan 을 보정해 그 지점이 제자리에 있게 한다.
+      const vpR = v3.vp || { x: 0, y: 0, w: v3.cv.width, h: v3.cv.height };
+      const ccxR = vpR.x + vpR.w / 2, ccyR = vpR.y + vpR.h / 2;
+      const kR = Math.min(vpR.w, vpR.h) / (v3.fit * 1.4) * (v3.zoom || 1);
+      const pivot = unproj3D(ccxR, ccyR, v3.cz);            // 지금 화면 중앙에 보이는 월드 점
+      const sens = 1 / Math.max(1, Math.sqrt(v3.zoom || 1)); // 줌 1=그대로, 4배=1/2, 25배=1/5 …
+      v3.yaw += dx * 0.008 * sens;           // 드래그 방향 = 모델 회전 방향 (라이노식)
+      v3.pitch += dy * 0.006 * sens;         // 각도 제한 없음 — 아래에서도 볼 수 있음
+      if (pivot && kR > 0) {                 // 회전 후에도 그 점이 화면 중앙에 머물도록 pan 보정
+        const pp = proj3D(pivot[0], pivot[1], v3.cz);
+        v3.panX -= (pp[0] - ccxR) / kR;
+        v3.panY += (pp[1] - ccyR) / kR;
+      }
     } else {
       const k = Math.min(v3.cv.width, v3.cv.height) / (v3.fit * 1.4) * v3.zoom;
       v3.panX += dx * (devicePixelRatio || 1) / k;

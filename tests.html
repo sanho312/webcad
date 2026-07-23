@@ -3626,6 +3626,57 @@ function tests(){
     }
     reset();
   }
+
+  // ---------- 2026-07-20 6차 — 라이노식 궤도(줌 비례 감도 + 보던 지점 고정) ----------
+  group('궤도 회전 — 줌에 반비례하는 감도 · 화면 중앙 지점 유지 (라이노식)');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    reset();
+    setEnts([{ type: 'LWPOLYLINE', closed: true, layer: '0',
+      points: [[0,0],[4000,0],[4000,3000],[0,3000]], bim: { kind: 'column', h: 2500, base: 0 } }]);
+    C.open3D && C.open3D();
+    const V = C.v3;
+    if (V && V.cv) {
+      const cvv = V.cv, w0 = cvv.width, h0 = cvv.height;
+      cvv.width = 800; cvv.height = 600; V.quad = false;
+      // 평면·입면(fixed) 칸에서는 우드래그가 '이동'이다 — 궤도 검사는 3D 칸에서
+      const di = V.views.findIndex((w, i) => !C.vpIsPlan(i) && !w.fixed);
+      V.act = di >= 0 ? di : V.act;
+      V.solids = C.bimSolids(); C.fit3D();
+      const rc = cvv.getBoundingClientRect();
+      const orbit = (px) => { // 우드래그 = 궤도
+        const x0 = rc.left + 300, y0 = rc.top + 300;
+        const ev = (t, x, b) => cvv.dispatchEvent(new AW.PointerEvent(t, { bubbles: true, cancelable: true,
+          clientX: x, clientY: y0, button: 2, buttons: b, pointerId: 9, pointerType: 'mouse' }));
+        ev('pointerdown', x0, 2);
+        for (let i = 1; i <= 10; i++) ev('pointermove', x0 + i * (px / 10), 2);
+        ev('pointerup', x0 + px, 0);
+      };
+      const run = (zoom) => {
+        V.yaw = -0.6; V.pitch = 0.5; V.zoom = zoom; V.panX = 0; V.panY = 0; C.render3D();
+        const vp = V.vp || { x: 0, y: 0, w: cvv.width, h: cvv.height };
+        const ccx = vp.x + vp.w / 2, ccy = vp.y + vp.h / 2;
+        const seen = C.unproj3D(ccx, ccy, V.cz);   // 지금 화면 중앙에 보이는 점
+        const yaw0 = V.yaw;
+        orbit(100);
+        const now = C.proj3D(seen[0], seen[1], V.cz);
+        return { d: V.yaw - yaw0, drift: Math.hypot(now[0] - ccx, now[1] - ccy) };
+      };
+      const a1 = run(1), a4 = run(4), a25 = run(25);
+      ok(Math.abs(a1.d) > 0.5, `★멀리서(줌 1) 볼 때는 크게 돈다 (Δyaw ${a1.d.toFixed(2)})`);
+      eq(a4.d, a1.d / 2, '★줌 4배 = 회전 감도 1/2', 1e-6);
+      eq(a25.d, a1.d / 5, '★줌 25배 = 회전 감도 1/5 (√배율 반비례)', 1e-6);
+      ok(a1.drift < 1.5 && a4.drift < 1.5 && a25.drift < 1.5,
+        `★보던 지점이 화면 중앙에 그대로 (이동 ${Math.max(a1.drift, a4.drift, a25.drift).toFixed(2)}px)`);
+      // 회전 자체는 여전히 동작 (감도만 줄어들 뿐 멈추지 않는다)
+      V.zoom = 400; V.panX = 0; V.panY = 0;
+      const y0 = V.yaw; orbit(120);
+      ok(Math.abs(V.yaw - y0) > 1e-3, '  아주 많이 확대해도 회전은 된다(감도만 미세)');
+      V.zoom = 1; V.panX = 0; V.panY = 0;
+      cvv.width = w0; cvv.height = h0;
+    } else ok(true, '(3D 훅 없음)');
+    reset();
+  }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });
