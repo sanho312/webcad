@@ -8379,7 +8379,10 @@ function triArea(t) {
 // 지오메트리 서명 — 실제로 형상이 바뀔 때만 BVH를 다시 만든다 (§2.3).
 // 광원 세기·색온도만 바뀌면 이 값이 그대로라 재빌드를 건너뛴다 = 슬라이더 UX의 핵심.
 function rtGeoSig() {
-  let h = state.entities.length + '|' + (v3.solids || []).length + '|';
+  // 레이어 표시 상태도 시그니처에 — 메시만 있는 레이어를 숨기면 solids 수·개체 수가 그대로라
+  // 렌더링 뷰가 옛 장면을 계속 보여줬다 (2026-07-20 레이어 숨김 3D 미반영과 같은 뿌리)
+  let h = state.entities.length + '|' + (v3.solids || []).length + '|'
+    + 'V' + state.layers.map(l => (l.visible === false ? '0' : '1')).join('') + '|';
   // 라이브러리 항목을 고치면 그걸 쓰는 개체가 전부 바뀌어야 한다 → 라이브러리도 시그니처에
   for (const k in (state.matlib || {})) {
     const L = state.matlib[k];
@@ -10411,12 +10414,12 @@ function cmdIsolate() {
   const keep = new Set(sel.map(e => e.layer || '0'));
   let hidden = 0;
   for (const l of state.layers) { const v = keep.has(l.name); if (l.visible && !v) hidden++; l.visible = v; }
-  renderLayers(); draw();
+  renderLayers(); propRefresh();   // 3D 도 같이 (숨긴 레이어의 솔리드 제거)
   logLine(`  ✔ 레이어 격리: ${[...keep].join(', ')}만 표시 (${hidden}개 레이어 숨김) — uniso로 해제`, 'ok');
 }
 function cmdUniso() {
   for (const l of state.layers) l.visible = true;
-  renderLayers(); draw();
+  renderLayers(); propRefresh();
   logLine('  ✔ 격리 해제: 모든 레이어 표시', 'ok');
 }
 
@@ -12348,12 +12351,14 @@ function renderLayers() {
       });
     });
     div.querySelector('.eye').addEventListener('click', (e) => {
-      e.stopPropagation(); l.visible = !l.visible; renderLayers(); draw();
+      // ★레이어 표시/숨김은 3D 에도 즉시 반영되어야 한다 — bimSolids 가 숨은 레이어를 걸러내지만
+      //   v3.solids 는 캐시라 다시 만들지 않으면 3D 에 그대로 남는다(2026-07-20 사용자 보고).
+      e.stopPropagation(); l.visible = !l.visible; renderLayers(); propRefresh();
     });
     div.querySelector('.lk').addEventListener('click', (e) => {
       e.stopPropagation(); l.locked = !l.locked;
       if (l.locked) { state.entities.forEach(en => { if (en.layer === l.name) state.selection.delete(en.id); }); renderProps(); }
-      renderLayers(); draw();
+      renderLayers(); propRefresh();   // 잠금 시 선택 해제가 3D 강조에도 반영되게
     });
     div.querySelector('.llt').addEventListener('change', (e) => { e.stopPropagation(); l.linetype = e.target.value; draw(); });
     div.querySelector('.llw').addEventListener('change', (e) => { e.stopPropagation(); l.lineweight = e.target.value === '' ? undefined : parseInt(e.target.value, 10); draw(); });
@@ -12371,7 +12376,7 @@ function renderLayers() {
   }
 }
 
-document.getElementById('btnAllVis').addEventListener('click', () => { state.layers.forEach(l => { l.visible = true; l.locked = false; }); renderLayers(); draw(); });
+document.getElementById('btnAllVis').addEventListener('click', () => { state.layers.forEach(l => { l.visible = true; l.locked = false; }); renderLayers(); propRefresh(); });
 document.getElementById('blkScale').addEventListener('change', e => { insertScale = parseFloat(e.target.value) || 1; });
 document.getElementById('blkRot').addEventListener('change', e => { insertRot = parseFloat(e.target.value) || 0; });
 // ─── 태양 패널 ───

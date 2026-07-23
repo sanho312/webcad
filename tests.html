@@ -3677,6 +3677,69 @@ function tests(){
     } else ok(true, '(3D 훅 없음)');
     reset();
   }
+
+  // ---------- 2026-07-20 레이어 숨김이 3D 에도 반영 ----------
+  group('레이어 숨김 — 평면과 3D 가 같이 숨겨진다 (표시 토글·잠금·전체·격리)');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    reset();
+    setEnts([{ type: 'LWPOLYLINE', closed: true, layer: '0',
+      points: [[0,0],[2000,0],[2000,1500],[0,1500]], bim: { kind: 'column', h: 2500, base: 0 } }]);
+    C.open3D && C.open3D();
+    const V = C.v3;
+    if (V && V.cv) {
+      const cvv = V.cv, w0 = cvv.width, h0 = cvv.height;
+      cvv.width = 400; cvv.height = 320; V.quad = false;
+      const di = V.views.findIndex((w, i) => !C.vpIsPlan(i));
+      if (di >= 0) V.act = di;
+      const cx2 = cvv.getContext('2d');
+      const px = () => { // 개체가 그려진 픽셀 수
+        V.solids = C.bimSolids(); C.render3D();
+        const im = cx2.getImageData(0, 0, 400, 320).data;
+        let n = 0;
+        for (let i = 0; i < im.length; i += 4) if (im[i + 3] === 255 && (im[i] + im[i + 1] + im[i + 2]) > 90) n++;
+        return n;
+      };
+      V.solids = C.bimSolids(); C.fit3D(); V.yaw = -0.6; V.pitch = 0.5; V._fast = false;
+      const rowOf = (name) => [...AD.querySelectorAll('#layerList .layer')]
+        .find(el => el.querySelector('.nm') && el.querySelector('.nm').textContent.trim() === name);
+      const before = px();
+      ok(before > 100, `3D 에 개체가 보인다 (${before}px)`);
+      // ★레이어 패널의 눈 아이콘 실제 클릭 — bimSolids 는 숨은 레이어를 거르지만
+      //   v3.solids 를 다시 만들지 않으면 3D 에 그대로 남는다(2026-07-20 사용자 보고)
+      const row = rowOf('0');
+      ok(!!row, '레이어 행 존재');
+      row.querySelector('.eye').click();
+      ok(S0.layers.find(l => l.name === '0').visible === false, '  레이어가 숨김 상태로');
+      eqi(V.solids.length, 0, '★숨기면 3D 솔리드가 사라진다');
+      // 렌더 픽셀로도 확인 (클릭 핸들러가 스스로 3D 를 갱신했는지)
+      const im2 = cx2.getImageData(0, 0, 400, 320).data;
+      let after = 0;
+      for (let i = 0; i < im2.length; i += 4) if (im2[i + 3] === 255 && (im2[i] + im2[i + 1] + im2[i + 2]) > 90) after++;
+      eqi(after, 0, '★3D 화면에서도 실제로 사라진다 (클릭만으로 갱신)');
+      rowOf('0').querySelector('.eye').click();
+      ok(px() > 100, '  다시 표시하면 3D 에 돌아온다');
+      // 전체 표시 버튼
+      S0.layers.find(l => l.name === '0').visible = false;
+      AD.getElementById('btnAllVis').click();
+      ok(V.solids.length > 0, '★[전체] 버튼도 3D 를 되살린다');
+      // isolate / uniso 도 3D 반영
+      S0.selection.clear(); S0.selection.add(S0.entities[0].id);
+      C.INSTANT_CMDS.isolate && C.INSTANT_CMDS.isolate();
+      C.INSTANT_CMDS.uniso && C.INSTANT_CMDS.uniso();
+      ok(V.solids.length > 0, '  격리/해제 후에도 3D 정상');
+      // 렌더링 뷰 캐시 시그니처가 레이어 표시 상태를 포함 (메시 전용 레이어 대비)
+      if (C.rtGeoSig) {
+        const s1 = C.rtGeoSig();
+        S0.layers.find(l => l.name === '0').visible = false;
+        const s2 = C.rtGeoSig();
+        ok(s1 !== s2, '★렌더링 뷰 시그니처가 레이어 표시 변화를 감지');
+        S0.layers.find(l => l.name === '0').visible = true;
+      }
+      cvv.width = w0; cvv.height = h0;
+    } else ok(true, '(3D 훅 없음)');
+    reset();
+  }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });
