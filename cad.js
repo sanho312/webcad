@@ -2764,13 +2764,20 @@ function bimSolidColor(e, fallback) {
 function bimSolids() {
   const solids = [];
   const walls = [], opens = [];
+  // 곡면 분절 수 — 기본 CIRC_SEG(64)로 매끈하게. 다만 곡면 개체가 많으면 면 수가 곱으로 늘어
+  // 회전이 뻑뻑해지므로(실측: 원기둥 60개 64각 179ms/frame vs 32각 93ms) 자동으로 낮춘다.
+  // 실사용(원통 몇 개)에서는 항상 64각.
+  let curvN = 0;
+  for (const e of state.entities) if (e.bim && (e.type === 'CIRCLE' || e.type === 'ARC')) curvN++;
+  const segN = curvN > 40 ? 24 : curvN > 12 ? 32 : CIRC_SEG;
+  _curvSeg = segN; // 실제 사용 분절 — 면 인덱스(extrudesrf 옆면 밀당)가 같은 값을 봐야 한다
   for (const e of state.entities) {
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     if (!e.bim) continue;
     if (e.bim.kind === 'wall') walls.push(e);
     else if (e.bim.kind === 'opening' && e.type === 'LINE') opens.push(e);
     else if (e.bim.kind === 'slab') {
-      const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : e.points.map(p => [p[0], p[1]]);
+      const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, segN) : e.points.map(p => [p[0], p[1]]);
       // top 누락 방어 — 외부 데이터(공유·임포트)에 top 이 없으면 z 가 NaN 이 되어
       // three 렌더러에서 슬래브가 통째로 조용히 사라진다 (computeBoundingSphere NaN 실측)
       const top = (e.bim.top == null || !isFinite(e.bim.top)) ? 0 : e.bim.top;
@@ -2782,8 +2789,9 @@ function bimSolids() {
     } else if (e.bim.kind === 'railing') {
       for (const s of railingSolids(e)) solids.push(s); // 손스침 + 동자기둥
     } else if (e.bim.kind === 'column') {
-      const poly = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 16) : e.points.map(p => [p[0], p[1]]);
-      solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: bimSolidColor(e, '#8fa3c8'), eid: e.id });
+      const isC = e.type === 'CIRCLE';
+      const poly = isC ? circlePoly(e.cx, e.cy, e.r, segN) : e.points.map(p => [p[0], p[1]]);
+      solids.push({ poly, z0: e.bim.base || 0, z1: (e.bim.base || 0) + e.bim.h, color: bimSolidColor(e, '#8fa3c8'), eid: e.id, curv: isC });
     }
   }
   for (const w of walls) {
@@ -2795,7 +2803,7 @@ function bimSolids() {
     const wallCol = bimSolidColor(w, '#cfc7ba'); // 벽 불투명 밴드 색 (레이어/명시 색 반영)
     // 꼭짓점 링 구성: LINE=2점 열린, 폴리라인=점열(닫힘 여부), 원=24각 닫힘
     let V, closedW;
-    if (w.type === 'CIRCLE') { V = circlePoly(w.cx, w.cy, w.r, 24); closedW = true; }
+    if (w.type === 'CIRCLE') { V = circlePoly(w.cx, w.cy, w.r, segN); closedW = true; }
     else if (w.type === 'LINE') { V = [[w.x1, w.y1], [w.x2, w.y2]]; closedW = false; }
     else { V = (w.points || []).map(p => [p[0], p[1]]); closedW = !!w.closed && V.length > 2; }
     const n = V.length; if (n < 2) continue;
@@ -2852,7 +2860,8 @@ function bimSolids() {
         let B1 = [bx + nx, by + ny], B2 = [bx - nx, by - ny];
         if (s0 <= 0.01) { A1 = mitO[k]; A2 = mitI[k]; }            // 세그 시작 = 마이터 코너
         if (s1 >= L - 0.01) { B1 = mitO[k2]; B2 = mitI[k2]; }      // 세그 끝 = 마이터 코너
-        const sol = { poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id, open: t <= 2 || glass, seg: k };
+        const sol = { poly: [A1, B1, B2, A2], z0, z1, color, glass, eid: beid !== undefined ? beid : w.id, open: t <= 2 || glass, seg: k,
+          curv: w.type === 'CIRCLE' || w.type === 'ARC' };  // 곡선 벽(원통·아치) → 세로 이음선 숨김
         if (wz) {
           // 곡선을 따라 세운 벽: z0/z1을 '이 구간 바닥 기준의 오프셋'으로 재해석해 양 끝에서 기울인다.
           // (개구부 상·하단 밴드도 같은 오프셋을 유지하므로 창·문이 지형을 따라 같이 기울어짐)
@@ -2899,6 +2908,12 @@ function circlePoly(cx, cy, r, n) {
   for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
   return p;
 }
+// 3D 솔리드에서 원을 몇 각형으로 볼 것인가 — 곡면이 '직면'으로 보이지 않는 분절 수.
+// ★16각(예전)은 22.5°마다 면이 꺾여 원통이 각져 보였고, 면마다 밝기가 달라 세로 줄이 보였다
+//   (2026-07-20 사용자 보고). 64각이면 5.6°라 평면 셰이딩으로도 매끈하고, 불리언 결과 메시의
+//   특징모서리 판정(cos 0.9 = 25.8°)에서도 자동으로 '내부선'이 되어 표면에 선이 남지 않는다.
+const CIRC_SEG = 64;
+let _curvSeg = CIRC_SEG; // bimSolids 가 실제로 쓴 분절 수 (곡면이 많으면 자동으로 낮아짐)
 
 let v3 = null; // {yaw,pitch,zoom,cx,cy,cz,panX,panY,cv,ctx,faces}
 function open3D() {
@@ -3258,7 +3273,9 @@ function markInteract() {
   requestAnimationFrame(() => { v3._rafPending = false; render3D(); });
 }
 // 스캔라인 래스터: 각 행에서 삼각형과 교차하는 x-구간만 순회 (bbox 낭비 제거 → 얇은 삼각형에서 특히 빠름)
-function zTri(data, zb, fb, fid, W, H, ox, oy, A, B, C, r, g, b) {
+// cA/cB/cC (정점별 [r,g,b])가 오면 꼭짓점 색을 보간해 칠한다(구로 셰이딩) — 곡면의 면 단차 제거.
+// 없으면 예전대로 단색(평면 셰이딩). 보간은 이미 계산 중인 무게중심 좌표를 그대로 쓴다.
+function zTri(data, zb, fb, fid, W, H, ox, oy, A, B, C, r, g, b, cA, cB, cC) {
   const ax = A[0]-ox, ay = A[1]-oy, bx = B[0]-ox, by = B[1]-oy, cx = C[0]-ox, cy = C[1]-oy;
   const area = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
   if (Math.abs(area) < 1e-9) return;
@@ -3289,7 +3306,15 @@ function zTri(data, zb, fb, fid, W, H, ox, oy, A, B, C, r, g, b) {
       if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) continue;
       const z = w0*A[2] + w1*B[2] + w2*C[2];
       const idx = rowBase + x;
-      if (z < zb[idx]) { zb[idx] = z; fb[idx] = fid; const p = idx*4; data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255; }
+      if (z < zb[idx]) {
+        zb[idx] = z; fb[idx] = fid; const p = idx*4;
+        if (cA) { // 구로 셰이딩 — 정점 색 보간
+          data[p]   = (w0*cA[0] + w1*cB[0] + w2*cC[0]) | 0;
+          data[p+1] = (w0*cA[1] + w1*cB[1] + w2*cC[1]) | 0;
+          data[p+2] = (w0*cA[2] + w1*cB[2] + w2*cC[2]) | 0;
+        } else { data[p]=r; data[p+1]=g; data[p+2]=b; }
+        data[p+3]=255;
+      }
     }
   }
 }
@@ -3345,7 +3370,20 @@ function zRasterFaces(c, faces, vp, light) {
       f._r = rgb[0]; f._g = rgb[1]; f._b = rgb[2]; f._sel = isSel; f._vis = true;
       f._fid = fidSeq++;
       const P = f.pts;
-      for (let i = 1; i+1 < P.length; i++) zTri(data, zb, fb, f._fid, W, H, ox, oy, P[0], P[i], P[i+1], rgb[0], rgb[1], rgb[2]);
+      // 곡면(원통·구 등): 정점별 셰이드(vsh)를 색으로 바꿔 보간 → 분절 사이 밝기 계단 제거.
+      // 선택 강조·조도 색표시 중엔 단색 유지(그 상태의 색 의미를 흐리지 않게).
+      let VC = null;
+      if (f.vsh && !isSel && !v3.falseColor) {
+        VC = f.vsh.map(s => {
+          const k2 = f.color + '|v' + Math.round(s * 60);
+          let c2 = cache.get(k2);
+          if (!c2) { c2 = rgbTriplet(shadeColor(f.color, s)); cache.set(k2, c2); }
+          return c2;
+        });
+      }
+      for (let i = 1; i+1 < P.length; i++)
+        zTri(data, zb, fb, f._fid, W, H, ox, oy, P[0], P[i], P[i+1], rgb[0], rgb[1], rgb[2],
+          VC ? VC[0] : null, VC ? VC[i] : null, VC ? VC[i+1] : null);
     }
     // 모서리 선의 기본 깊이 관용 — '화면 1px 이 담는 세계 mm' 기준.
     // ★예전 fit×0.008(6m 모델에서 48mm)은 실루엣 근처 비스듬한 면에서 벽 두께(200mm) 안의
@@ -3503,7 +3541,25 @@ function renderScene(isActive) {
       else if (litOn) { sSh = litFace(mx, my, midz, onx, ony, 0, !!s.lit); if (LIT_RGB[3]) sSh3 = [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]]; } // 색번짐
       else sSh = 0.55 + 0.45 * lightA;
       const qd = (quad[0][2] + quad[1][2] + quad[2][2] + quad[3][2]) / 4;
-      faces.push({ pts: quad, d: qd, color: sFc || s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
+      // 곡면(원·호에서 나온 솔리드): 분절 사이의 '세로 이음선'은 진짜 모서리가 아니다 —
+      // quad = [bot_i, bot_j, top_j, top_i] 이므로 변 1·3(세로)만 숨기고 위·아래 링은 남긴다.
+      // 이게 없으면 64각이어도 면 경계마다 세로 줄이 그려져 표면에 잔선이 남는다.
+      const fe = s.curv ? [true, false, true, false] : null;
+      // 곡면: 정점 법선(그 점의 반경 방향)으로 정점 셰이드를 만들어 보간 → 면마다 끊기는 밝기 계단 제거.
+      // quad = [bot_i, bot_j, top_j, top_i] 이므로 좌(i)·우(j) 두 값만 있으면 된다.
+      let vsh = null;
+      if (s.curv && !s.glow && !v3.falseColor) {
+        const vn = (px, py) => { const dx = px - ccx, dy = py - ccy, L2 = Math.hypot(dx, dy) || 1; return [dx / L2, dy / L2]; };
+        const shOf = (px, py) => {
+          const [nx2, ny2] = vn(px, py);
+          const sgn = (nx2 * onx + ny2 * ony) < 0 ? -1 : 1;   // 안쪽 면이면 법선도 안쪽으로
+          const ax = nx2 * sgn, ay = ny2 * sgn;
+          return litOn ? litFace(mx, my, midz, ax, ay, 0, !!s.lit) : 0.55 + 0.45 * Math.abs(ax * 0.8 + ay * 0.35);
+        };
+        const sL = shOf(s.poly[i][0], s.poly[i][1]), sR = shOf(s.poly[j][0], s.poly[j][1]);
+        vsh = [sL, sR, sR, sL];
+      }
+      faces.push({ pts: quad, d: qd, color: sFc || s.color, shade: sSh, sh3: sSh3, glass: s.glass, eid: s.eid, rf: s.rf, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0, ...(fe ? { fe } : {}), ...(vsh ? { vsh } : {}) });
       pickFaces.push({ pts: quad, d: qd, eid: s.eid, fk: 'side', fi: i, si: s.seg != null ? s.seg : null, sz0: s.z0 });
     }
     const tcz = Math.max(...zt);
@@ -3527,6 +3583,7 @@ function renderScene(isActive) {
     if (e.type !== 'MESH') continue;
     const l = getLayer(e.layer); if (l && !l.visible) continue;
     const featSet = meshFeat(e); // 이 메시의 특징(코너·경계) 모서리 집합
+    const vnorm = meshVNorm(e);  // 정점 법선(스무딩) — 곡면을 계단 없이
     const mcol = bimSolidColor(e, '#b9b2a6'); // 색: 명시색 > 레이어색 > 기본
     for (const t of e.tris) {
       const P = t.map(p => proj3D(p[0], p[1], p[2]));
@@ -3542,7 +3599,20 @@ function renderScene(isActive) {
       const msh3 = (!mfc && litOn && LIT_RGB[3]) ? [LIT_RGB[0], LIT_RGB[1], LIT_RGB[2]] : null;
       const fe = [featSet.has(meshEdgeKey(t[0], t[1])), featSet.has(meshEdgeKey(t[1], t[2])), featSet.has(meshEdgeKey(t[2], t[0]))];
       const dM = (P[0][2] + P[1][2] + P[2][2]) / 3;
-      faces.push({ pts: P, d: dM, color: mfc || mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe });
+      // 곡면 스무딩: 정점 법선이 이 면의 법선과 크게 어긋나지 않을 때만 정점 셰이드를 만든다
+      // (코너에서 뭉개짐 방지). 하나라도 어긋나면 예전대로 면 단색.
+      let mvsh = null;
+      if (!mfc) {
+        const vs = [];
+        for (let vi = 0; vi < 3; vi++) {
+          const a = vnorm.acc.get(meshVKey(t[vi]));
+          if (!a || (a[0]*nx + a[1]*ny + a[2]*nz) < 0.72) { vs.length = 0; break; }
+          vs.push(litOn ? litFace(mcx, mcy, mcz, a[0], a[1], a[2], true)
+                        : 0.5 + 0.5 * Math.abs(a[0]*0.5 + a[1]*0.3 + a[2]*0.8));
+        }
+        if (vs.length === 3) mvsh = vs;
+      }
+      faces.push({ pts: P, d: dM, color: mfc || mcol, shade, sh3: msh3, eid: e.id, isMesh: true, fe, ...(mvsh ? { vsh: mvsh } : {}) });
       pickFaces.push({ pts: P, d: dM, eid: e.id, isMesh: true });
     }
   }
@@ -3618,7 +3688,7 @@ function renderScene(isActive) {
     for (const it of extrudePend.items) {
       const e = state.entities.find(x => x.id === it.id); if (!e) continue;
       if (e.bim && !(e.bim.kind === 'wall' && !(e.bim.h > 0))) continue; // 이미 입체로 보이는 BIM 제외 — 납작(h0) 병합 벽체는 포함(밴드가 없어 이 강조가 유일한 표시)
-      const fp = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, 24) : (e.points ? e.points.map(p => [p[0], p[1]]) : null);
+      const fp = e.type === 'CIRCLE' ? circlePoly(e.cx, e.cy, e.r, CIRC_SEG) : (e.points ? e.points.map(p => [p[0], p[1]]) : null);
       if (!fp || fp.length < 2) continue;
       const z0 = it.base, closed = e.type === 'CIRCLE' || e.closed || (typeof polyIsLoop === 'function' && polyIsLoop(e));
       const bot = fp.map(p => proj3D(p[0], p[1], z0));
@@ -5189,6 +5259,30 @@ function meshFeat(e){
   for (const [k, m] of emap) if (m.c === 1 || m.feat) set.add(k);
   e._feat = set; e._featRef = e.tris; return set;
 }
+// 메시 정점 법선(스무딩) — 한 정점을 공유하는 삼각형들의 법선 평균.
+// 단, '특징 모서리'(코너)로 갈라진 면끼리는 섞지 않아야 각이 뭉개지지 않으므로,
+// 면 법선이 그 평균과 크게 어긋나면(cos < 0.72 ≈ 44°) 그 면은 자기 법선을 그대로 쓴다.
+// → 원통·구는 매끈하게, 상자 코너는 또렷하게. (2026-07-20 곡면 표시 개선)
+function meshVNorm(e) {
+  if (e._vn && e._vnRef === e.tris) return e._vn;
+  const acc = new Map();
+  const triN = [];
+  for (const t of e.tris) {
+    const ux = t[1][0]-t[0][0], uy = t[1][1]-t[0][1], uz = t[1][2]-t[0][2];
+    const vx = t[2][0]-t[0][0], vy = t[2][1]-t[0][1], vz = t[2][2]-t[0][2];
+    let nx = uy*vz-uz*vy, ny = uz*vx-ux*vz, nz = ux*vy-uy*vx;
+    const nl = Math.hypot(nx, ny, nz) || 1; nx/=nl; ny/=nl; nz/=nl;
+    triN.push([nx, ny, nz]);
+    for (const p of t) {
+      const k = meshVKey(p);
+      const a = acc.get(k);
+      if (a) { a[0]+=nx; a[1]+=ny; a[2]+=nz; a[3]++; } else acc.set(k, [nx, ny, nz, 1]);
+    }
+  }
+  for (const a of acc.values()) { const L = Math.hypot(a[0],a[1],a[2]) || 1; a[0]/=L; a[1]/=L; a[2]/=L; }
+  const out = { acc, triN };
+  e._vn = out; e._vnRef = e.tris; return out;
+}
 // 서로 떨어진(꼭짓점을 공유하지 않는) 삼각형 무리를 개별 컴포넌트로 분리
 function meshComponents(tris){
   const parent = new Map();
@@ -6150,6 +6244,23 @@ function polyIsLoop(e) {
 function detectDoubleOutlineWall(sel, dryRun) {
   const DBG = () => {}; // 진단 표시 제거(사용자 요청) — 판정 실패 시 조용히 개별 돌출로 진행
   if (sel.length !== 2) { if (sel.length > 2) DBG(`선택 ${sel.length}개 — 정확히 2개여야 벽체 병합`); return null; }
+  // ★원 2개(포갬) = 통(파이프) — 라이노 ExtrudeCrv 와 같은 기대.
+  //   중심선 = 반지름 중간인 원, 두께 = 반지름 차. 원은 곡선 그대로 유지되므로(다각형화 안 함)
+  //   3D 에서 매끄러운 원통으로 나온다. ★예전엔 polyIsLoop 가 LWPOLYLINE 만 참이라
+  //   원 2개는 감지 자체가 안 돼 '기둥 2개'가 따로 만들어졌다 (2026-07-20 사용자 보고).
+  if (sel.length === 2 && sel.every(e => e.type === 'CIRCLE')) {
+    const [a, b] = sel;
+    const d = Math.hypot(a.cx - b.cx, a.cy - b.cy);
+    const rO = Math.max(a.r, b.r), rI = Math.min(a.r, b.r);
+    const outer = a.r >= b.r ? a : b, inner = a.r >= b.r ? b : a;
+    const t = Math.round(rO - rI);
+    // 안쪽 원이 바깥 원 안에 들어가야 통 — 중심이 어긋나도 '완전 포함'이면 평균 두께로
+    if (!(t > 0.5) || d + rI > rO + 1e-6) { DBG('원 2개지만 포갬이 아님'); return null; }
+    const base = lvElev() + (outer.zo || 0);
+    return { circle: true, outerId: outer.id, innerId: inner.id, t,
+      cx: (outer.cx + inner.cx) / 2, cy: (outer.cy + inner.cy) / 2, r: (rO + rI) / 2,
+      base, layer: outer.layer, color: outer.color };
+  }
   if (!sel.every(e => polyIsLoop(e))) {
     DBG(`고리(닫힌 윤곽) 2개 필요 (지금: ${sel.map(e => (e.type === 'LWPOLYLINE' ? '폴리라인' : e.type) + (polyIsLoop(e) ? '·고리' : e.closed ? '·닫힘' : '·열림') + (e.points ? e.points.length + '점' : '')).join(' , ')}) — 폴리 도구로 그렸으면 끝점을 시작점에 정확히 맞물려 닫으세요`); return null;
   }
@@ -6203,6 +6314,16 @@ function extrudeDoMerge(ex) {
   ex.mergedDone = true;
   const o = state.entities.find(e => e.id === mi.outerId), n = state.entities.find(e => e.id === mi.innerId);
   if (!o || !n) return;
+  if (mi.circle) { // 원 2개 → 두께 있는 '원통(파이프)' — 중심선 원 + 벽 두께 (곡선 유지)
+    const ids0 = new Set([mi.outerId, mi.innerId]);
+    state.entities = state.entities.filter(e => !ids0.has(e.id));
+    const ce = addEntity({ type: 'CIRCLE', cx: mi.cx, cy: mi.cy, r: mi.r, layer: mi.layer, color: mi.color });
+    ce.bim = { kind: 'wall', h: 0, t: mi.t, base: mi.base }; delete ce.zo;
+    state.selection.clear(); state.selection.add(ce.id);
+    ex.items = [{ id: ce.id, base: mi.base, t: mi.t }];
+    logLine(`  ▷ 원 2개 → 두께 ${mi.t} 원통(파이프)으로 병합`, 'ok');
+    return;
+  }
   const ids = new Set([mi.outerId, mi.innerId]);
   state.entities = state.entities.filter(e => !ids.has(e.id));
   const ln = addEntity({ type: 'LWPOLYLINE', closed: true, points: mi.mids, layer: mi.layer, color: mi.color });
@@ -6343,9 +6464,9 @@ function extrudeStart(cmd, sel) {
     const e = sel[0];
     const z0e = (e.bim && e.bim.base) || 0, z1e = z0e + ((e.bim && e.bim.h) || 0), mze = (z0e + z1e) / 2;
     if (e.bim && e.bim.kind === 'column' && e.type === 'CIRCLE') {
-      sideMode = { id: e.id, circle: true, cx: e.cx, cy: e.cy, r0: e.r, mx: 0, my: 0, nx: 0, ny: 0, mz: mze };
-      // 법선(반경 방향)은 클릭 변 기준 — circlePoly(16) 변 fi의 중점 방향
-      const cp = circlePoly(e.cx, e.cy, e.r, 16), i0 = pf.fi % 16, j0 = (i0 + 1) % 16;
+      sideMode = { id: e.id, circle: true, cx: e.cx, cy: e.cy, r0: e.r, mx: 0, my: 0, nx: 0, ny: 0, mz: mze }; // (변 인덱스는 CIRC_SEG 기준)
+      // 법선(반경 방향)은 클릭 변 기준 — 표시용 분절(_curvSeg) 변 fi 의 중점 방향
+      const cp = circlePoly(e.cx, e.cy, e.r, _curvSeg), i0 = pf.fi % _curvSeg, j0 = (i0 + 1) % _curvSeg;
       const mx = (cp[i0][0] + cp[j0][0]) / 2, my = (cp[i0][1] + cp[j0][1]) / 2;
       const L = Math.hypot(mx - e.cx, my - e.cy) || 1;
       sideMode.nx = (mx - e.cx) / L; sideMode.ny = (my - e.cy) / L; sideMode.mx = mx; sideMode.my = my;
@@ -14913,6 +15034,7 @@ window.__CADTEST__ = {
   // 편집 연산(순수)
   trimLine, extendLine, doFillet, filletPolyCorner, nearestPolySeg, clickFillet, doChamfer, offsetEntity, insertChildren,
   applyZoomWindow, cmdZoomWindow, applyZoomWindow3D, clickTrim, trimSpaceAction, emptyEnterAction, handleClick, syncModuleTabs,
+  detectDoubleOutlineWall, meshVNorm, meshFeat, circlePoly, CIRC_SEG,
   // 유틸
   dxfColorIndex, aci2hex, rgbHex,
   // 링크 공유

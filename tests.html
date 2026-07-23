@@ -3554,6 +3554,78 @@ function tests(){
     } else ok(true, '(3D 훅 없음)');
     reset();
   }
+
+  // ---------- 2026-07-20 5차 — 통형 돌출 · 곡면 매끄러움 ----------
+  group('5차 — 포갠 원 2개 = 통(파이프) · 곡면 분절/이음선/셰이딩');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    // ── ★원 2개(포갬) → 속 빈 원통. 라이노 ExtrudeCrv 와 같은 기대.
+    //   (예전엔 polyIsLoop 가 LWPOLYLINE 만 참이라 감지가 안 돼 '기둥 2개'가 됐다 — 회귀 고정)
+    reset();
+    setEnts([
+      { type: 'CIRCLE', cx: 0, cy: 0, r: 500, layer: '0' },
+      { type: 'CIRCLE', cx: 0, cy: 0, r: 480, layer: '0' },
+    ]);
+    const m2 = C.detectDoubleOutlineWall(S0.entities.slice(), true);
+    ok(m2 && m2.circle === true, '★포갠 원 2개 = 통(파이프)으로 감지');
+    eq(m2.t, 20, '  두께 = 반지름 차', 1e-9);
+    eq(m2.r, 490, '  중심선 = 반지름 중간', 1e-9);
+    S0.selection.clear(); S0.entities.forEach(e => S0.selection.add(e.id));
+    C.runCommandInput('extrudecrv');
+    ok(C.extrudePend && C.extrudePend.merge2 && C.extrudePend.merge2.circle, '  돌출 시작 시 병합 예약');
+    C.runCommandInput('3000');
+    const tube = S0.entities.filter(e => e.bim);
+    eqi(tube.length, 1, '★결과 = 개체 1개 (기둥 2개 아님)');
+    const tw = tube[0];
+    ok(tw.type === 'CIRCLE' && tw.bim.kind === 'wall' && tw.bim.t === 20 && tw.bim.h === 3000,
+      '★원통(벽 두께 20 · 높이 3000) — 곡선 그대로 유지');
+    // 속이 비었는가: 중심은 어떤 밴드에도 안 들어가고, 벽 두께 위치에는 있어야
+    const sol = C.bimSolids();
+    const inP = (p, poly) => { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; };
+    ok(!sol.some(s => inP([0, 0], s.poly)), '★가운데가 비어 있다 (관통)');
+    ok(sol.some(s => inP([490, 0], s.poly)), '  벽은 중심선 위에 있다');
+    eqi(S0.entities.filter(e => e.type === 'CIRCLE' && !e.bim).length, 2, '  원본 곡선 2개 복원(DeleteInput=No)');
+    // ── 곡면 분절·이음선·셰이딩
+    eqi(C.CIRC_SEG, 64, '★원 → 3D 분절 64 (16각의 각진 표면 해소)');
+    ok(sol.length === 64 && sol.every(s => s.curv === true), '  곡선 벽 밴드 전부 곡면 표시(curv)');
+    reset();
+    setEnts([{ type: 'CIRCLE', cx: 0, cy: 0, r: 500, layer: '0', bim: { kind: 'column', h: 3000, base: 0 } }]);
+    const cs = C.bimSolids();
+    eqi(cs[0].poly.length, 64, '  원기둥도 64각');
+    ok(cs[0].curv === true, '  곡면 표시');
+    // 렌더 픽셀: 곡면엔 세로 잔선이 없고, 각진 개체는 모서리가 남는다
+    if (C.v3 && C.v3.cv) {
+      const V = C.v3, cvv = V.cv;
+      const w0 = cvv.width, h0 = cvv.height;
+      cvv.width = 400; cvv.height = 400; V.quad = false;
+      const cx2 = cvv.getContext('2d');
+      const shoot = () => {
+        V.solids = C.bimSolids(); C.fit3D();
+        V.yaw = -0.6; V.pitch = 0.5; V.zoom = 1; V.panX = 0; V.panY = 0; V._fast = false;
+        C.render3D();
+        const im = cx2.getImageData(0, 0, 400, 400).data;
+        let dark = 0, surf = 0, step = 0;
+        for (const y of [170, 200, 230]) {
+          let prev = null;
+          for (let x = 0; x < 400; x++) {
+            const p = (y * 400 + x) * 4, s = im[p] + im[p + 1] + im[p + 2];
+            if (im[p + 3] === 255 && s > 120) { surf++; if (prev != null) step = Math.max(step, Math.abs(s - prev)); prev = s; }
+            else { if (im[p + 3] === 255 && s > 0 && s <= 120) dark++; prev = null; }
+          }
+        }
+        return { dark, surf, step };
+      };
+      const cyl = shoot();
+      ok(cyl.surf > 50, `원기둥이 화면에 그려짐 (${cyl.surf}px)`);
+      eqi(cyl.dark, 0, '★곡면 표면에 세로 잔선 0px (분절 이음선 숨김)');
+      reset();
+      setEnts([{ type: 'LWPOLYLINE', closed: true, layer: '0', points: [[-500,-500],[500,-500],[500,500],[-500,500]], bim: { kind: 'column', h: 3000, base: 0 } }]);
+      const box = shoot();
+      ok(box.dark > 0, `  각진 개체의 진짜 모서리는 남는다 (${box.dark}px)`);
+      cvv.width = w0; cvv.height = h0;
+    }
+    reset();
+  }
 }
 
 document.getElementById('rerun').addEventListener('click', () => { if(T) runAll(); });
