@@ -2923,7 +2923,7 @@ function open3D() {
   if (!ov) {
     ov = document.createElement('div');
     ov.id = 'bim3d';
-    ov.style.cssText = 'position:absolute;inset:0;z-index:18;background:var(--bg);display:flex;flex-direction:column;';
+    ov.style.cssText = 'position:absolute;inset:0;z-index:18;background:var(--canvas-bg);display:flex;flex-direction:column;';
     ov.innerHTML = `
       <canvas id="b3cv" style="flex:1 1 0;min-height:0;height:auto;width:100%;touch-action:none;cursor:default;"></canvas>`;
       // 작업면 Z 컨트롤은 하단 상태바(#cplaneStatus)로 이동 — 3D 모드에서만 표시(syncViewSeg)
@@ -3197,6 +3197,11 @@ function render3D() {
     const keepFast = v3._fast;
     if (covered) v3._fast = true;
     c.save(); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip();
+    // 작업 표시 3D 칸 배경 = 평면 칸과 같은 캔버스색(라이트=흰색). 예전엔 투명이라 뒤의
+    // 오버레이(--bg 옅은 회색)가 비쳐 평면 칸만 희고 나머지는 회색이었다 (2026-07-20 사용자).
+    // 태양(하늘)·야간(어둠) 배경은 위에서 이미 칠했으므로 그때는 덮지 않는다. 렌더/RT 칸은
+    // 별도 캔버스가 완전히 덮으므로 굳이 칠하지 않는다.
+    if (!covered && !sunOn() && !v3.lighting) { c.fillStyle = getCSS('--canvas-bg') || '#ffffff'; c.fillRect(r.x, r.y, r.w, r.h); }
     const res = renderScene(i === v3.act);
     c.restore();
     v3._fast = keepFast;

@@ -3599,29 +3599,36 @@ function tests(){
       const w0 = cvv.width, h0 = cvv.height;
       cvv.width = 400; cvv.height = 400; V.quad = false;
       const cx2 = cvv.getContext('2d');
+      // 배경·테마 무관 지표: 실루엣 내부의 '짧은 비표면 틈(≤6px)' = 표면을 가로지르는 모서리 선.
+      // 모서리 잉크는 배경색과 가까워(다크 테마) '표면'으로 안 잡히고, 두 표면 사이의 틈으로 나타난다.
+      // 곡면(원통)은 구로 셰이딩으로 표면이 연속 → 틈 0. 각진 개체는 모서리마다 틈이 생긴다.
       const shoot = () => {
         V.solids = C.bimSolids(); C.fit3D();
         V.yaw = -0.6; V.pitch = 0.5; V.zoom = 1; V.panX = 0; V.panY = 0; V._fast = false;
         C.render3D();
-        const im = cx2.getImageData(0, 0, 400, 400).data;
-        let dark = 0, surf = 0, step = 0;
+        const W = 400, im = cx2.getImageData(0, 0, W, 400).data;
+        const bp = (2 * W + 2) * 4, bR = im[bp], bG = im[bp + 1], bB = im[bp + 2]; // 배경(빈 구석)
+        const isSurf = (p) => im[p + 3] === 255 && (Math.abs(im[p] - bR) + Math.abs(im[p + 1] - bG) + Math.abs(im[p + 2] - bB)) > 60;
+        let gaps = 0, surf = 0;
         for (const y of [170, 200, 230]) {
-          let prev = null;
-          for (let x = 0; x < 400; x++) {
-            const p = (y * 400 + x) * 4, s = im[p] + im[p + 1] + im[p + 2];
-            if (im[p + 3] === 255 && s > 120) { surf++; if (prev != null) step = Math.max(step, Math.abs(s - prev)); prev = s; }
-            else { if (im[p + 3] === 255 && s > 0 && s <= 120) dark++; prev = null; }
+          let first = -1, last = -1;
+          for (let x = 0; x < W; x++) if (isSurf((y * W + x) * 4)) { if (first < 0) first = x; last = x; surf++; }
+          if (first < 0) continue;
+          let x = first;
+          while (x <= last) {
+            if (!isSurf((y * W + x) * 4)) { let len = 0; while (x <= last && !isSurf((y * W + x) * 4)) { len++; x++; } if (len >= 1 && len <= 6) gaps++; }
+            else x++;
           }
         }
-        return { dark, surf, step };
+        return { gaps, surf };
       };
       const cyl = shoot();
       ok(cyl.surf > 50, `원기둥이 화면에 그려짐 (${cyl.surf}px)`);
-      eqi(cyl.dark, 0, '★곡면 표면에 세로 잔선 0px (분절 이음선 숨김)');
+      eqi(cyl.gaps, 0, '★곡면 표면에 세로 잔선(내부 틈) 0 — 분절 이음선 숨김');
       reset();
       setEnts([{ type: 'LWPOLYLINE', closed: true, layer: '0', points: [[-500,-500],[500,-500],[500,500],[-500,500]], bim: { kind: 'column', h: 3000, base: 0 } }]);
       const box = shoot();
-      ok(box.dark > 0, `  각진 개체의 진짜 모서리는 남는다 (${box.dark}px)`);
+      ok(box.gaps > 0, `  각진 개체의 진짜 모서리는 남는다 (${box.gaps})`);
       cvv.width = w0; cvv.height = h0;
     }
     reset();
@@ -3693,13 +3700,18 @@ function tests(){
       const di = V.views.findIndex((w, i) => !C.vpIsPlan(i));
       if (di >= 0) V.act = di;
       const cx2 = cvv.getContext('2d');
-      const px = () => { // 개체가 그려진 픽셀 수
+      // 배경색(빈 구석)과 크게 다른 픽셀 = 개체. 배경이 이제 불투명(캔버스색)이라
+      // 절대 밝기 대신 '배경 대비 차이'로 세야 테마와 무관하다 (2026-07-20 배경 통일 후)
+      const objPx = () => {
         V.solids = C.bimSolids(); C.render3D();
         const im = cx2.getImageData(0, 0, 400, 320).data;
+        const bp = (2 * 400 + 2) * 4, bR = im[bp], bG = im[bp + 1], bB = im[bp + 2]; // 좌상 구석 = 배경
         let n = 0;
-        for (let i = 0; i < im.length; i += 4) if (im[i + 3] === 255 && (im[i] + im[i + 1] + im[i + 2]) > 90) n++;
+        for (let i = 0; i < im.length; i += 4)
+          if (im[i + 3] === 255 && (Math.abs(im[i] - bR) + Math.abs(im[i + 1] - bG) + Math.abs(im[i + 2] - bB)) > 60) n++;
         return n;
       };
+      const px = objPx;
       V.solids = C.bimSolids(); C.fit3D(); V.yaw = -0.6; V.pitch = 0.5; V._fast = false;
       const rowOf = (name) => [...AD.querySelectorAll('#layerList .layer')]
         .find(el => el.querySelector('.nm') && el.querySelector('.nm').textContent.trim() === name);
@@ -3712,10 +3724,8 @@ function tests(){
       row.querySelector('.eye').click();
       ok(S0.layers.find(l => l.name === '0').visible === false, '  레이어가 숨김 상태로');
       eqi(V.solids.length, 0, '★숨기면 3D 솔리드가 사라진다');
-      // 렌더 픽셀로도 확인 (클릭 핸들러가 스스로 3D 를 갱신했는지)
-      const im2 = cx2.getImageData(0, 0, 400, 320).data;
-      let after = 0;
-      for (let i = 0; i < im2.length; i += 4) if (im2[i + 3] === 255 && (im2[i] + im2[i + 1] + im2[i + 2]) > 90) after++;
+      // 렌더 픽셀로도 확인 (클릭 핸들러가 스스로 3D 를 갱신했는지 — 배경 대비 개체 픽셀 0)
+      const after = objPx();
       eqi(after, 0, '★3D 화면에서도 실제로 사라진다 (클릭만으로 갱신)');
       rowOf('0').querySelector('.eye').click();
       ok(px() > 100, '  다시 표시하면 3D 에 돌아온다');
@@ -3736,6 +3746,41 @@ function tests(){
         ok(s1 !== s2, '★렌더링 뷰 시그니처가 레이어 표시 변화를 감지');
         S0.layers.find(l => l.name === '0').visible = true;
       }
+      cvv.width = w0; cvv.height = h0;
+    } else ok(true, '(3D 훅 없음)');
+    reset();
+  }
+
+  // ---------- 2026-07-20 4분할 배경색 통일 ----------
+  group('뷰포트 배경 — 3D 칸도 평면 칸과 같은 캔버스색 (라이트=흰색), 태양/야간은 예외');
+  {
+    const AW = document.getElementById('app').contentWindow, AD = AW.document;
+    reset();
+    setEnts([{ type: 'CIRCLE', cx: 0, cy: 0, r: 400, layer: '0', bim: { kind: 'column', h: 2500, base: 0 } }]);
+    C.open3D && C.open3D();
+    const V = C.v3;
+    if (V && V.cv) {
+      const cvv = V.cv, w0 = cvv.width, h0 = cvv.height;
+      cvv.width = 800; cvv.height = 600; V.quad = true;
+      AD.documentElement.classList.add('light');
+      V.solids = C.bimSolids(); C.fit3D(); C.render3D();
+      const cx2 = cvv.getContext('2d');
+      const px = (x, y) => { const d = cx2.getImageData(x, y, 1, 1).data; return d[0] + ',' + d[1] + ',' + d[2]; };
+      // 오버레이 배경 = 캔버스색 (평면 칸 뒤가 회색으로 비치지 않게)
+      eqi(AW.getComputedStyle(AD.getElementById('bim3d')).backgroundColor, 'rgb(255, 255, 255)', '★3D 오버레이 배경 = 흰색(캔버스색)');
+      // 4분할 3D 칸(우상·좌하·우하)의 빈 구석이 전부 흰색
+      ok(px(760, 30) === '255,255,255' && px(40, 560) === '255,255,255' && px(760, 560) === '255,255,255',
+        '★4분할 3D 칸 배경 = 평면 칸과 같은 흰색');
+      // 야간(어두운 배경)은 흰색으로 덮지 않는다
+      V.lighting = true; C.render3D();
+      ok(px(760, 30) !== '255,255,255', '★야간 조명 배경은 흰색으로 덮이지 않는다');
+      V.lighting = false; C.render3D();
+      ok(px(760, 30) === '255,255,255', '  작업 표시로 돌아오면 흰색');
+      // 다크 테마 = 캔버스 어둠색
+      AD.documentElement.classList.remove('light');
+      C.render3D();
+      const dc = px(760, 30);
+      ok(dc !== '255,255,255', '★다크 테마에선 어두운 캔버스색을 따른다');
       cvv.width = w0; cvv.height = h0;
     } else ok(true, '(3D 훅 없음)');
     reset();
