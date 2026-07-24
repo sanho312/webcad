@@ -3110,7 +3110,7 @@ function tests(){
       eqi(S.SK.strokes.length, 0, '★조준 중에는 아무것도 그려지지 않음');
       ok(PH.dot.style.display === 'none', '  떼면 마커 정리');
       S.SK.aim = false;
-      ok([...AD.querySelectorAll('#skBar button')].some(b2 => b2.textContent === '🎯'), '🎯 토글 버튼 존재');
+      ok([...AD.querySelectorAll('#skBar button')].some(b2 => /조준 모드/.test(b2.title)), '조준 모드 토글 버튼 존재');
       // 드로잉 중 라이브 스냅: 그리다 끝점 근처 → 마커, 멀면 없음, 떼면 흡착+정리
       pd('pointerdown', 60, 200, 72);
       pd('pointermove', 200, 150, 72);
@@ -3239,12 +3239,12 @@ function tests(){
       ok(!bs.classList.contains('on'), '  스케치 종료 = 활성 해제');
     }
     // ③ 인터페이스 편집 = 반투명 덮개가 아닌 '팝업창' (뒤 화면 조작 가능 + 제목줄 드래그)
-    AD.getElementById('btnUiEdit').click();
+    AD.getElementById('moUiEdit').click();
     const uiDlg = AD.getElementById('uiEditDlg');
     eqi(uiDlg.style.display, 'block', '★인터페이스 편집 열림 = 팝업(block)');
     ok(AW.getComputedStyle(uiDlg).backgroundColor === 'rgba(0, 0, 0, 0)', '  전체 덮는 반투명 배경 없음');
     ok(uiDlg.getBoundingClientRect().width < AW.innerWidth * 0.8, '  카드 크기 = 화면 일부(전체 덮지 않음)');
-    ok(uiDlg.querySelector('h2').style.cursor === 'move', '  제목줄 = 드래그 손잡이');
+    ok(uiDlg.querySelector('.uieHead').style.cursor === 'move', '  제목줄 = 드래그 손잡이');
     AD.getElementById('uiEditClose').click();
     eqi(uiDlg.style.display, 'none', '  닫기 버튼으로 닫힘');
     // ④ 명령창 콤팩트 — 더 짧고(≤230px) 낮게(≤34px)

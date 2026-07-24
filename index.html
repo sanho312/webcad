@@ -230,21 +230,32 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
   #side .section.secFold > h3::after{transform:rotate(-90deg);}
   #side .section.secFold > .body{display:none;}
   #side .section.secFold{flex:0 0 auto !important;}
-  #btnUiEdit{position:absolute;top:5px;right:8px;z-index:5;background:transparent;border:none;color:var(--muted);
-    cursor:pointer;font-size:13px;padding:2px 5px;border-radius:var(--radius-sm);opacity:.7;}
-  #btnUiEdit:hover{background:var(--glass-fill-hi);color:var(--text);opacity:1;}
   #side{position:relative;}
-  #btnTbEdit{grid-column:1 / -1;margin:2px 3px 6px;background:var(--glass-fill);border:none;color:var(--muted);
-    cursor:pointer;font-size:10px;padding:5px 4px;border-radius:var(--radius);box-shadow:var(--spec);}
-  #btnTbEdit:hover{background:var(--glass-fill-hi);color:var(--text);}
   .tool.tbDragging{opacity:.45;outline:1.5px dashed var(--accent);outline-offset:-1px;}
-  .uiEdH{font-size:12px;color:var(--accent-text);margin:6px 0 6px;}
-  #uiEdTools{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;}
-  #uiEdTools label,#uiEdSecs label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);
-    padding:3px 5px;border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  /* ── 인터페이스 편집 팝업 (옵션 메뉴에서 열림) — 전체 인터페이스 톤에 맞춘 카드 ── */
+  #uiEditDlg .uieBox{width:552px;max-width:94vw;max-height:min(560px,72vh);display:flex;flex-direction:column;padding:0;overflow:hidden;}
+  #uiEditDlg .uieHead{display:flex;align-items:center;gap:11px;padding:15px 18px 11px;cursor:move;}
+  #uiEditDlg .uieHead > svg.ic{width:18px;height:18px;color:var(--accent-text);}
+  #uiEditDlg .uieTitle{font-size:15px;font-weight:650;letter-spacing:-0.01em;flex:1;}
+  #uiEditDlg .uieReset{background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:5px 10px;border-radius:var(--radius-sm);transition:background .12s ease;white-space:nowrap;}
+  #uiEditDlg .uieReset:hover{background:var(--glass-fill-hi);color:var(--text);}
+  #uiEditDlg .uieX{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:transparent;border:none;color:var(--muted);cursor:pointer;border-radius:var(--radius-sm);transition:background .12s ease;}
+  #uiEditDlg .uieX:hover{background:var(--glass-fill-hi);color:var(--text);}
+  #uiEditDlg .uieX svg.ic{width:16px;height:16px;}
+  #uiEditDlg .uieHint{color:var(--muted);font-size:12px;line-height:1.55;margin:0;padding:0 18px 14px;}
+  #uiEditDlg .uieHintSm{padding:11px 2px 0;font-size:11.5px;}
+  #uiEditDlg .uieCols{display:flex;gap:18px;padding:2px 18px 18px;overflow:auto;min-height:0;}
+  #uiEditDlg .uieCol{flex:1;min-width:0;}
+  #uiEditDlg .uieColR{flex:0 0 196px;border-left:1px solid var(--line);padding-left:18px;}
+  #uiEditDlg .uieColHead{font-size:10.5px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:var(--muted);margin:0 0 9px;padding:0 2px;}
+  #uiEdTools{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;}
+  #uiEdTools label,#uiEdSecs label{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--text);
+    padding:6px 9px;border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .1s ease;}
   #uiEdTools label:hover,#uiEdSecs label:hover{background:var(--glass-fill-hi);}
-  #uiEdTools .uiEdGrp{grid-column:1 / -1;font-size:10.5px;font-weight:700;color:var(--muted);margin-top:6px;}
-  #uiEdSecs label{padding:5px;}
+  #uiEdTools .uiEdGrp{grid-column:1 / -1;font-size:10px;font-weight:700;letter-spacing:0.03em;text-transform:uppercase;color:var(--accent-text);margin:11px 0 3px;padding:0 2px;}
+  #uiEdTools .uiEdGrp:first-child{margin-top:0;}
+  #uiEdSecs label{padding:7px 9px;}
+  #uiEditDlg input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;flex:0 0 auto;cursor:pointer;margin:0;}
 
   /* Canvas */
   #canvasWrap{position:relative;flex:1 1 auto;min-width:0;background:var(--canvas-bg);}
@@ -430,6 +441,8 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
         <button class="menuItem" id="moOsnap"><svg class="ic" viewBox="0 0 24 24"><path d="M6 3H4v8a8 8 0 0 0 16 0V3h-2"/><path d="M6 3v8a6 6 0 0 0 12 0V3"/><path d="M4 6.5h4"/><path d="M16 6.5h4"/></svg>객체 스냅 설정…</button>
         <button class="menuItem" id="moDim"><svg class="ic" viewBox="0 0 24 24"><path d="M4 7v10"/><path d="M20 7v10"/><path d="M4 12h16"/><path d="M7 9.5L4.5 12 7 14.5"/><path d="M17 9.5L19.5 12 17 14.5"/></svg>치수 설정…</button>
         <button class="menuItem" id="moUnits"><svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="19" height="8" rx="1"/><path d="M6.5 8v3M10 8v4M13.5 8v3M17 8v4"/></svg>단위 설정…</button>
+        <div class="menuSep"></div>
+        <button class="menuItem" id="moUiEdit"><svg class="ic" viewBox="0 0 24 24"><path d="M5 4v5m0 4.5V20M12 4v9m0 4.5V20M19 4v3m0 4.5V20"/><path d="M2.8 11.5h4.4M9.8 15h4.4M16.8 9.5h4.4"/></svg>인터페이스 편집…</button>
       </div>
     </div>
     <button class="tbtn" id="btnUndo" title="실행 취소 (Ctrl+Z)"><svg class="ic" viewBox="0 0 24 24"><polyline points="3.5 4.5 3.5 10.5 9.5 10.5"/><path d="M5.8 15.5a8 8 0 1 0 1.7-8.7L3.5 10.5"/></svg></button>
@@ -568,8 +581,6 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <div class="t3label t3">3D 전용</div>
       <div class="tool t3" data-tool="settop" title="상단 정렬 (settop) — 벽·기둥 상단 높이 맞춤">
         <svg viewBox="0 0 24 24"><path d="M3 5h18"/><rect x="6" y="8" width="4" height="11"/><rect x="14" y="8" width="4" height="7"/></svg>상단정렬</div>
-      <div class="tdiv"></div>
-      <button id="btnTbEdit" title="도구막대 편집 — 표시할 도구 선택">⚙ 편집</button>
     </div>
     <div class="rz" id="rzLeft" title="드래그: 도구막대 폭 조절 · 더블클릭: 기본 폭"></div>
 
@@ -585,21 +596,23 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
       <!-- 인터페이스 편집: 도구막대 표시 도구 + 우측 패널 섹션.
            반투명 전체 덮개가 아니라 제목줄을 잡고 옮길 수 있는 '팝업창' — 뒤 화면은 그대로 조작 가능 -->
       <div id="uiEditDlg" style="position:absolute;left:50%;top:56px;transform:translateX(-50%);display:none;z-index:40;">
-        <div class="dlgBox" style="width:560px;max-width:94vw;max-height:min(560px,72vh);display:flex;flex-direction:column;">
-          <h2 style="display:flex;align-items:center;gap:10px;"><svg class="ic" viewBox="0 0 24 24"><path d="M5 4v5m0 4.5V20M12 4v9m0 4.5V20M19 4v3m0 4.5V20"/><path d="M2.8 11.5h4.4M9.8 15h4.4M16.8 9.5h4.4"/></svg> 인터페이스 편집
-            <span style="flex:1"></span>
-            <button class="miniBtn" id="uiEditReset">기본값 복원</button>
-            <button class="miniBtn" id="uiEditClose">닫기</button></h2>
-          <div class="dlgHint">체크를 끄면 화면에서 숨겨집니다(기능은 명령어 입력으로 계속 사용 가능). 변경은 즉시 반영·저장됩니다. <b>도구 순서는 도구막대에서 아이콘을 직접 드래그</b>해 바꿀 수 있습니다.</div>
-          <div style="display:flex;gap:14px;overflow:auto;min-height:0;">
-            <div style="flex:1;min-width:0;">
-              <h4 class="uiEdH">왼쪽 도구막대</h4>
+        <div class="dlgBox uieBox">
+          <div class="uieHead">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M5 4v5m0 4.5V20M12 4v9m0 4.5V20M19 4v3m0 4.5V20"/><path d="M2.8 11.5h4.4M9.8 15h4.4M16.8 9.5h4.4"/></svg>
+            <span class="uieTitle">인터페이스 편집</span>
+            <button class="uieReset" id="uiEditReset">기본값 복원</button>
+            <button class="uieX" id="uiEditClose" title="닫기"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+          <p class="uieHint">체크를 끄면 화면에서 숨겨집니다 — 기능은 명령어 입력으로 계속 쓸 수 있습니다. 변경은 즉시 저장됩니다. <b>도구 순서</b>는 도구막대에서 아이콘을 직접 드래그해 바꿉니다.</p>
+          <div class="uieCols">
+            <div class="uieCol">
+              <div class="uieColHead">왼쪽 도구막대</div>
               <div id="uiEdTools"></div>
             </div>
-            <div style="flex:0 0 190px;">
-              <h4 class="uiEdH">오른쪽 패널</h4>
+            <div class="uieCol uieColR">
+              <div class="uieColHead">오른쪽 패널</div>
               <div id="uiEdSecs"></div>
-              <div class="dlgHint" style="margin-top:8px;">팁: 패널의 섹션 제목을 클릭하면 접고 펼 수 있습니다.</div>
+              <p class="uieHint uieHintSm">패널의 섹션 제목을 클릭하면 접고 펼 수 있습니다.</p>
             </div>
           </div>
         </div>
@@ -751,7 +764,6 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     <!-- Right side -->
     <div class="rz" id="rzRight" title="드래그: 측면 패널 폭 조절 · 더블클릭: 기본 폭"></div>
     <div id="side">
-      <button id="btnUiEdit" title="인터페이스 편집 — 도구·패널 구성"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
       <div class="section" data-sec="layers">
         <h3>레이어</h3>
         <div class="body">
@@ -1086,10 +1098,9 @@ try { if (localStorage.getItem('webcad_theme') === 'light') document.documentEle
     }
     uiDlg.style.display = 'block';
     // 팝업창 — 제목줄을 잡고 위치를 옮길 수 있다 (뒤 화면은 어둡게 덮지 않고 그대로 조작 가능)
-    if (!uiDlg._drag && window.webcadPopupDrag) { uiDlg._drag = true; window.webcadPopupDrag(uiDlg, uiDlg.querySelector('h2')); }
+    if (!uiDlg._drag && window.webcadPopupDrag) { uiDlg._drag = true; window.webcadPopupDrag(uiDlg, uiDlg.querySelector('.uieHead')); }
   }
-  document.getElementById('btnTbEdit').addEventListener('click', openUiEdit);
-  document.getElementById('btnUiEdit').addEventListener('click', openUiEdit);
+  document.getElementById('moUiEdit').addEventListener('click', () => { document.getElementById('optMenu').classList.remove('open'); openUiEdit(); });
   document.getElementById('uiEditClose').addEventListener('click', () => uiDlg.style.display = 'none');
   document.getElementById('uiEditReset').addEventListener('click', () => { uie = { tools: [], secs: [], fold: [], order: [] }; uieSave(); applyUie(); openUiEdit(); });
   applyUie();
