@@ -1,5 +1,5 @@
 // ============================================================
-//  WebCAD 로그인/회원가입 (이메일 인증번호 방식)
+//  Parti 로그인/회원가입 (이메일 인증번호 방식)
 //  - 백엔드: Supabase Auth (auth-config.js 에 url/anonKey 설정 시 활성)
 //  - 설정이 비어 있으면 게이트를 띄우지 않고 기존처럼 동작
 //  - 데모 모드: 콘솔에서 localStorage.setItem('webcad_auth_demo','1') 후 새로고침
@@ -161,7 +161,7 @@
   function render() {
     const demoBadge = DEMO ? `<div class="authDemo">데모 모드 — 실제 이메일 대신 인증번호가 이 화면에 표시됩니다.<span id="demoCode"></span></div>` : '';
     if (view === 'login') card.innerHTML = `
-      <h1>WebCAD 로그인</h1><p class="sub">도면 작업을 시작하려면 로그인하세요.</p>
+      <h1>Parti 로그인</h1><p class="sub">도면 작업을 시작하려면 로그인하세요.</p>
       <label>아이디 또는 이메일</label><input id="aId" autocomplete="username">
       <label>비밀번호</label><input id="aPw" type="password" autocomplete="current-password">
       <div class="authErr" id="aErr"></div>
@@ -308,7 +308,7 @@
       }
     } catch (e) {}
   }
-  // 접속 표시: Supabase Realtime presence — 로그인한 모든 WebCAD 창이 자기 이메일을 알린다.
+  // 접속 표시: Supabase Realtime presence — 로그인한 모든 Parti 창이 자기 이메일을 알린다.
   let presCh = null, online = new Set();
   function startPresence(session) {
     if (!session || presCh || !sb || typeof sb.channel !== 'function') return;

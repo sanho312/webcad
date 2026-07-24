@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WebCAD — 테스트</title>
+<title>Parti — 테스트</title>
 <style>
   body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:#15151a;color:#e6e6ea;}
   header{padding:14px 20px;background:#2a2a30;border-bottom:1px solid #3d3d46;position:sticky;top:0;}
@@ -18,7 +18,7 @@
 </head>
 <body>
 <header>
-  <h1>▦ WebCAD 자동 테스트 <button id="rerun">다시 실행</button></h1>
+  <h1>▦ Parti 자동 테스트 <button id="rerun">다시 실행</button></h1>
   <div id="summary" class="muted">앱 로딩 중…</div>
 </header>
 <div id="results"></div>
@@ -45,7 +45,7 @@ function updateSummary(label){
   S.innerHTML = fail===0
     ? `<span class="pass">✔ 전체 통과 — ${pass}/${total}${label||''}</span>`
     : `<span class="fail">✗ 실패 ${fail}개</span> / 통과 ${pass} (총 ${total})`;
-  document.title = (fail===0?'PASS':'FAIL('+fail+')')+` — WebCAD 테스트`;
+  document.title = (fail===0?'PASS':'FAIL('+fail+')')+` — Parti 테스트`;
 }
 function finishAsync(){ updateSummary(); }
 function runAll(){
@@ -204,7 +204,7 @@ function tests(){
 
   group('링크 공유 — 인코딩 왕복');
   { // 동기 컨텍스트에서 async 검증: 완료 후 요약 갱신
-    const original='WebCAD 공유 테스트 — 한글/기호 ⌀°± {}[]';
+    const original='Parti 공유 테스트 — 한글/기호 ⌀°± {}[]';
     C.shareEncode(original).then(enc => {
       record(typeof enc==='string' && enc.length>1, '공유 인코딩 생성 ('+(enc[0]==='g'?'gzip':'raw')+')');
       return C.shareDecode(enc);

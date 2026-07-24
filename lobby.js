@@ -1,5 +1,5 @@
 // ============================================================
-//  WebCAD 로비(랜딩) 화면 v2 — 프로젝트 관리형
+//  Parti 로비(랜딩) 화면 v2 — 프로젝트 관리형
 //  - 상단: 햄버거(자주 안 쓰는 기능·확장) · 검색 · 프로필/구독 카드
 //  - 최근 작업 레일 + 그룹 탭 + 도면 목록(목록형/카드형)
 //  - 도면 데이터는 cloud.js(window.WEBCAD_CLOUD), 인증은 auth.js(WEBCAD_AUTH_API)
@@ -305,7 +305,7 @@
   lobby.innerHTML = `
     <header class="lbChrome"><div class="lbChromeIn">
       <button class="lbIcoBtn" id="lbHam" aria-label="메뉴 열기">${ICON.ham}</button>
-      <div class="lbWord"><span class="mk">▦</span><span class="wm-t">WebCAD</span></div>
+      <div class="lbWord"><span class="mk">▦</span><span class="wm-t">Parti</span></div>
       <div class="lbSearch">${ICON.search}
         <input id="lbQ" type="search" placeholder="이전 작업 검색 — 파일명, 그룹, 소유자" aria-label="이전 작업 검색"></div>
       <button class="lbPcard" id="lbPbtn" aria-expanded="false" aria-haspopup="menu">
@@ -348,7 +348,7 @@
 
     <div class="lbScrim" id="lbScrim" data-open="false"></div>
     <aside class="lbDrawer" id="lbDrawer" data-open="false" aria-label="메뉴">
-      <div class="lbDhead"><div class="lbWord"><span class="mk">▦</span>WebCAD</div></div>
+      <div class="lbDhead"><div class="lbWord"><span class="mk">▦</span>Parti</div></div>
       <div class="lbDsec">둘러보기</div>
       <button class="lbDitem" data-d="guide"><svg viewBox="0 0 20 20"><path d="M4 4h5a2 2 0 0 1 2 2v10a1.5 1.5 0 0 0-1.5-1.5H4z"/><path d="M16 4h-5a2 2 0 0 0-2 2v10a1.5 1.5 0 0 1 1.5-1.5H16z"/></svg>사용법 · 빠른 시작</button>
       <button class="lbDitem" data-d="cmds"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M7 7.5h6M7 10h6M7 12.5h3.5"/></svg>명령어 목록<span class="dsub">help</span></button>
@@ -787,7 +787,7 @@
   function openPlan() {
     const note = session ? '' : '<p class="lbMsub" style="margin-top:10px;">프로 플랜을 이용하려면 먼저 로그인하세요.</p>';
     openModal(`<h2>플랜 구독</h2>
-      <p class="lbMsub">WebCAD는 로컬 작업은 언제나 무료입니다. 클라우드 저장·협업을 넓히려면 프로 플랜을 이용하세요.</p>
+      <p class="lbMsub">Parti는 로컬 작업은 언제나 무료입니다. 클라우드 저장·협업을 넓히려면 프로 플랜을 이용하세요.</p>
       <div class="lbPlans">
         <div class="lbPlanBox"><h3>무료</h3><div class="price">₩0</div>
           <ul><li>모든 2D·3D·BIM 도구</li><li>로컬 저장 무제한</li><li>클라우드 도면 5개</li><li>링크 공유</li></ul></div>

@@ -1,5 +1,5 @@
 /* ============================================================
-   WebCAD — 브라우저 기반 2D CAD / DXF 편집기
+   Parti — 브라우저 기반 2D CAD / DXF 편집기
    순수 JavaScript. 외부 의존성 없음.
    좌표계: 월드 좌표는 DXF 규약(Y 위쪽). 화면은 Y 아래쪽 → 변환 처리.
    ============================================================ */
@@ -89,7 +89,7 @@ function setFileName(n, loc) {
   if (el) el.innerHTML = escapeHtml(currentFileName || '새 파일') +
     (currentFileName && currentFileLoc
       ? `<span class="floc">${currentFileLoc === 'pc' ? '— 내 PC (저장 시 덮어쓰기)' : '— 다운로드/파일 앱'}</span>` : '');
-  document.title = (currentFileName ? currentFileName + ' — ' : '') + 'WebCAD — DXF 편집기';
+  document.title = (currentFileName ? currentFileName + ' — ' : '') + 'Parti — DXF 편집기';
   if (typeof renderDocTabs === 'function' && typeof docs !== 'undefined' && docs.length) renderDocTabs();
 }
 let lastCommand = '';   // 직전에 실행한 명령(스페이스/Enter로 반복)
@@ -5399,26 +5399,26 @@ function dl3d(text, name, mime) {
 function cmdExportSTL(onlyIds, nameSuffix) {
   const tris = solidsToTris(onlyIds);
   if (!tris.length) { logLine('  내보낼 3D 입체가 없습니다 — 벽·기둥·extrudecrv 등으로 입체를 만든 뒤 실행하세요.', 'warn'); return; }
-  const L = ['solid webcad'];
+  const L = ['solid parti'];
   for (const t of tris) {
     L.push(' facet normal 0 0 0', '  outer loop');
     for (const v of t) L.push('   vertex ' + v[0].toFixed(3) + ' ' + v[1].toFixed(3) + ' ' + v[2].toFixed(3));
     L.push('  endloop', ' endfacet');
   }
-  L.push('endsolid webcad', '');
-  dl3d(L.join(String.fromCharCode(10)), (nameSuffix || 'webcad-3d') + '.stl', 'model/stl');
+  L.push('endsolid parti', '');
+  dl3d(L.join(String.fromCharCode(10)), (nameSuffix || 'parti-3d') + '.stl', 'model/stl');
   logLine('  ✔ STL 내보내기 — 삼각형 ' + tris.length + '개, mm 단위 (라이노·스케치업에서 가져오기 가능)', 'ok');
 }
 function cmdExportOBJ(onlyIds, nameSuffix) {
   const tris = solidsToTris(onlyIds);
   if (!tris.length) { logLine('  내보낼 3D 입체가 없습니다 — 벽·기둥·extrudecrv 등으로 입체를 만든 뒤 실행하세요.', 'warn'); return; }
-  const V = ['# WebCAD OBJ (mm)'], F = [];
+  const V = ['# Parti OBJ (mm)'], F = [];
   let idx = 1;
   for (const t of tris) {
     for (const p of t) V.push('v ' + p[0].toFixed(3) + ' ' + p[1].toFixed(3) + ' ' + p[2].toFixed(3));
     F.push('f ' + idx + ' ' + (idx + 1) + ' ' + (idx + 2)); idx += 3;
   }
-  dl3d(V.concat(F).join(String.fromCharCode(10)), (nameSuffix || 'webcad-3d') + '.obj', 'text/plain');
+  dl3d(V.concat(F).join(String.fromCharCode(10)), (nameSuffix || 'parti-3d') + '.obj', 'text/plain');
   logLine('  ✔ OBJ 내보내기 — 삼각형 ' + tris.length + '개, mm 단위', 'ok');
 }
 // 3D 작업 명령 세트(라이노식) — box/cylinder/settop  (이동·복사·회전·대칭·배열·배율은 평면·3D 공용 기본 명령이 담당)
@@ -7669,7 +7669,7 @@ function pushLitPoly(faces, poly, zs, nz, meta, cacheKey, twoSided) {
 
 // ============================================================
 //  Raytraced 모드 (Phase 2) — three-gpu-pathtracer
-//  WebCAD의 3D는 자체 소프트웨어 래스터라이저(2D 캔버스)다. 패스트레이싱은 WebGL2가
+//  Parti의 3D는 자체 소프트웨어 래스터라이저(2D 캔버스)다. 패스트레이싱은 WebGL2가
 //  필요하므로 Raytraced일 때만 three.js를 CDN에서 지연 로드해 별도 캔버스를 겹쳐 띄운다.
 //  기존 조명 보기(lighting)는 지시문 §2.4의 '근사 렌더 모드' 폴백 자리를 그대로 맡는다.
 // ============================================================
@@ -7705,7 +7705,7 @@ function rtSupported() {
   } catch (e) { /* 지원 안 함 — 다음에 다시 시도 */ }
   return _rtSup;
 }
-// 개체 색 → PBR. WebCAD 재질은 색(hex)뿐이라 합리적 기본값으로 매핑한다 (§2.2).
+// 개체 색 → PBR. Parti 재질은 색(hex)뿐이라 합리적 기본값으로 매핑한다 (§2.2).
 // ═══════════ 재질 (PBR) — 세 렌더러가 공유하는 하나의 진실 ═══════════
 // 사용자 요구: "재료의 질감 등을 구현하여 렌더링을 확인할 수 있는 뷰".
 // 설계 원칙(이번 개편의 핵심 교훈): 같은 개념을 두 군데에 구현하면 반드시 어긋난다.
@@ -8339,7 +8339,7 @@ function rtStdMat(T, hex, emissiveRGB, emissiveIntensity) {
   if (emissiveRGB) { m.emissive = new T.Color(emissiveRGB[0], emissiveRGB[1], emissiveRGB[2]); m.emissiveIntensity = emissiveIntensity; }
   return m;
 }
-// WebCAD 형상 → 삼각형. 솔리드(폴리+z)와 메시를 개체별로 묶는다.
+// Parti 형상 → 삼각형. 솔리드(폴리+z)와 메시를 개체별로 묶는다.
 function rtTrisByEntity() {
   const out = new Map(); // eid → {tris:[[p,p,p]...], color, area}
   const put = (eid, color) => { let o = out.get(eid); if (!o) out.set(eid, o = { tris: [], color, area: 0 }); return o; };
@@ -8809,7 +8809,7 @@ function rtMakeSky(S) {
   const cosDisk = Math.cos(SUN_ANG_RADIUS);
   tex.generationCallback = (polar, uv, coord, color) => {
     skyTexelDir(polar.theta, polar.phi, d);
-    // 씬은 Z-up 이다 — rtBuildScene 이 WebCAD 좌표를 그대로 넘긴다. 그래서 천정각을 z 로 잰다.
+    // 씬은 Z-up 이다 — rtBuildScene 이 Parti 좌표를 그대로 넘긴다. 그래서 천정각을 z 로 잰다.
     skyDirRadiance(K, d.x, d.y, d.z, _rgb);   // 소프트웨어 뷰·천공광 SH 와 같은 함수
     const disk = (up && d.dot(sunV) >= cosDisk) ? diskL : 0;
     color.setRGB(_rgb[0] + disk, _rgb[1] + disk, _rgb[2] + disk);
@@ -8970,7 +8970,7 @@ function rtBuildScene(T) {
   rt.triCount = triCount;
   return scene;
 }
-// WebCAD의 정투영 규약(proj3D)을 그대로 three 카메라로 옮긴다.
+// Parti의 정투영 규약(proj3D)을 그대로 three 카메라로 옮긴다.
 // 어긋나면 레이트레이싱 화면만 다른 각도로 나와 비교가 불가능해진다.
 function rtSyncCamera(T, cam) {
   const c = Math.cos(v3.yaw), s = Math.sin(v3.yaw);
@@ -9968,8 +9968,8 @@ function cmdCapture(arg) {
     t.getContext('2d').drawImage(src, 0, 0);            // ★동기 복사 — 이후 원본 크기를 되돌려도 안전
     t.toBlob(b => {
       if (!b) { logLine('  ✗ 캡처 실패 — 캔버스를 읽지 못했습니다.', 'warn'); return; }
-      saveBlob(b, 'webcad-render-' + stamp + '.png');
-      logLine('  ✔ ' + label + ' 저장 — webcad-render-' + stamp + '.png (' + t.width + '×' + t.height + ')', 'ok');
+      saveBlob(b, 'parti-render-' + stamp + '.png');
+      logLine('  ✔ ' + label + ' 저장 — parti-render-' + stamp + '.png (' + t.width + '×' + t.height + ')', 'ok');
     }, 'image/png');
   };
   if (rt.on && rt.cv && rt.cv.style.display !== 'none') {  // rtcv 는 preserveDrawingBuffer:true
@@ -10197,7 +10197,7 @@ function sensorCSV() {
 function cmdSensorCSV() {
   if (!state.sensors.length) { logLine('  측정면이 없습니다 — addsensorplane 으로 먼저 만드세요.', 'warn'); return; }
   if (!is3DActive()) { logLine('  조도 계산은 3D 작업 뷰에서 합니다 — 먼저 3d 로 여세요.', 'warn'); return; }
-  saveBlob(new Blob([sensorCSV()], { type: 'text/csv;charset=utf-8' }), (currentFileName || 'webcad') + '_조도.csv');
+  saveBlob(new Blob([sensorCSV()], { type: 'text/csv;charset=utf-8' }), (currentFileName || 'parti') + '_조도.csv');
   logLine('  ✔ 조도 CSV 내보내기', 'ok');
 }
 // 측정면 패널 — 통계(최소/평균/최대/균제도)와 정확도 고지
@@ -11080,7 +11080,7 @@ function exportEntities(keepInserts) {
   const out = [];
   const emit = (e) => {
     // 이미지는 표준 DXF 엔티티로 내보내지 않는다(IMAGE 엔티티는 외부 파일 경로 참조 방식이라
-    // 같이 배포할 파일이 없음). 대신 정의 전체를 999 WCX 블록에 담아 WebCAD에서 복원한다.
+    // 같이 배포할 파일이 없음). 대신 정의 전체를 999 WCX 블록에 담아 Parti에서 복원한다.
     if (e.type === 'IMAGE') return;
     if (e.type === 'INSERT') { if (keepInserts) out.push(e); else for (const c of insertChildren(e)) emit(c); return; }
     if (e.type !== 'HATCH') { out.push(e); return; }
@@ -11240,7 +11240,7 @@ const INSTANT_CMDS = {
     if (!state.selection.size) { logLine('  selectedexport: 내보낼 객체를 먼저 선택하세요.', 'warn'); return; }
     const ids = new Set(state.selection);
     const f = String(prompt('형식 — 1: STL  2: OBJ', '1') || '1').trim();
-    if (f === '2') cmdExportOBJ(ids, 'webcad-selected'); else cmdExportSTL(ids, 'webcad-selected');
+    if (f === '2') cmdExportOBJ(ids, 'parti-selected'); else cmdExportSTL(ids, 'parti-selected');
   },
   bimclear: cmdBimClear,
   view3d: open3D,
@@ -13213,7 +13213,7 @@ function showHomeScreenHelp() {
     '<p style="margin:0 0 12px;font-size:13px;color:rgba(235,235,245,0.6);line-height:1.6;">이 브라우저 탭은 전체화면 API를 지원하지 않습니다. 아래처럼 <b style="color:#f5f5f7;">홈 화면에 앱으로 추가</b>하면 주소창·툴바 없이 전체화면으로 실행됩니다.</p>' +
     '<ol style="margin:0 0 4px;padding-left:20px;font-size:13px;line-height:1.9;">' +
     (isiOS
-      ? '<li>Safari 하단(또는 상단)의 <b>공유 버튼 <span style="display:inline-block;border:1px solid #6a6a75;border-radius:4px;padding:0 5px;">⬆️</span></b> 탭</li><li>목록에서 <b>"홈 화면에 추가"</b> 선택</li><li>오른쪽 위 <b>"추가"</b> 탭</li><li>홈 화면의 <b>WebCAD 아이콘</b>으로 실행 → 전체화면</li>'
+      ? '<li>Safari 하단(또는 상단)의 <b>공유 버튼 <span style="display:inline-block;border:1px solid #6a6a75;border-radius:4px;padding:0 5px;">⬆️</span></b> 탭</li><li>목록에서 <b>"홈 화면에 추가"</b> 선택</li><li>오른쪽 위 <b>"추가"</b> 탭</li><li>홈 화면의 <b>Parti 아이콘</b>으로 실행 → 전체화면</li>'
       : '<li>브라우저 메뉴(⋮) 열기</li><li><b>"홈 화면에 추가"</b> 또는 <b>"앱 설치"</b> 선택</li><li>추가된 아이콘으로 실행 → 전체화면</li>') +
     '</ol>' +
     '<div style="text-align:right;margin-top:16px;"><button id="homeHelpClose" style="background:#0071e3;color:#fff;border:none;border-radius:8px;padding:8px 17px;font-size:14px;cursor:pointer;">확인</button></div>' +
@@ -13658,14 +13658,14 @@ function buildDXFText() {
   const blkNames = Object.keys(state.blocks || {});
   const hBlkRec = {}; for (const nm of blkNames) hBlkRec[nm] = H();
 
-  // WebCAD 확장(999 주석)은 파일 선두에 — 주석의 표준 위치(다른 CAD는 건너뜀)
+  // Parti 확장(999 주석)은 파일 선두에 — 주석의 표준 위치(다른 CAD는 건너뜀)
   {
     const wcx = { v: 1, ext: [], mesh: [], img: [] };
     for (const e of state.entities) {
       if (e.type === 'MESH') { wcx.mesh.push((e.tris || []).length); continue; }
       // 이미지: 표준 DXF IMAGE 엔티티는 외부 파일 경로를 참조하는 방식이라 브라우저에서 같이 배포할
       // 파일이 없다. 그래서 정의 전체(데이터 URL 포함)를 WCX에 담는다 — 다른 CAD는 999 주석을
-      // 건너뛰므로 호환성에 영향이 없고, WebCAD에서 열면 효과까지 그대로 복원된다.
+      // 건너뛰므로 호환성에 영향이 없고, Parti에서 열면 효과까지 그대로 복원된다.
       if (e.type === 'IMAGE') {
         wcx.img.push({
           layer: e.layer, lv: e.lv || 0, x: e.x, y: e.y, w: e.w, h: e.h,
@@ -13812,7 +13812,7 @@ function buildDXFText() {
   g(0, 'SECTION'); g(2, 'OBJECTS');
   g(0, 'DICTIONARY'); g(5, hDictRoot); g(330, '0'); g(100, 'AcDbDictionary'); g(281, 1); g(3, 'ACAD_GROUP'); g(350, hDictGroup); // 330/0 = 루트(소유자 없음)
   g(0, 'DICTIONARY'); g(5, hDictGroup); g(330, hDictRoot); g(100, 'AcDbDictionary'); g(281, 1);
-  g(0, 'ENDSEC'); // (WebCAD 999 확장은 파일 선두로 이동 — ENDSEC~EOF 사이 주석은 엄격한 파서가 거부)
+  g(0, 'ENDSEC'); // (Parti 999 확장은 파일 선두로 이동 — ENDSEC~EOF 사이 주석은 엄격한 파서가 거부)
   g(0, 'EOF');
 
   // 코드/값 쌍을 줄로
@@ -14290,7 +14290,7 @@ function loadDXF(text) {
     return false;
   }
 }
-// WebCAD 확장(999 WCX) 복원: 3DFACE 연속 구간을 MESH로 병합하고, 시그니처로 BIM 속성·z값을 재결합
+// Parti 확장(999 WCX) 복원: 3DFACE 연속 구간을 MESH로 병합하고, 시그니처로 BIM 속성·z값을 재결합
 function applyWcxExt(text) {
   let js = '';
   for (const m of text.matchAll(/^\s*999\s*\r?\n(WCX[^\r\n]*)/gm)) js += m[1].slice(3);
@@ -14656,7 +14656,7 @@ function parseDXFEntities(pairs) {
   }
   let id = 1;
   for (const e of entities) e.id = id++;
-  // 유지된 INSERT가 참조하는 블록 정의를 WebCAD 형식(기준점=원점)으로 변환
+  // 유지된 INSERT가 참조하는 블록 정의를 Parti 형식(기준점=원점)으로 변환
   const outBlocks = {};
   for (const nm of usedBlocks) {
     const bd = blocks[nm]; if (!bd) continue;
@@ -15221,7 +15221,7 @@ try {
   const m = sc && (sc.src || '').match(/v=([0-9a-z.]+)/);
   window.WEBCAD_VERSION = m ? m[1] : 'unknown';
 } catch (e) { window.WEBCAD_VERSION = 'unknown'; }
-setTimeout(() => { try { logLine(`WebCAD · cad.js 버전 ${window.WEBCAD_VERSION}`, 'info'); } catch (e) {} }, 900);
+setTimeout(() => { try { logLine(`Parti · cad.js 버전 ${window.WEBCAD_VERSION}`, 'info'); } catch (e) {} }, 900);
 // 자동 업데이트 — GitHub Pages가 index.html을 10분 캐시(max-age=600)해서, 새로고침해도
 // 예전 index.html→예전 cad.js가 로딩되는 문제. 고유 쿼리로 원본에서 최신 index.html을 받아
 // 로딩된 버전과 다르면(=캐시로 옛 버전 로딩됨) 캐시 우회 URL로 자동 이동(세션당 버전별 1회).

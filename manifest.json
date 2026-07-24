@@ -1,6 +1,6 @@
 {
-  "name": "WebCAD — DXF 편집기",
-  "short_name": "WebCAD",
+  "name": "Parti — DXF 편집기",
+  "short_name": "Parti",
   "description": "브라우저에서 실행되는 2D CAD / DXF 편집기",
   "lang": "ko",
   "start_url": "./index.html",

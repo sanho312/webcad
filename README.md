@@ -1,4 +1,4 @@
-# WebCAD — 브라우저 기반 DXF 편집기
+# Parti — 브라우저 기반 DXF 편집기
 
 설치 없이 브라우저에서 바로 실행되는 2D CAD 프로그램입니다. AutoCAD 등과 호환되는
 **DXF**(R12 ASCII) 파일을 생성·편집·열람할 수 있습니다.
@@ -182,7 +182,7 @@ iPhone Safari는 웹페이지 요소 전체화면을 지원하지 않습니다. 
 및 `LAYER` 테이블(색상/표시 상태).
 
 ## 테스트
-`tests.html`을 브라우저에서 열면 `index.html`을 iframe으로 로드해 핵심 로직(기하·교차·변환·파서·편집·해치·블록·DXF 왕복·SVF 내보내기)을 자동 검증합니다. 현재 **61개 케이스**. 기능 추가·수정 후 회귀 확인용으로 실행하세요. (라이브: https://sanho312.github.io/webcad/tests.html)
+`tests.html`을 브라우저에서 열면 `index.html`을 iframe으로 로드해 핵심 로직(기하·교차·변환·파서·편집·해치·블록·DXF 왕복·SVF 내보내기)을 자동 검증합니다. 현재 **61개 케이스**. 기능 추가·수정 후 회귀 확인용으로 실행하세요. (라이브: https://sanho312.github.io/parti/tests.html)
 
 ## 파일 구성
 - `index.html` — UI / 레이아웃
