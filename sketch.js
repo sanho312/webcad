@@ -801,8 +801,8 @@ bar.style.cssText = 'position:absolute;left:8px;bottom:52px;z-index:30;'
   + 'color:var(--text,#dbe6ff);touch-action:manipulation;user-select:none;-webkit-user-select:none;';
 function mkBtn(label, title, onClick) {
   const b = document.createElement('button');
-  b.textContent = label; b.title = title;
-  b.style.cssText = 'min-width:34px;height:34px;border:none;border-radius:10px;background:transparent;'
+  b.innerHTML = label; b.title = title;
+  b.style.cssText = 'min-width:34px;height:34px;border:none;border-radius:10px;background:transparent;display:inline-flex;align-items:center;justify-content:center;'
     + 'color:var(--text,#cfe0ff);font-size:15px;cursor:pointer;padding:0 8px;';
   b.addEventListener('click', onClick);
   return b;
@@ -818,10 +818,10 @@ grip.textContent = '⠿'; grip.title = '툴바 이동';
 grip.style.cssText = 'font-size:15px;color:var(--muted,#6d7ea8);padding:0 2px;';
 bar.appendChild(grip);
 const toolBtns = {};
-toolBtns.pen = mkBtn('🖋', '펜 (B) — 또렷한 잉크', () => setBrush('pen'));
-toolBtns.pencil = mkBtn('✏️', '연필 — 가늘고 연하게', () => setBrush('pencil'));
-toolBtns.marker = mkBtn('🖍', '마커 — 굵고 반투명', () => setBrush('marker'));
-toolBtns.eraser = mkBtn('⌫', '지우개 — 스트로크 단위 (E)', () => setTool('eraser'));
+toolBtns.pen = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M4 20l1.3-4.2L15.5 5.6a2 2 0 0 1 2.8 0l.1.1a2 2 0 0 1 0 2.8L8.2 18.7z"/><path d="M14 7l3 3"/><path d="M4 20l4-1.3"/></svg>', '펜 (B) — 또렷한 잉크', () => setBrush('pen'));
+toolBtns.pencil = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M4 20l4-1 9.5-9.5-3-3L5 16z"/><path d="M13.5 6.5l3 3"/><path d="M4 20l3.8-.8"/></svg>', '연필 — 가늘고 연하게', () => setBrush('pencil'));
+toolBtns.marker = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M9 15l7-7 3.5 3.5-7 7H9z"/><path d="M9 15l-1.5 4.5L12 18"/><path d="M6.5 21h6"/></svg>', '마커 — 굵고 반투명', () => setBrush('marker'));
+toolBtns.eraser = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M8 18l-3.2-3.2a2 2 0 0 1 0-2.8l7-7a2 2 0 0 1 2.8 0l3.4 3.4a2 2 0 0 1 0 2.8L14 18z"/><path d="M8.5 11.5l4.6 4.6"/><path d="M8 18h11"/></svg>', '지우개 — 스트로크 단위 (E)', () => setTool('eraser'));
 bar.appendChild(rowOf(toolBtns.pen, toolBtns.pencil, toolBtns.marker, toolBtns.eraser));
 // 레이어 — CAD 레이어와 동일 연동 (평면·3D·스케치가 같은 레이어·같은 색)
 const layWrap = document.createElement('span');
@@ -896,26 +896,26 @@ sizeIn.addEventListener('input', () => {
 sizeWrapEl.appendChild(sizeIn); sizeWrapEl.appendChild(sizeDot);
 bar.appendChild(sizeWrapEl);
 // 🎯 조준 모드 — 호버 미지원 기기(M1 이하 iPad)의 대체: 대고 움직여도 그려지지 않는다
-const aimBtn = mkBtn('🎯', '조준 모드 — 펜을 대고 움직여도 그려지지 않고 위치·스냅점만 표시 (호버 미지원 기기 대체). 다시 누르면 그리기 복귀', () => {
+const aimBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2.5v3.5M12 18v3.5M2.5 12h3.5M18 12h3.5"/><circle cx="12" cy="12" r="1.6"/></svg>', '조준 모드 — 펜을 대고 움직여도 그려지지 않고 위치·스냅점만 표시 (호버 미지원 기기 대체). 다시 누르면 그리기 복귀', () => {
   SK.aim = !SK.aim;
   aimBtn.style.background = SK.aim ? 'var(--accent,#0A84FF)' : 'transparent';
   aimBtn.style.color = SK.aim ? '#fff' : 'var(--ink,#cfe0ff)';
 });
 // 📐 상시 자동 보정 토글 (기본 켬)
-const beautBtn = mkBtn('📐', '자동 보정 — 직선은 곧게, 곡선은 매끈하게 (손떨림 제거). 끄면 원본 그대로', () => {
+const beautBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M4 20L14 10"/><path d="M16 4l.9 2.1L19 7l-2.1.9L16 10l-.9-2.1L13 7l2.1-.9z"/><path d="M19.5 12.5l.4 1 1 .4-1 .4-.4 1-.4-1-1-.4 1-.4z"/></svg>', '자동 보정 — 직선은 곧게, 곡선은 매끈하게 (손떨림 제거). 끄면 원본 그대로', () => {
   SK.beautify = SK.beautify === false ? true : false;
   beautBtn.style.opacity = SK.beautify === false ? '.35' : '1';
 });
 // ✨ 인식 — 손그림 → 기하 (전처리 엔진, AI 0)
-const recogBtn = mkBtn('✨', '인식 — 손그림을 직선·원·호·사각형과 닫힌 영역으로 (전부 알고리즘, AI 사용 없음)', recognize);
+const recogBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/><circle cx="16" cy="16" r="4.5"/></svg>', '인식 — 손그림을 직선·원·호·사각형과 닫힌 영역으로 (전부 알고리즘, AI 사용 없음)', recognize);
 bar.appendChild(rowOf(aimBtn, beautBtn, recogBtn));
 // 실행취소/재실행/표시/전체지우기 — 한 줄
-const undoBtn = mkBtn('↶', '스케치 실행 취소 (Ctrl+Z)', undoSk);
-const redoBtn = mkBtn('↷', '다시 실행 (Ctrl+Y)', redoSk);
-const eyeBtn = mkBtn('👁', 'Sketch Layer 표시/숨김 (CAD 와 항상 공존)', () => {
+const undoBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><polyline points="3.5 5.5 3.5 11 9 11"/><path d="M5.8 15.5a8 8 0 1 0 1.7-8.7L3.5 11"/></svg>', '스케치 실행 취소 (Ctrl+Z)', undoSk);
+const redoBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><polyline points="20.5 5.5 20.5 11 15 11"/><path d="M18.2 15.5a8 8 0 1 1-1.7-8.7L20.5 11"/></svg>', '다시 실행 (Ctrl+Y)', redoSk);
+const eyeBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>', 'Sketch Layer 표시/숨김 (CAD 와 항상 공존)', () => {
   SK.visible = !SK.visible; eyeBtn.style.opacity = SK.visible ? '1' : '.35';
 });
-const clearBtn = mkBtn('🧹', '이 도면의 스케치 전체 지우기', () => {
+const clearBtn = mkBtn('<svg class="ic" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 .9h8a1 1 0 0 0 1-.9l1-13"/><path d="M10 11v6M14 11v6"/></svg>', '이 도면의 스케치 전체 지우기', () => {
   if (!SK.strokes.length) return;
   if (!confirm('이 도면의 손그림 스케치를 전부 지울까요? (Ctrl+Z 로 되돌릴 수 있습니다)')) return;
   pushOp({ t: 'del', ss: SK.strokes.slice() });

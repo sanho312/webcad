@@ -483,12 +483,12 @@
   function buildMenus() {
     const sep = document.createElement('div'); sep.className = 'menuSep';
     document.getElementById('fileMenu')?.appendChild(sep);
-    addMenuItem('fileMenu', '☁ 클라우드에 저장', () => saveToCloud(false));
-    addMenuItem('fileMenu', '☁ 내 도면…', openDrawingList);
-    addMenuItem('fileMenu', '🕘 버전 기록…', openVersions);
-    addMenuItem('fileMenu', '👥 공유…', openShare);
-    addMenuItem('optMenu', '★ 블록 라이브러리…', openBlockLib);
-    addMenuItem('optMenu', '💬 피드백 보내기…', openFeedback);
+    addMenuItem('fileMenu', '<svg class="ic" viewBox="0 0 24 24"><path d="M7.5 19a4 4 0 0 1-.4-7.98A5.2 5.2 0 0 1 17 9.2a3.6 3.6 0 0 1-.6 9.8"/><path d="M12 16.5v-5"/><path d="M9.8 13.2L12 11l2.2 2.2"/></svg>클라우드에 저장', () => saveToCloud(false));
+    addMenuItem('fileMenu', '<svg class="ic" viewBox="0 0 24 24"><path d="M9 4h6l4 4v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M15 4v4h4"/><path d="M5 8v10a1 1 0 0 0 1 1h9"/></svg>내 도면…', openDrawingList);
+    addMenuItem('fileMenu', '<svg class="ic" viewBox="0 0 24 24"><path d="M4.5 9A8 8 0 1 1 4 13"/><path d="M4.5 4.5V9H9"/><path d="M12 8v4.5l3 1.8"/></svg>버전 기록…', openVersions);
+    addMenuItem('fileMenu', '<svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3 3 0 0 1 0 5.6"/><path d="M17 13.5a5.5 5.5 0 0 1 3.5 5.5"/></svg>공유…', openShare);
+    addMenuItem('optMenu', '<svg class="ic" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>블록 라이브러리…', openBlockLib);
+    addMenuItem('optMenu', '<svg class="ic" viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9.5L5 20v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M8 9.5h8"/><path d="M8 12.5h5"/></svg>피드백 보내기…', openFeedback);
   }
 
   // ---------- 로비(lobby.js)용 공개 API ----------
