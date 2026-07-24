@@ -15182,7 +15182,7 @@ window.WEBCAD_API = {
     draw();
   },
   zoomFit: () => zoomFit(true),
-  redraw: () => draw(),
+  redraw: () => { draw(); if (is3DActive() && typeof v3 !== 'undefined' && v3) render3D(); }, // 테마 전환 등 전체 갱신 시 4분할 3D 칸도 새 캔버스색으로 다시 칠함(안 그러면 직전 테마 색이 남아 반대로 보임)
   // 블록 라이브러리
   getBlocks: () => state.blocks,
   addBlock: (name, def) => { state.blocks[name] = def; refreshBlockList(); logLine(`  ✔ 라이브러리에서 블록 "${name}" 가져옴 — 삽입(insert)으로 배치`, 'ok'); },
